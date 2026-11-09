@@ -43,6 +43,24 @@ pub fn parent(remote: bool, path: &str) -> Option<(String, String)> {
     Some((parent.to_string(), name.to_string()))
 }
 
+/// Lists a local directory (without `.`/`..`), unsorted.
+pub fn list_local(dir: &Path) -> std::io::Result<Vec<FileEntry>> {
+    let mut out = vec![];
+    for entry in std::fs::read_dir(dir)? {
+        let Ok(entry) = entry else { continue };
+        let Ok(ft) = entry.file_type() else { continue };
+        let meta = entry.metadata().ok();
+        out.push(FileEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            is_dir: ft.is_dir() || (ft.is_symlink() && entry.path().is_dir()),
+            is_symlink: ft.is_symlink(),
+            size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            modified: meta.and_then(|m| m.modified().ok()),
+        });
+    }
+    Ok(out)
+}
+
 pub fn human_size(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut v = n as f64;

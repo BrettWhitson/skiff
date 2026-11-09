@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use russh_sftp::client::SftpSession;
+use termax_core::fs::connect::RemoteConn;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
@@ -18,7 +18,7 @@ use termax_core::theme::{self, ThemeDef};
 
 /// Results from background tasks, delivered to the UI thread.
 pub enum Msg {
-    SftpConnected { tab: u64, result: Result<(Arc<SftpSession>, String), String> },
+    SftpConnected { tab: u64, result: Result<Arc<RemoteConn>, String> },
     RemoteListing { tab: u64, result: Result<(String, Vec<FileEntry>, Option<String>), String> },
     TransferProgress { tab: u64, id: u64, done: u64 },
     TransferDone { tab: u64, id: u64, result: Result<(), String> },
@@ -290,7 +290,7 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("."));
         let id = self.next_id;
         let mut tab = SftpTab::new(id, host.name.clone(), local, self.cfg.settings.show_hidden_files, self.rt.clone(), self.tx.clone());
-        tab.connect(&self.cfg.settings.ssh_binary, &host.sftp_args(self.cfg.settings.sftp_batch_mode), host.remote_dir.clone());
+        tab.connect(host.sftp_launch(&self.cfg.settings.ssh_binary, self.cfg.settings.sftp_batch_mode));
         self.push_tab(format!("{} [sftp]", host.name), TabKind::Sftp(Box::new(tab)));
     }
 

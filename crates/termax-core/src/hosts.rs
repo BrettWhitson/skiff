@@ -95,6 +95,16 @@ impl HostEntry {
         args
     }
 
+    /// Everything needed to open an SFTP session to this host.
+    pub fn sftp_launch(&self, program: &str, batch_mode: bool) -> crate::fs::connect::SshLaunch {
+        crate::fs::connect::SshLaunch {
+            program: program.to_string(),
+            args: self.sftp_args(batch_mode),
+            env: vec![],
+            start_dir: self.remote_dir.clone(),
+        }
+    }
+
     /// `user@host:port` for display.
     pub fn target(&self) -> String {
         let mut s = String::new();
@@ -198,6 +208,17 @@ mod tests {
             ["-o", "BatchMode=yes", "-p", "2222", "-l", "root", "-J", "bastion", "-A", "-s", "10.1.1.1", "sftp"]
         );
         assert_eq!(h.target(), "root@10.1.1.1:2222");
+    }
+
+    #[test]
+    fn sftp_launch_carries_args_and_dir() {
+        let mut h = custom();
+        h.remote_dir = Some("/srv".into());
+        let l = h.sftp_launch("ssh.exe", true);
+        assert_eq!(l.program, "ssh.exe");
+        assert_eq!(l.args, h.sftp_args(true));
+        assert_eq!(l.start_dir.as_deref(), Some("/srv"));
+        assert!(l.env.is_empty());
     }
 
     #[test]
