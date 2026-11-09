@@ -43,6 +43,13 @@ pub fn parent(remote: bool, path: &str) -> Option<(String, String)> {
     Some((parent.to_string(), name.to_string()))
 }
 
+/// True if `name` is a single, ordinary path component on every platform.
+/// Names from a remote listing that fail this (`..`, `a/b`, `a\b`, `C:x`,
+/// NUL) are refused so a download can never write outside its folder.
+pub fn is_safe_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':', '\0'])
+}
+
 /// Lists a local directory (without `.`/`..`), unsorted.
 pub fn list_local(dir: &Path) -> std::io::Result<Vec<FileEntry>> {
     let mut out = vec![];
@@ -83,6 +90,16 @@ mod tests {
         assert_eq!(parent(true, "/home/u"), Some(("/home".into(), "u".into())));
         assert_eq!(parent(true, "/home"), Some(("/".into(), "home".into())));
         assert_eq!(parent(true, "/"), None);
+    }
+
+    #[test]
+    fn unsafe_child_names_rejected() {
+        assert!(is_safe_name("ok.txt"));
+        assert!(is_safe_name("my file ü"));
+        assert!(is_safe_name(".hidden"));
+        for bad in ["", ".", "..", "a/b", "a\\b", "C:x", "..\\..\\x", "nul\0"] {
+            assert!(!is_safe_name(bad), "{bad:?}");
+        }
     }
 
     #[test]

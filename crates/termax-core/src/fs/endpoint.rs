@@ -19,6 +19,15 @@ impl Endpoint {
         matches!(self, Endpoint::Remote(_))
     }
 
+    /// True if both refer to the same file system (local, or one SFTP session).
+    pub fn same_as(&self, other: &Endpoint) -> bool {
+        match (self, other) {
+            (Endpoint::Local, Endpoint::Local) => true,
+            (Endpoint::Remote(a), Endpoint::Remote(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
     pub fn join(&self, base: &str, name: &str) -> String {
         path::join(self.is_remote(), base, name)
     }
@@ -107,11 +116,18 @@ impl Endpoint {
     }
 
     /// Removes a file, or a directory (with `recursive`, including its contents).
+    /// A symlink is removed itself; its target is never touched.
     pub async fn remove(&self, p: &str, recursive: bool) -> Result<()> {
         let entry = self.stat(p).await?.ok_or_else(|| anyhow!("{p} does not exist"))?;
         match self {
             Endpoint::Local => {
-                if entry.is_dir && recursive {
+                let link = std::fs::symlink_metadata(p).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+                if link {
+                    // A directory link on Windows must be removed with remove_dir.
+                    if tokio::fs::remove_file(p).await.is_err() {
+                        tokio::fs::remove_dir(p).await?;
+                    }
+                } else if entry.is_dir && recursive {
                     tokio::fs::remove_dir_all(p).await?
                 } else if entry.is_dir {
                     tokio::fs::remove_dir(p).await?
@@ -120,7 +136,8 @@ impl Endpoint {
                 }
             }
             Endpoint::Remote(c) => {
-                if !entry.is_dir {
+                let link = c.sftp.symlink_metadata(p).await?.file_type().is_symlink();
+                if !entry.is_dir || link {
                     return Ok(c.sftp.remove_file(p).await?);
                 }
                 if !recursive {

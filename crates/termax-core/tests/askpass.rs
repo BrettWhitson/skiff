@@ -102,3 +102,53 @@ fn env_names_helper_and_endpoint() {
     assert_eq!(env["TERMAX_ASKPASS_TAG"], "tagX");
     assert!(!env["TERMAX_ASKPASS_ENDPOINT"].is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn slow_answer_still_connects() {
+    // A person may take a while to type a password; the handshake must wait.
+    let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
+    let (b, _log) = broker(|_, _| {
+        std::thread::sleep(Duration::from_secs(12));
+        Some("s3cret".into())
+    });
+    let conn = connect_sftp(launch(vec![], &fx, &b, "slow")).await.expect("connect after a slow answer");
+    assert_eq!(conn.home, "/");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_token_is_refused() {
+    let (b, mut rx) = Broker::start(&tokio::runtime::Handle::current(), helper()).unwrap();
+    let mut cmd = std::process::Command::new(helper());
+    for (k, v) in b.env("t") {
+        cmd.env(k, v);
+    }
+    cmd.env(termax_core::askpass::ENV_TOKEN, "not-the-token").arg("password: ");
+    let out = tokio::task::spawn_blocking(move || cmd.output()).await.unwrap().unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(rx.try_recv().is_err(), "a request with a bad token must not reach the front-end");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retire_cancels_pending_prompt() {
+    let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
+    let (b, mut rx) = Broker::start(&tokio::runtime::Handle::current(), helper()).unwrap();
+    let b = Arc::new(b);
+    let b2 = b.clone();
+    let watcher = tokio::spawn(async move {
+        // Never answer; retire the tag instead (e.g. the user closed the tab).
+        let req = rx.recv().await.unwrap();
+        b2.retire("t9");
+        tokio::time::timeout(Duration::from_secs(5), req.cancelled.cancelled()).await.expect("request marked cancelled");
+        drop(req);
+        // ssh may ask again; retired tags are refused at once.
+        while let Ok(Some(r)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            assert!(r.cancelled.is_cancelled());
+        }
+    });
+    let started = Instant::now();
+    let res = connect_sftp(launch(vec![], &fx, &b, "t9")).await;
+    assert!(res.is_err());
+    assert!(started.elapsed() < Duration::from_secs(15), "took {:?}", started.elapsed());
+    watcher.abort();
+}

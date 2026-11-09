@@ -25,6 +25,17 @@ fn status(id: u32) -> Status {
     Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() }
 }
 
+/// Like `FileAttributes::from`, but symlinks are reported as links (the
+/// library's conversion reports them as regular files).
+fn attrs_of(m: &std::fs::Metadata) -> FileAttributes {
+    let mut a = FileAttributes::from(m);
+    if m.file_type().is_symlink() {
+        const LNK: u32 = 0o120000;
+        a.permissions = Some((a.permissions.unwrap_or(0o777) & 0o7777) | LNK);
+    }
+    a
+}
+
 fn io_err(e: std::io::Error) -> StatusCode {
     match e.kind() {
         ErrorKind::NotFound => StatusCode::NoSuchFile,
@@ -129,17 +140,17 @@ impl russh_sftp::server::Handler for SftpFs {
 
     async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         let m = tokio::fs::symlink_metadata(self.real(&path)?).await.map_err(io_err)?;
-        Ok(Attrs { id, attrs: FileAttributes::from(&m) })
+        Ok(Attrs { id, attrs: attrs_of(&m) })
     }
 
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         let m = tokio::fs::metadata(self.real(&path)?).await.map_err(io_err)?;
-        Ok(Attrs { id, attrs: FileAttributes::from(&m) })
+        Ok(Attrs { id, attrs: attrs_of(&m) })
     }
 
     async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
         let m = self.file(&handle)?.metadata().await.map_err(io_err)?;
-        Ok(Attrs { id, attrs: FileAttributes::from(&m) })
+        Ok(Attrs { id, attrs: attrs_of(&m) })
     }
 
     async fn setstat(&mut self, id: u32, _path: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
@@ -155,7 +166,7 @@ impl russh_sftp::server::Handler for SftpFs {
         let mut files = vec![];
         while let Some(e) = rd.next_entry().await.map_err(io_err)? {
             if let Ok(m) = e.metadata().await {
-                files.push(File::new(e.file_name().to_string_lossy().to_string(), FileAttributes::from(&m)));
+                files.push(File::new(e.file_name().to_string_lossy().to_string(), attrs_of(&m)));
             }
         }
         Ok(Handle { id, handle: self.add(Open::Dir(files)) })
@@ -170,7 +181,16 @@ impl russh_sftp::server::Handler for SftpFs {
     }
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
-        tokio::fs::remove_file(self.real(&filename)?).await.map_err(io_err)?;
+        let path = self.real(&filename)?;
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            // On Windows a directory symlink is removed with remove_dir, like
+            // `rm` removes a link on a Unix server.
+            let is_link = tokio::fs::symlink_metadata(&path).await.map(|m| m.file_type().is_symlink()).unwrap_or(false);
+            if !is_link {
+                return Err(io_err(e));
+            }
+            tokio::fs::remove_dir(&path).await.map_err(io_err)?;
+        }
         Ok(status(id))
     }
 

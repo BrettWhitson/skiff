@@ -241,3 +241,88 @@ async fn connect_error_shows_ssh_stderr() {
     let err = connect_sftp(launch(&fx, true)).await.err().expect("must fail");
     assert!(err.contains("Permission denied"), "{err}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn self_copy_is_rejected() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("f"), "data").unwrap();
+    std::fs::create_dir(d.path().join("a")).unwrap();
+    std::fs::write(d.path().join("a").join("x"), "x").unwrap();
+
+    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&d.path().join("f")), &Endpoint::Local, &p(d.path())), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    assert!(res.is_err(), "{res:?}");
+    assert_eq!(std::fs::read_to_string(d.path().join("f")).unwrap(), "data");
+
+    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&d.path().join("a")), &Endpoint::Local, &p(&d.path().join("a"))), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    assert!(res.is_err(), "{res:?}");
+    assert!(!d.path().join("a").join("a").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_remote_self_copy_is_rejected() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    std::fs::create_dir(fx.root().join("a")).unwrap();
+    let (res, _) = run_transfer(req(&r, "/a", &r, "/a"), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    assert!(res.is_err(), "{res:?}");
+    assert!(!fx.root().join("a").join("a").exists());
+}
+
+/// Creates a directory symlink, or returns false where the OS doesn't allow it
+/// (Windows without Developer Mode).
+fn symlink_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(windows)]
+    let r = std::os::windows::fs::symlink_dir(target, link);
+    #[cfg(unix)]
+    let r = std::os::unix::fs::symlink(target, link);
+    match r {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("skipping: cannot create symlinks here ({e})");
+            false
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn symlinked_dir_in_tree_is_skipped_not_fatal() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let t = fx.root().join("t");
+    std::fs::create_dir_all(t.join("real")).unwrap();
+    std::fs::write(t.join("real").join("file"), "f").unwrap();
+    if !symlink_dir(&t.join("real"), &t.join("link")) {
+        return;
+    }
+    let r = remote(&fx).await;
+    let local = tempfile::tempdir().unwrap();
+    let (res, _) = run_transfer(req(&r, "/t", &Endpoint::Local, &p(local.path())), OverwritePolicy::Ask, |_| panic!(), |_| {}).await;
+    let s = res.unwrap();
+    assert_eq!((s.files, s.skipped), (1, 1));
+    assert_eq!(std::fs::read_to_string(local.path().join("t").join("real").join("file")).unwrap(), "f");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_remote_dir_symlink_keeps_target() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    std::fs::create_dir(fx.root().join("real")).unwrap();
+    std::fs::write(fx.root().join("real").join("keep.txt"), "keep").unwrap();
+    if !symlink_dir(&fx.root().join("real"), &fx.root().join("link")) {
+        return;
+    }
+    let r = remote(&fx).await;
+    r.remove("/link", true).await.unwrap();
+    assert!(fx.root().join("real").join("keep.txt").exists());
+    assert!(std::fs::symlink_metadata(fx.root().join("link")).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn copy_directory_onto_file_errors() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    std::fs::write(fx.root().join("same"), "file").unwrap();
+    let local = tempfile::tempdir().unwrap();
+    std::fs::create_dir(local.path().join("same")).unwrap();
+    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&local.path().join("same")), &r, "/"), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    assert!(res.is_err());
+    assert_eq!(std::fs::read_to_string(fx.root().join("same")).unwrap(), "file");
+}

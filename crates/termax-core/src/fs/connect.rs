@@ -9,6 +9,10 @@ use russh_sftp::client::SftpSession;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
+/// Effectively unlimited: if ssh gives up it exits, which ends the handshake.
+const HANDSHAKE_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+const REQUEST_TIMEOUT_SECS: u64 = 10;
+
 /// How to start one `ssh` process.
 #[derive(Debug, Clone, Default)]
 pub struct SshLaunch {
@@ -62,7 +66,12 @@ pub async fn connect_sftp(launch: SshLaunch) -> Result<RemoteConn, String> {
     });
 
     let result = async {
-        let sftp = SftpSession::new(tokio::io::join(stdout, stdin)).await?;
+        // The SFTP INIT reply only arrives after ssh has authenticated, which can
+        // include a person typing a password or checking a host key. Don't time
+        // that out; use the normal per-request timeout afterwards.
+        let cfg = russh_sftp::client::Config { request_timeout_secs: HANDSHAKE_TIMEOUT_SECS, ..Default::default() };
+        let sftp = SftpSession::new_with_config(tokio::io::join(stdout, stdin), cfg).await?;
+        sftp.set_timeout(REQUEST_TIMEOUT_SECS);
         let home = sftp.canonicalize(launch.start_dir.clone().unwrap_or_else(|| ".".into())).await?;
         Ok::<_, russh_sftp::client::error::Error>((sftp, home))
     }

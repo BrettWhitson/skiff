@@ -12,6 +12,25 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::endpoint::Endpoint;
+use super::path::is_safe_name;
+
+/// True if `dst` is `src` itself or a path inside it.
+fn is_same_or_inside(ep: &Endpoint, dst: &str, src: &str) -> bool {
+    if ep.is_remote() {
+        let (d, s) = (dst.trim_end_matches('/'), src.trim_end_matches('/'));
+        return d == s || d.starts_with(&format!("{s}/")) || s.is_empty();
+    }
+    let canon = |p: &str| {
+        let p = std::path::Path::new(p);
+        // dst usually doesn't exist yet: canonicalize its parent.
+        match (p.parent(), p.file_name()) {
+            (Some(parent), Some(name)) => std::fs::canonicalize(parent).map(|c| c.join(name)),
+            _ => std::fs::canonicalize(p),
+        }
+        .unwrap_or_else(|_| p.to_path_buf())
+    };
+    canon(dst).starts_with(canon(src))
+}
 
 const CHUNK: usize = 256 * 1024;
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
@@ -113,8 +132,12 @@ impl Job {
         if !root.is_dir {
             self.total = Some(root.size);
         }
+        let root_dst = dst.join(&req.dst_dir, &root.name);
+        if src.same_as(dst) && is_same_or_inside(dst, &root_dst, &req.src_path) {
+            bail!("cannot copy {} onto or into itself", req.src_path);
+        }
         // (source path, is_dir, destination path)
-        let mut stack = vec![(req.src_path.clone(), root.is_dir, dst.join(&req.dst_dir, &root.name))];
+        let mut stack = vec![(req.src_path.clone(), root.is_dir, root_dst)];
         while let Some((s, is_dir, d)) = stack.pop() {
             if self.token.is_cancelled() {
                 self.summary.cancelled = true;
@@ -130,8 +153,15 @@ impl Job {
                 let mut children = src.list(&s).await?;
                 children.sort_by(|a, b| b.name.cmp(&a.name)); // popped in name order
                 for c in children {
+                    // Links to directories are not followed (no loops, no surprise
+                    // copies of whole trees), and names that aren't a single
+                    // ordinary path component are never written.
+                    if (c.is_symlink && c.is_dir) || !is_safe_name(&c.name) {
+                        self.summary.skipped += 1;
+                        continue;
+                    }
                     let child_dst = dst.join(&d, &c.name);
-                    stack.push((src.join(&s, &c.name), c.is_dir && !c.is_symlink, child_dst));
+                    stack.push((src.join(&s, &c.name), c.is_dir, child_dst));
                 }
                 continue;
             }

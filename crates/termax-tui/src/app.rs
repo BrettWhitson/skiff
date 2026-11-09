@@ -121,6 +121,8 @@ pub enum Modal {
 
 pub struct App {
     pub cfg: Config,
+    /// What `cfg` looked like when last loaded or saved; saves write only the difference.
+    cfg_saved: Config,
     pub cfg_path: PathBuf,
     pub theme: Theme,
     pub hosts: Vec<HostEntry>,
@@ -147,6 +149,7 @@ impl App {
         let (tx, rx) = unbounded_channel();
         let mut app = Self {
             theme: Theme::from_def(&theme::builtin()[0]).expect("builtin theme"),
+            cfg_saved: cfg.clone(),
             cfg,
             cfg_path,
             hosts: vec![],
@@ -234,8 +237,9 @@ impl App {
     }
 
     fn save_config(&mut self) {
-        if let Err(e) = self.cfg.save(&self.cfg_path) {
-            self.set_error(format!("saving config: {e:#}"));
+        match self.cfg.save(&self.cfg_saved, &self.cfg_path) {
+            Ok(()) => self.cfg_saved = self.cfg.clone(),
+            Err(e) => self.set_error(format!("saving config: {e:#}")),
         }
     }
 
@@ -477,6 +481,7 @@ impl App {
     fn reload_config(&mut self) {
         match Config::load_or_create(&self.cfg_path) {
             Ok(cfg) => {
+                self.cfg_saved = cfg.clone();
                 self.cfg = cfg;
                 self.apply_theme_name(&self.cfg.settings.theme.clone());
                 self.reload_hosts();

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use toml_edit::{DocumentMut, Item, Table};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, TableLike};
 
 use crate::theme::ThemeDef;
 
@@ -164,48 +164,81 @@ impl Config {
         Ok(toml::from_str(text)?)
     }
 
-    /// Writes only what differs from the file on disk, keeping its comments,
-    /// formatting and any keys termax doesn't know about.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    /// Writes the changes between `baseline` (what this front-end loaded or
+    /// last saved) and `self` into the file on disk. Everything else in the
+    /// file — comments, unknown keys, and changes made meanwhile by another
+    /// front-end — is kept.
+    pub fn save(&self, baseline: &Config, path: &Path) -> Result<()> {
         let existing = std::fs::read_to_string(path).unwrap_or_default();
         let mut doc: DocumentMut = existing.parse().context("parsing existing config")?;
-        // What the file currently means (defaults filled in), to decide what changed.
-        let old = toml::Value::try_from(Self::parse(&existing).unwrap_or_default())?;
+        let old = toml::Value::try_from(baseline)?;
         let new = toml::Value::try_from(self)?;
         let new_doc: DocumentMut = toml::to_string(self)?.parse()?;
-        let empty = toml::Table::new();
         let section = |v: &toml::Value, k: &str| v.get(k).and_then(|t| t.as_table()).cloned().unwrap_or_default();
 
         for name in ["settings", "gui", "keys"] {
             let (old_t, new_t) = (section(&old, name), section(&new, name));
-            let keys: std::collections::BTreeSet<&String> = old_t.keys().chain(new_t.keys()).collect();
-            for key in keys {
-                if old_t.get(key) == new_t.get(key) {
-                    continue;
-                }
-                if !doc.contains_table(name) {
-                    doc.insert(name, Item::Table(Table::new()));
-                }
-                let table = doc[name].as_table_mut().context("config section is not a table")?;
-                match new_t.get(key) {
-                    Some(_) => table[key.as_str()] = new_doc[name][key.as_str()].clone(),
-                    None => {
-                        table.remove(key);
+            if old_t == new_t {
+                continue;
+            }
+            if !doc.contains_table(name) {
+                doc.insert(name, Item::Table(Table::new()));
+            }
+            let table = doc[name].as_table_like_mut().context("config section is not a table")?;
+            let new_table = new_doc.get(name).and_then(|i| i.as_table_like());
+            apply_key_changes(table, &old_t, &new_t, new_table);
+        }
+
+        for name in ["connection", "theme"] {
+            let list = |v: &toml::Value| -> Vec<toml::Table> {
+                v.get(name)
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.iter().filter_map(|t| t.as_table().cloned()).collect())
+                    .unwrap_or_default()
+            };
+            let (old_l, new_l) = (list(&old), list(&new));
+            if old_l == new_l {
+                continue;
+            }
+            let key = |t: &toml::Table| t.get("name").and_then(|n| n.as_str()).map(str::to_string);
+            let new_items: Vec<Table> = new_doc
+                .get(name)
+                .and_then(|i| i.as_array_of_tables())
+                .map(|a| a.iter().cloned().collect())
+                .unwrap_or_default();
+            if !doc.contains_array_of_tables(name) {
+                doc.insert(name, Item::ArrayOfTables(ArrayOfTables::new()));
+            }
+            let aot = doc[name].as_array_of_tables_mut().context("config array is not an array of tables")?;
+            let find = |aot: &ArrayOfTables, n: &str| aot.iter().position(|t| t.get("name").and_then(|v| v.as_str()) == Some(n));
+
+            // Removed here → remove from the file.
+            for o in &old_l {
+                let Some(n) = key(o) else { continue };
+                if !new_l.iter().any(|t| key(t).as_deref() == Some(n.as_str())) {
+                    if let Some(i) = find(aot, &n) {
+                        aot.remove(i);
                     }
                 }
             }
-        }
-        for name in ["connection", "theme"] {
-            let old_v = old.get(name).unwrap_or(&toml::Value::Table(empty.clone())).clone();
-            let new_v = new.get(name).unwrap_or(&toml::Value::Table(empty.clone())).clone();
-            if old_v == new_v {
-                continue;
-            }
-            match new_doc.get(name) {
-                Some(item) => doc[name] = item.clone(),
-                None => {
-                    doc.remove(name);
+            // Added or changed here → update just those keys (or append).
+            for (i, t) in new_l.iter().enumerate() {
+                let Some(n) = key(t) else { continue };
+                let before = old_l.iter().find(|o| key(o).as_deref() == Some(n.as_str()));
+                if before == Some(t) {
+                    continue;
                 }
+                match find(aot, &n) {
+                    Some(pos) => {
+                        let target = aot.get_mut(pos).expect("index from find");
+                        let empty = toml::Table::new();
+                        apply_key_changes(target, before.unwrap_or(&empty), t, new_items.get(i).map(|t| t as &dyn TableLike));
+                    }
+                    None => aot.push(new_items[i].clone()),
+                }
+            }
+            if aot.is_empty() {
+                doc.remove(name);
             }
         }
 
@@ -217,6 +250,31 @@ impl Config {
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
+    }
+}
+
+/// Sets or removes, in `target`, each key whose value differs between `old`
+/// and `new`. Values come from `new_items` (the serialized new config).
+fn apply_key_changes(target: &mut dyn TableLike, old: &toml::Table, new: &toml::Table, new_items: Option<&dyn TableLike>) {
+    let keys: std::collections::BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+    for key in keys {
+        if old.get(key) == new.get(key) {
+            continue;
+        }
+        match new_items.and_then(|t| t.get(key)) {
+            Some(item) if new.contains_key(key) => {
+                // Keep the existing key (and its leading comment) when it's there.
+                match target.get_mut(key) {
+                    Some(slot) => *slot = item.clone(),
+                    None => {
+                        target.insert(key, item.clone());
+                    }
+                }
+            }
+            _ => {
+                target.remove(key);
+            }
+        }
     }
 }
 
@@ -262,9 +320,10 @@ mod tests {
     #[test]
     fn save_preserves_comments_and_unknown_keys() {
         let (_d, path) = write_tmp("# top\n[settings]\n# pick one\ntheme = \"nord\"\nfuture_key = 1\n");
-        let mut cfg = Config::load_or_create(&path).unwrap();
+        let base = Config::load_or_create(&path).unwrap();
+        let mut cfg = base.clone();
         cfg.settings.theme = "dracula".into();
-        cfg.save(&path).unwrap();
+        cfg.save(&base, &path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# top"), "{text}");
         assert!(text.contains("# pick one"), "{text}");
@@ -288,21 +347,24 @@ mod tests {
     fn save_unchanged_is_noop() {
         let (_d, path) = write_tmp(TEMPLATE);
         let before = std::fs::read(&path).unwrap();
-        Config::load_or_create(&path).unwrap().save(&path).unwrap();
+        let c = Config::load_or_create(&path).unwrap();
+        c.save(&c, &path).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]
     fn connections_array_replaced_on_change() {
         let (_d, path) = write_tmp(TEMPLATE);
-        let mut cfg = Config::load_or_create(&path).unwrap();
+        let base = Config::load_or_create(&path).unwrap();
+        let mut cfg = base.clone();
         cfg.connections.push(Connection { name: "a".into(), host: "h".into(), port: Some(2), ..Default::default() });
         cfg.keys.insert("quick_switcher".into(), "Ctrl+Shift+K".into());
         cfg.gui.font_size = 16.0;
-        cfg.save(&path).unwrap();
+        cfg.save(&base, &path).unwrap();
         assert_eq!(Config::load_or_create(&path).unwrap(), cfg);
+        let base = cfg.clone();
         cfg.connections.clear();
-        cfg.save(&path).unwrap();
+        cfg.save(&base, &path).unwrap();
         assert_eq!(Config::load_or_create(&path).unwrap(), cfg);
     }
 
@@ -317,6 +379,54 @@ mod tests {
         f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
         assert!(w.poll());
         assert!(!w.poll());
+    }
+
+    #[test]
+    fn save_keeps_other_frontends_changes() {
+        let (_d, path) = write_tmp("[settings]\ntheme = \"nord\"\n");
+        let a = Config::load_or_create(&path).unwrap();
+        let b = Config::load_or_create(&path).unwrap();
+        let mut b2 = b.clone();
+        b2.settings.theme = "dracula".into();
+        b2.save(&b, &path).unwrap();
+        let mut a2 = a.clone();
+        a2.gui.font_size = 16.0;
+        a2.save(&a, &path).unwrap();
+        let now = Config::load_or_create(&path).unwrap();
+        assert_eq!(now.settings.theme, "dracula");
+        assert_eq!(now.gui.font_size, 16.0);
+    }
+
+    const TWO_CONNS: &str = "[[connection]]\nname = \"a\"\nhost = \"ha\"\n\n[[connection]]\n# note b\nname = \"b\"\nhost = \"hb\"\nfuture = 1\n";
+
+    #[test]
+    fn connection_edit_keeps_comments_in_other_blocks() {
+        let (_d, path) = write_tmp(TWO_CONNS);
+        let base = Config::load_or_create(&path).unwrap();
+        let mut cfg = base.clone();
+        cfg.connections[0].host = "ha2".into();
+        cfg.save(&base, &path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# note b"), "{text}");
+        assert!(text.contains("future = 1"), "{text}");
+        assert_eq!(Config::load_or_create(&path).unwrap().connections[0].host, "ha2");
+    }
+
+    #[test]
+    fn concurrent_connection_add_survives() {
+        let (_d, path) = write_tmp(TWO_CONNS);
+        let a = Config::load_or_create(&path).unwrap();
+        let b = Config::load_or_create(&path).unwrap();
+        let mut b2 = b.clone();
+        b2.connections.push(Connection { name: "c".into(), host: "hc".into(), ..Default::default() });
+        b2.save(&b, &path).unwrap();
+        let mut a2 = a.clone();
+        a2.connections[1].host = "hb2".into();
+        a2.connections.retain(|c| c.name != "a");
+        a2.save(&a, &path).unwrap();
+        let names: Vec<(String, String)> =
+            Config::load_or_create(&path).unwrap().connections.into_iter().map(|c| (c.name, c.host)).collect();
+        assert_eq!(names, [("b".into(), "hb2".into()), ("c".into(), "hc".into())]);
     }
 
     #[test]
