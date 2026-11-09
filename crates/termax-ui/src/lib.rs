@@ -8,3 +8,5 @@
 pub mod canvas;
 pub mod color;
 pub mod geom;
+
+pub mod text;
