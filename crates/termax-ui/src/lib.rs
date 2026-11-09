@@ -8,6 +8,8 @@
 pub mod canvas;
 pub mod clipboard;
 pub mod color;
+#[doc(hidden)]
+pub mod demo;
 pub mod display;
 pub mod geom;
 pub mod input;
