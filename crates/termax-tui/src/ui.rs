@@ -8,10 +8,10 @@ use ratatui::Frame;
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::app::{App, Modal, TabKind, EDITOR_LABELS};
-use crate::hosts::Source;
+use termax_core::hosts::Source;
 use crate::input::TextInput;
-use crate::sftp::{human_size, Pane, SftpTab, Side, Status, TransferState};
-use crate::theme::Theme;
+use crate::sftp_tab::{human_size, Pane, SftpTab, Side, Status, TransferState};
+use crate::tui_theme::Theme;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();

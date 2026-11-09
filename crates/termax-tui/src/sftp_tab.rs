@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use russh_sftp::client::SftpSession;
@@ -14,17 +13,9 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::app::Msg;
+pub use termax_core::fs::{self, human_size, FileEntry};
 
 const CHUNK: usize = 256 * 1024;
-
-#[derive(Debug, Clone)]
-pub struct FileEntry {
-    pub name: String,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub size: u64,
-    pub modified: Option<SystemTime>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -599,70 +590,16 @@ fn clean_local(p: &Path) -> String {
 }
 
 pub fn join(side: Side, base: &str, name: &str) -> String {
-    match side {
-        Side::Local => Path::new(base).join(name).display().to_string(),
-        Side::Remote => {
-            if name.starts_with('/') {
-                name.to_string()
-            } else if base.ends_with('/') {
-                format!("{base}{name}")
-            } else {
-                format!("{base}/{name}")
-            }
-        }
-    }
+    fs::join(side == Side::Remote, base, name)
 }
 
-/// Returns `(parent, current_dir_name)`, or `None` at the root.
 pub fn parent(side: Side, path: &str) -> Option<(String, String)> {
-    match side {
-        Side::Local => {
-            let p = Path::new(path);
-            let name = p.file_name()?.to_string_lossy().to_string();
-            Some((p.parent()?.display().to_string(), name))
-        }
-        Side::Remote => {
-            let trimmed = path.trim_end_matches('/');
-            if trimmed.is_empty() {
-                return None;
-            }
-            let (parent, name) = trimmed.rsplit_once('/')?;
-            let parent = if parent.is_empty() { "/" } else { parent };
-            Some((parent.to_string(), name.to_string()))
-        }
-    }
-}
-
-pub fn human_size(n: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    if u == 0 { format!("{n}B") } else { format!("{v:.1}{}", UNITS[u]) }
+    fs::parent(side == Side::Remote, path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn remote_paths() {
-        assert_eq!(join(Side::Remote, "/", "etc"), "/etc");
-        assert_eq!(join(Side::Remote, "/home/u", "x"), "/home/u/x");
-        assert_eq!(parent(Side::Remote, "/home/u"), Some(("/home".into(), "u".into())));
-        assert_eq!(parent(Side::Remote, "/home"), Some(("/".into(), "home".into())));
-        assert_eq!(parent(Side::Remote, "/"), None);
-    }
-
-    #[test]
-    fn sizes() {
-        assert_eq!(human_size(512), "512B");
-        assert_eq!(human_size(2048), "2.0K");
-        assert_eq!(human_size(5 * 1024 * 1024), "5.0M");
-    }
 
     #[test]
     fn pane_sorting_and_hidden() {

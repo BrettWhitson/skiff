@@ -1,11 +1,7 @@
 mod app;
-mod config;
-mod hosts;
 mod input;
-mod sftp;
-mod sshconfig;
-mod terminal;
-mod theme;
+mod sftp_tab;
+mod tui_theme;
 mod ui;
 
 use std::time::Duration;
@@ -15,7 +11,7 @@ use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
 
 use crate::app::App;
-use crate::config::Config;
+use termax_core::config::Config;
 
 fn main() -> Result<()> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {

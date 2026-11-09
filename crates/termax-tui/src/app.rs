@@ -7,13 +7,14 @@ use russh_sftp::client::SftpSession;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use crate::config::{Config, Connection};
-use crate::hosts::{self, HostEntry, Source};
+use termax_core::config::{Config, Connection};
+use termax_core::hosts::{self, HostEntry, Source};
 use crate::input::TextInput;
-use crate::sftp::{FileEntry, FileOp, SftpTab, Side, Status};
-use crate::sshconfig;
-use crate::terminal::{encode_key, TerminalSession};
-use crate::theme::{self, Theme, ThemeDef};
+use crate::sftp_tab::{FileEntry, FileOp, SftpTab, Side, Status};
+use termax_core::sshconfig;
+use termax_core::terminal::{encode_key, TerminalSession};
+use crate::tui_theme::Theme;
+use termax_core::theme::{self, ThemeDef};
 
 /// Results from background tasks, delivered to the UI thread.
 pub enum Msg {

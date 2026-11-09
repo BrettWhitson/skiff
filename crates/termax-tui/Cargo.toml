@@ -1,0 +1,21 @@
+[package]
+name = "termax-tui"
+version.workspace = true
+edition.workspace = true
+description = "Terminal UI front-end for termax"
+
+[[bin]]
+name = "termax"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+russh-sftp.workspace = true
+serde.workspace = true
+shell-words.workspace = true
+tokio.workspace = true
+tui-term.workspace = true
+vt100.workspace = true
+termax-core.workspace = true

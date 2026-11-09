@@ -1,9 +1,12 @@
-[package]
-name = "termax"
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0.104"
 crossterm = "0.29.0"
 directories = "6.0.0"
@@ -16,3 +19,4 @@ tokio = { version = "1.54.1", features = ["full"] }
 toml = "1.2.1"
 tui-term = "0.3.4"
 vt100 = "0.16"
+termax-core = { path = "crates/termax-core" }

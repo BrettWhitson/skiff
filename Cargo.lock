@@ -1662,19 +1662,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "termax"
+name = "termax-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
  "directories",
  "portable-pty",
- "ratatui",
  "russh-sftp",
  "serde",
  "shell-words",
  "tokio",
  "toml",
+ "vt100",
+]
+
+[[package]]
+name = "termax-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "ratatui",
+ "russh-sftp",
+ "serde",
+ "shell-words",
+ "termax-core",
+ "tokio",
  "tui-term",
  "vt100",
 ]

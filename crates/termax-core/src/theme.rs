@@ -1,6 +1,6 @@
-use std::str::FromStr;
+//! Theme definitions shared by all front-ends. Each front-end turns a
+//! [`ThemeDef`] into its own color type.
 
-use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
 /// A theme as written in the config file. Colors are `#rrggbb`, a color name
@@ -19,62 +19,6 @@ pub struct ThemeDef {
     pub success: String,
     pub warning: String,
     pub error: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Theme {
-    pub name: String,
-    pub bg: Color,
-    pub fg: Color,
-    pub accent: Color,
-    pub muted: Color,
-    pub border: Color,
-    pub selection_bg: Color,
-    pub selection_fg: Color,
-    pub success: Color,
-    pub warning: Color,
-    pub error: Color,
-}
-
-impl Theme {
-    pub fn from_def(def: &ThemeDef) -> Result<Self, String> {
-        let c = |field: &str, v: &str| {
-            Color::from_str(v.trim())
-                .map_err(|_| format!("theme '{}': invalid color for {field}: '{v}'", def.name))
-        };
-        Ok(Self {
-            name: def.name.clone(),
-            bg: c("bg", &def.bg)?,
-            fg: c("fg", &def.fg)?,
-            accent: c("accent", &def.accent)?,
-            muted: c("muted", &def.muted)?,
-            border: c("border", &def.border)?,
-            selection_bg: c("selection_bg", &def.selection_bg)?,
-            selection_fg: c("selection_fg", &def.selection_fg)?,
-            success: c("success", &def.success)?,
-            warning: c("warning", &def.warning)?,
-            error: c("error", &def.error)?,
-        })
-    }
-
-    pub fn base(&self) -> Style {
-        Style::new().fg(self.fg).bg(self.bg)
-    }
-    pub fn muted(&self) -> Style {
-        Style::new().fg(self.muted)
-    }
-    pub fn accent(&self) -> Style {
-        Style::new().fg(self.accent)
-    }
-    pub fn title(&self) -> Style {
-        Style::new().fg(self.accent).add_modifier(Modifier::BOLD)
-    }
-    pub fn border(&self, focused: bool) -> Style {
-        Style::new().fg(if focused { self.accent } else { self.border })
-    }
-    pub fn selected(&self) -> Style {
-        Style::new().fg(self.selection_fg).bg(self.selection_bg).add_modifier(Modifier::BOLD)
-    }
 }
 
 fn def(name: &str, c: [&str; 10]) -> ThemeDef {
@@ -107,21 +51,64 @@ pub fn builtin() -> Vec<ThemeDef> {
     ]
 }
 
+/// A front-end-agnostic color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rgb {
+    /// The front-end's default (the host terminal's color in the TUI).
+    Reset,
+    Rgb(u8, u8, u8),
+    /// An ANSI palette index (0-15 named colors, 16-255 extended).
+    Indexed(u8),
+}
+
+const NAMES: [&str; 16] = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "gray",
+    "darkgray", "lightred", "lightgreen", "lightyellow", "lightblue", "lightmagenta", "lightcyan", "white",
+];
+
+/// Parses a config color string (see [`ThemeDef`]).
+pub fn parse_color(s: &str) -> Option<Rgb> {
+    let s = s.trim().to_ascii_lowercase().replace(['-', '_', ' '], "");
+    if s == "reset" {
+        return Some(Rgb::Reset);
+    }
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() != 6 {
+            return None;
+        }
+        let v = u32::from_str_radix(hex, 16).ok()?;
+        return Some(Rgb::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8));
+    }
+    if let Ok(i) = s.parse::<u8>() {
+        return Some(Rgb::Indexed(i));
+    }
+    let s = match s.as_str() {
+        "grey" => "gray",
+        "darkgrey" => "darkgray",
+        other => other,
+    };
+    NAMES.iter().position(|n| *n == s).map(|i| Rgb::Indexed(i as u8))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn builtins_parse() {
-        for d in builtin() {
-            Theme::from_def(&d).unwrap();
-        }
+    fn parse_color_formats() {
+        assert_eq!(parse_color("#ff0080"), Some(Rgb::Rgb(255, 0, 128)));
+        assert_eq!(parse_color("reset"), Some(Rgb::Reset));
+        assert_eq!(parse_color("12"), Some(Rgb::Indexed(12)));
+        assert_eq!(parse_color("lightblue"), Some(Rgb::Indexed(12)));
+        assert_eq!(parse_color("nope"), None);
     }
 
     #[test]
-    fn bad_color_is_reported() {
-        let mut d = builtin().remove(0);
-        d.accent = "notacolor".into();
-        assert!(Theme::from_def(&d).unwrap_err().contains("accent"));
+    fn builtins_parse() {
+        for d in builtin() {
+            for c in [&d.bg, &d.fg, &d.accent, &d.muted, &d.border, &d.selection_bg, &d.selection_fg, &d.success, &d.warning, &d.error] {
+                assert!(parse_color(c).is_some(), "{}: {c}", d.name);
+            }
+        }
     }
 }
