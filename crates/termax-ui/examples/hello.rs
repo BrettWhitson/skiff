@@ -1,0 +1,56 @@
+//! Smallest termax-ui app: a window showing its size and the last event.
+//! `cargo run -p termax-ui --example hello`
+
+use termax_ui::color::Color;
+use termax_ui::display::Prim;
+use termax_ui::geom::{Point, Rect};
+use termax_ui::shell::{App, FrameCtx, WindowOptions, run};
+use termax_ui::text::FontKind;
+use termax_ui::text::layout::{line_height, measure};
+
+#[derive(Default)]
+struct Hello {
+    last: String,
+    frames: u64,
+}
+
+impl App for Hello {
+    fn frame(&mut self, ctx: &mut FrameCtx) {
+        self.frames += 1;
+        if let Some(e) = ctx.events.last() {
+            self.last = format!("{e:?}");
+        }
+        ctx.background = Color::hex(0x1e1f29);
+        let s = ctx.scale;
+        let px = 16.0 * s;
+        let pad = (24.0 * s) as i32;
+        let card = Rect::new(pad, pad, ctx.size.w - 2 * pad, (120.0 * s) as i32);
+        ctx.list.push(Prim::Rect { rect: card, color: Color::hex(0x2b2d3a), radius: 8.0 * s });
+        ctx.list.push(Prim::Border { rect: card, color: Color::hex(0x6272a4), width: 1, radius: 8.0 * s });
+        let lh = line_height(ctx.fonts, FontKind::Ui, px) as i32;
+        let lines = [
+            format!("termax-ui · {}×{} px · scale {:.2} · frame {}", ctx.size.w, ctx.size.h, ctx.scale, self.frames),
+            format!("last event: {}", self.last),
+        ];
+        for (i, text) in lines.iter().enumerate() {
+            let origin = Point::new(card.x + pad / 2, card.y + pad / 2 + i as i32 * (lh + 6));
+            let font = if i == 0 { FontKind::Ui } else { FontKind::Mono };
+            let w = measure(ctx.fonts, ctx.cache, font, text, px).ceil() as i32;
+            ctx.list.push(Prim::PushClip(card.inset(2)));
+            ctx.list.push(Prim::Text {
+                origin,
+                text: text.clone(),
+                font,
+                px,
+                color: Color::hex(0xf8f8f2),
+                bounds: Rect::new(origin.x, origin.y, w.max(1), lh),
+            });
+            ctx.list.push(Prim::PopClip);
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let fonts = termax_ui::text::Fonts::load(None, None)?;
+    run(Hello::default(), WindowOptions { title: "termax-ui hello".into(), size: (720, 240), fonts })
+}
