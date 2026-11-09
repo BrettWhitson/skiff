@@ -113,7 +113,7 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
             let text = event.text.as_ref().map(|t| t.to_string()).filter(|t| t.chars().all(|c| !c.is_control()));
             let mut out = vec![Event::KeyDown { key: key.clone(), mods, text: text.clone() }];
             if let Some(t) = text {
-                if !mods.ctrl && !mods.logo && key != Key::Enter && key != Key::Tab {
+                if (!mods.ctrl || mods.alt) && !mods.logo && key != Key::Enter && key != Key::Tab {
                     out.push(Event::Text(t));
                 }
             }
