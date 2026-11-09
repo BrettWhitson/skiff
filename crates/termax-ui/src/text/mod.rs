@@ -172,5 +172,30 @@ fn load_stack(kind: FontKind, explicit: Option<&Path>) -> Result<FontStack> {
     Ok(FontStack { primary, fallbacks: fonts })
 }
 
+/// A deterministic stand-in font (every glyph a 6×10 block, 8px advance;
+/// U+10FFFD missing) so toolkit and app tests never depend on installed fonts.
+pub struct BlockFont;
+
+impl GlyphRasterizer for BlockFont {
+    fn has_glyph(&self, c: char) -> bool {
+        c != '\u{10FFFD}'
+    }
+    fn advance(&self, _: char, _: f32) -> f32 {
+        8.0
+    }
+    fn rasterize(&self, _: char, _: f32) -> GlyphBitmap {
+        GlyphBitmap { width: 6, height: 10, xmin: 1, ymin: 0, advance: 8.0, coverage: vec![200; 60] }
+    }
+    fn line_metrics(&self, _: f32) -> LineMetrics {
+        LineMetrics { ascent: 12.0, descent: -4.0, line_gap: 0.0 }
+    }
+}
+
+/// `Fonts` built from `BlockFont` (for tests).
+pub fn test_fonts() -> Fonts {
+    let f: Arc<dyn GlyphRasterizer> = Arc::new(BlockFont);
+    Fonts::new(FontStack::new(f.clone()), FontStack::new(f))
+}
+
 #[cfg(test)]
 mod tests;

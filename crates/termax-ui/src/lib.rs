@@ -6,8 +6,11 @@
 //! focus and every widget are implemented here.
 
 pub mod canvas;
+pub mod clipboard;
 pub mod color;
 pub mod display;
 pub mod geom;
+pub mod input;
+pub mod shell;
 
 pub mod text;
