@@ -77,8 +77,8 @@ error = "#f7768e"
 ```
 
 Hosts from `~/.ssh/config` are read-only in termax. Pressing `e` on one creates
-an editable termax copy. Saving from the app rewrites the config file, so any
-comments you add to it by hand are lost.
+an editable termax copy. Saving from the app only changes the settings you
+edited; comments and formatting in the file are kept.
 
 Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`,
 `nord`, `gruvbox`, `solarized-dark`, `catppuccin`, `paper`.
