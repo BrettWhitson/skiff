@@ -1,0 +1,8 @@
+[package]
+name = "termax-ui"
+version.workspace = true
+edition.workspace = true
+description = "termax's from-scratch GUI toolkit: rasterizer, text, widgets, window shell"
+
+[dependencies]
+anyhow.workspace = true
