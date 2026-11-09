@@ -7,6 +7,7 @@
 
 pub mod canvas;
 pub mod color;
+pub mod display;
 pub mod geom;
 
 pub mod text;
