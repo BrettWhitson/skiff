@@ -1,0 +1,104 @@
+//! Askpass tests: ssh asks termax for passwords / host-key confirmation.
+//! Only ever against the in-process test server on 127.0.0.1.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use termax_core::askpass::{AskKind, Broker};
+use termax_core::fs::connect::{connect_sftp, SshLaunch};
+use termax_testserver::{FixtureAuth, TestFixture};
+
+fn helper() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_askpass-shim"))
+}
+
+/// Starts a broker whose requests are answered by `answer(kind, prompt)`.
+/// Returns the broker and a log of (kind, prompt) seen.
+fn broker(answer: impl Fn(AskKind, &str) -> Option<String> + Send + 'static) -> (Broker, Arc<Mutex<Vec<(AskKind, String)>>>) {
+    let (broker, mut rx) = Broker::start(&tokio::runtime::Handle::current(), helper()).unwrap();
+    let log = Arc::new(Mutex::new(vec![]));
+    let log2 = log.clone();
+    tokio::spawn(async move {
+        while let Some(req) = rx.recv().await {
+            log2.lock().unwrap().push((req.kind, req.prompt.clone()));
+            let _ = req.reply.send(answer(req.kind, &req.prompt));
+        }
+    });
+    (broker, log)
+}
+
+fn launch(pre: Vec<String>, fx: &TestFixture, broker: &Broker, tag: &str) -> SshLaunch {
+    let mut args = pre;
+    args.extend(fx.ssh_options());
+    args.extend(["-s".into(), fx.destination(), "sftp".into()]);
+    SshLaunch { program: "ssh".into(), args, env: broker.env(tag), start_dir: None }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn password_prompt_roundtrip() {
+    let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
+    let (b, log) = broker(|kind, prompt| {
+        assert_eq!(kind, AskKind::Secret);
+        assert!(prompt.to_lowercase().contains("password"), "{prompt}");
+        Some("s3cret".into())
+    });
+    let conn = connect_sftp(launch(vec![], &fx, &b, "t1")).await.expect("connect with askpass");
+    assert_eq!(conn.home, "/");
+    assert_eq!(log.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn askpass_cancel_fails_fast() {
+    let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
+    let (b, _log) = broker(|_, _| None);
+    let started = Instant::now();
+    let res = connect_sftp(launch(vec![], &fx, &b, "t2")).await;
+    assert!(res.is_err());
+    assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_password_fails() {
+    let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
+    let (b, log) = broker(|_, _| Some("nope".into()));
+    let res = connect_sftp(launch(vec![], &fx, &b, "t3")).await;
+    let err = res.err().expect("must fail");
+    assert!(err.contains("Permission denied"), "{err}");
+    assert!(!log.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn host_key_confirm() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let kh = empty.path().join("known_hosts");
+    std::fs::write(&kh, "").unwrap();
+    // First occurrence of an option wins in ssh, so these override the fixture's.
+    let pre = vec![
+        "-o".into(),
+        "StrictHostKeyChecking=ask".into(),
+        "-o".into(),
+        format!("UserKnownHostsFile={}", kh.display()),
+    ];
+    let (b, log) = broker(|kind, _| {
+        assert_eq!(kind, AskKind::Confirm);
+        Some("yes".into())
+    });
+    connect_sftp(launch(pre, &fx, &b, "t4")).await.expect("connect after confirming host key");
+    let seen = log.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].1.contains("(yes/no"), "{}", seen[0].1);
+    assert!(std::fs::read_to_string(&kh).unwrap().contains("ssh-ed25519"));
+}
+
+#[test]
+fn env_names_helper_and_endpoint() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (b, _rx) = Broker::start(rt.handle(), helper()).unwrap();
+    let env: std::collections::HashMap<_, _> = b.env("tagX").into_iter().collect();
+    assert_eq!(env["SSH_ASKPASS"], helper().display().to_string());
+    assert_eq!(env["SSH_ASKPASS_REQUIRE"], "force");
+    assert_eq!(env["TERMAX_ASKPASS_TAG"], "tagX");
+    assert!(!env["TERMAX_ASKPASS_ENDPOINT"].is_empty());
+}
