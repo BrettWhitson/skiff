@@ -55,6 +55,20 @@ pub enum MouseButton {
     Other(u16),
 }
 
+/// Mouse cursor shapes an app can ask for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum CursorIcon {
+    #[default]
+    Default,
+    Pointer,
+    Text,
+    ResizeH,
+    ResizeV,
+    Grab,
+    Grabbing,
+    Wait,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     KeyDown { key: Key, mods: Modifiers, text: Option<String> },

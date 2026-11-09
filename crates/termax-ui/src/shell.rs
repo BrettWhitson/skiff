@@ -20,7 +20,7 @@ use crate::color::Color;
 use crate::display::{DisplayList, TileRenderer};
 use crate::geom::{Point, Rect};
 pub use crate::geom::Size;
-use crate::input::{Event, Key, Modifiers, MouseButton, map_char_key, map_named_key};
+use crate::input::{CursorIcon, Event, Key, Modifiers, MouseButton, map_char_key, map_named_key};
 use crate::text::Fonts;
 use crate::text::cache::GlyphCache;
 
@@ -40,6 +40,7 @@ pub struct FrameCtx<'a> {
     pub quit: bool,
     /// Background painted beneath the display list.
     pub background: Color,
+    pub cursor: CursorIcon,
 }
 
 pub trait App {
@@ -162,7 +163,7 @@ fn frame_once(
     fonts: &Fonts,
     cache: &mut GlyphCache,
     clipboard: &mut dyn Clipboard,
-) -> (Vec<Rect>, Option<Duration>, Option<String>, bool) {
+) -> FrameOut {
     list.clear();
     let mut ctx = FrameCtx {
         events,
@@ -176,11 +177,35 @@ fn frame_once(
         title: None,
         quit: false,
         background: Color::BLACK,
+        cursor: CursorIcon::Default,
     };
     app.frame(&mut ctx);
-    let (redraw, title, quit, bg) = (ctx.request_redraw_in, ctx.title.take(), ctx.quit, ctx.background);
+    let (redraw_in, title, quit, bg, cursor) =
+        (ctx.request_redraw_in, ctx.title.take(), ctx.quit, ctx.background, ctx.cursor);
     let damage = renderer.render(list, canvas, fonts, cache, bg);
-    (damage, redraw, title, quit)
+    FrameOut { damage, redraw_in, title, quit, cursor }
+}
+
+struct FrameOut {
+    damage: Vec<Rect>,
+    redraw_in: Option<Duration>,
+    title: Option<String>,
+    quit: bool,
+    cursor: CursorIcon,
+}
+
+fn winit_cursor(c: CursorIcon) -> winit::window::CursorIcon {
+    use winit::window::CursorIcon as W;
+    match c {
+        CursorIcon::Default => W::Default,
+        CursorIcon::Pointer => W::Pointer,
+        CursorIcon::Text => W::Text,
+        CursorIcon::ResizeH => W::EwResize,
+        CursorIcon::ResizeV => W::NsResize,
+        CursorIcon::Grab => W::Grab,
+        CursorIcon::Grabbing => W::Grabbing,
+        CursorIcon::Wait => W::Wait,
+    }
 }
 
 /// Runs `app` headlessly for one frame per entry in `frames` and returns
@@ -218,6 +243,7 @@ struct Shell<A: App> {
     redraw_at: Option<Instant>,
     requested: bool,
     os_redraw: bool,
+    cursor: CursorIcon,
     error: Option<anyhow::Error>,
 }
 
@@ -251,7 +277,7 @@ impl<A: App> Shell<A> {
             self.canvas.resize(w, h);
         }
         let events = std::mem::take(&mut self.pending);
-        let (damage, redraw_in, title, quit) = frame_once(
+        let FrameOut { damage, redraw_in, title, quit, cursor } = frame_once(
             &mut self.app,
             events,
             &mut self.canvas,
@@ -264,6 +290,10 @@ impl<A: App> Shell<A> {
         );
         if let Some(t) = title {
             gfx.window.set_title(&t);
+        }
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            gfx.window.set_cursor(winit_cursor(cursor));
         }
         if quit {
             el.exit();
@@ -392,6 +422,7 @@ pub fn run_with_waker<A: App + 'static>(make: impl FnOnce(Waker) -> A, opts: Win
         redraw_at: None,
         requested: false,
         os_redraw: false,
+        cursor: CursorIcon::Default,
         error: None,
     };
     event_loop.run_app(&mut shell).context("event loop")?;

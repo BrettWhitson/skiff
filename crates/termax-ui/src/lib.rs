@@ -11,6 +11,9 @@ pub mod color;
 pub mod display;
 pub mod geom;
 pub mod input;
+pub mod layout;
 pub mod shell;
+pub mod style;
 
 pub mod text;
+pub mod ui;
