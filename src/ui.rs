@@ -1,0 +1,493 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::Frame;
+use tui_term::widget::{Cursor, PseudoTerminal};
+
+use crate::app::{App, Modal, TabKind, EDITOR_LABELS};
+use crate::hosts::Source;
+use crate::input::TextInput;
+use crate::sftp::{human_size, Pane, SftpTab, Side, Status, TransferState};
+use crate::theme::Theme;
+
+pub fn draw(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    f.render_widget(Block::new().style(app.theme.base()), area);
+    let [tabs_area, body, status_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
+
+    draw_tab_bar(f, app, tabs_area);
+    let active = app.active;
+    match &app.tabs[active].kind {
+        TabKind::Hosts => draw_hosts(f, app, body),
+        TabKind::Terminal(_) => draw_terminal(f, app, body),
+        TabKind::Sftp(_) => draw_sftp(f, app, body),
+    }
+    draw_status(f, app, status_area);
+    draw_modal(f, app, area);
+}
+
+fn block<'a>(t: &Theme, title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(t.border(focused))
+        .title(title.into().style(if focused { t.title() } else { t.muted() }))
+        .style(t.base())
+}
+
+fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let mut spans = vec![Span::styled(" termax ", t.title()), Span::styled("│", t.muted())];
+    for (i, tab) in app.tabs.iter().enumerate() {
+        let marker = match &tab.kind {
+            TabKind::Terminal(_) => "",
+            TabKind::Sftp(s) if matches!(s.status, Status::Failed(_)) => " ✗",
+            _ => "",
+        };
+        let label = format!(" {}:{}{marker} ", i + 1, tab.title);
+        let style = if i == app.active { t.selected() } else { t.muted() };
+        spans.push(Span::styled(label, style));
+        spans.push(Span::styled("│", t.muted()));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)).style(t.base()), area);
+}
+
+fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let line = if let Some((msg, is_err, _)) = &app.status {
+        Line::from(Span::styled(format!(" {msg}"), Style::new().fg(if *is_err { t.error } else { t.success })))
+    } else {
+        let hints = match &app.tabs[app.active].kind {
+            TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear",
+            TabKind::Hosts => "Enter ssh · s sftp · / filter · n new · e edit · d delete · t theme · ? help · q quit",
+            TabKind::Terminal(_) => "Alt+1-9 tabs · Alt+←/→ cycle · Alt+W close · Shift+PgUp/PgDn scroll · Alt+H help",
+            TabKind::Sftp(_) => "Tab pane · Enter open · Bksp up · c copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh",
+        };
+        Line::from(Span::styled(format!(" {hints}"), t.muted()))
+    };
+    f.render_widget(Paragraph::new(line).style(t.base()), area);
+}
+
+// ---------------------------------------------------------------- hosts
+
+fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = app.theme.clone();
+    let [left, right] = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
+
+    let title = format!(" Hosts ({}/{}) ", app.filtered.len(), app.hosts.len());
+    let outer = block(&t, title, true);
+    let inner = outer.inner(left);
+    f.render_widget(outer, left);
+    let [filter_area, list_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+
+    let filter_style = if app.filtering { t.accent() } else { t.muted() };
+    let filter_text = if app.filter.value.is_empty() && !app.filtering {
+        "/ to filter".to_string()
+    } else {
+        app.filter.value.clone()
+    };
+    f.render_widget(Paragraph::new(Line::from(vec![Span::styled(" ", filter_style), Span::styled(filter_text, filter_style)])), filter_area);
+    if app.filtering {
+        set_cursor(f, filter_area.x + 1, filter_area.y, &app.filter);
+    }
+
+    if app.hosts.is_empty() {
+        f.render_widget(
+            Paragraph::new("\nNo hosts yet.\n\nPress n to add a connection, or add\nHost entries to ~/.ssh/config.")
+                .style(t.muted())
+                .alignment(Alignment::Center),
+            list_area,
+        );
+    } else {
+        let name_w = app.filtered.iter().map(|&i| app.hosts[i].name.chars().count()).max().unwrap_or(0).min(28);
+        let items: Vec<ListItem> = app
+            .filtered
+            .iter()
+            .map(|&i| {
+                let h = &app.hosts[i];
+                let badge = match h.source {
+                    Source::Custom(_) => "●",
+                    Source::SshConfig => "○",
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {badge} "), t.accent()),
+                    Span::raw(format!("{:<name_w$}  ", h.name)),
+                    Span::styled(h.target(), t.muted()),
+                ]))
+            })
+            .collect();
+        let mut state = ListState::default().with_offset(app.host_offset).with_selected(Some(app.host_selected));
+        f.render_stateful_widget(List::new(items).highlight_style(t.selected()), list_area, &mut state);
+        app.host_offset = state.offset();
+    }
+
+    // Details pane
+    let details = block(&t, " Details ", false);
+    let inner = details.inner(right);
+    f.render_widget(details, right);
+    let Some(h) = app.selected_host() else { return };
+    let row = |k: &str, v: String| {
+        Line::from(vec![Span::styled(format!("{k:>13}  "), t.muted()), Span::raw(v)])
+    };
+    let dash = || "—".to_string();
+    let mut cmd = vec![app.cfg.settings.ssh_binary.clone()];
+    cmd.extend(h.shell_args());
+    let lines = vec![
+        Line::from(Span::styled(format!("  {}", h.name), t.title())),
+        Line::raw(""),
+        row("Host", h.hostname.clone()),
+        row("User", h.user.clone().unwrap_or_else(dash)),
+        row("Port", h.port.map(|p| p.to_string()).unwrap_or_else(|| "22".into())),
+        row("Identity", h.identity_file.clone().unwrap_or_else(dash)),
+        row("ProxyJump", h.proxy_jump.clone().unwrap_or_else(dash)),
+        row("Remote dir", h.remote_dir.clone().unwrap_or_else(dash)),
+        row("Tags", if h.tags.is_empty() { dash() } else { h.tags.join(", ") }),
+        row("Source", h.source_label.clone()),
+        Line::raw(""),
+        row("Command", shell_words::join(&cmd)),
+        Line::raw(""),
+        Line::from(Span::styled("  Enter: terminal   s: file transfer   e: edit", t.muted())),
+    ];
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+// ---------------------------------------------------------------- terminal
+
+fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = app.theme.clone();
+    let active = app.active;
+    let title_text = app.tabs[active].title.clone();
+    let TabKind::Terminal(s) = &mut app.tabs[active].kind else { return };
+    let alive = s.is_alive();
+    let scroll = s.scroll_offset();
+
+    let mut title = vec![Span::styled(format!(" {title_text} "), t.title())];
+    if !alive {
+        title.push(Span::styled(" disconnected — Enter to reconnect, Alt+W to close ", Style::new().fg(t.error)));
+    } else if scroll > 0 {
+        title.push(Span::styled(format!(" scrollback +{scroll} "), Style::new().fg(t.warning)));
+    }
+    let b = block(&t, Line::from(title), true);
+    let inner = b.inner(area);
+    s.resize(inner.height, inner.width);
+    app_term_area(inner, &mut app.term_area);
+
+    let TabKind::Terminal(s) = &app.tabs[active].kind else { return };
+    let parser = s.parser.lock().unwrap();
+    let mut cursor = Cursor::default();
+    if !alive || scroll > 0 || parser.screen().hide_cursor() {
+        cursor.hide();
+    }
+    let widget = PseudoTerminal::new(parser.screen()).block(b).cursor(cursor);
+    f.render_widget(widget, area);
+}
+
+fn app_term_area(inner: Rect, slot: &mut (u16, u16)) {
+    *slot = (inner.height, inner.width);
+}
+
+// ---------------------------------------------------------------- sftp
+
+fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = app.theme.clone();
+    let active = app.active;
+    let TabKind::Sftp(s) = &mut app.tabs[active].kind else { return };
+
+    let transfer_h = if s.transfers.is_empty() { 0 } else { (s.transfers.len() as u16).min(6) + 2 };
+    let [panes, transfers] = Layout::vertical([Constraint::Min(5), Constraint::Length(transfer_h)]).areas(area);
+    let [left, right] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(panes);
+
+    let focus = s.focus;
+    let host = s.host_name.clone();
+    let local_title = format!(" Local: {} ", s_path(&s.local));
+    draw_pane(f, &t, &mut s.local, left, local_title, focus == Side::Local);
+
+    match &s.status {
+        Status::Connected => {
+            let title = format!(" {host}: {} ", s_path(&s.remote));
+            draw_pane(f, &t, &mut s.remote, right, title, focus == Side::Remote);
+        }
+        Status::Connecting => {
+            let b = block(&t, format!(" {host} "), focus == Side::Remote);
+            f.render_widget(
+                Paragraph::new(format!("\nConnecting to {host}…")).alignment(Alignment::Center).style(t.muted()).block(b),
+                right,
+            );
+        }
+        Status::Failed(err) => {
+            let b = block(&t, format!(" {host} "), focus == Side::Remote);
+            let text = vec![
+                Line::styled("Connection failed", Style::new().fg(t.error).add_modifier(Modifier::BOLD)),
+                Line::raw(""),
+                Line::raw(err.clone()),
+                Line::raw(""),
+                Line::styled("r: retry   Alt+W: close", t.muted()),
+                Line::styled(
+                    "SFTP runs without a terminal, so it needs key or agent auth (see sftp_batch_mode).",
+                    t.muted(),
+                ),
+            ];
+            f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }).block(b), right);
+        }
+    }
+
+    if !s.transfers.is_empty() {
+        draw_transfers(f, &t, s, transfers);
+    }
+}
+
+fn s_path(p: &Pane) -> String {
+    if p.loading { format!("{} …", p.path) } else { p.path.clone() }
+}
+
+fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: String, focused: bool) {
+    let b = block(t, title, focused);
+    let inner = b.inner(area);
+    f.render_widget(b, area);
+    let (list_area, err_area) = if pane.error.is_some() {
+        let [a, e] = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(inner);
+        (a, Some(e))
+    } else {
+        (inner, None)
+    };
+
+    let rows: Vec<Row> = pane
+        .entries
+        .iter()
+        .map(|e| {
+            let name_style = if e.is_dir { Style::new().fg(t.accent).add_modifier(Modifier::BOLD) } else { Style::new().fg(t.fg) };
+            let mut name = e.name.clone();
+            if e.is_dir && name != ".." {
+                name.push('/');
+            }
+            if e.is_symlink {
+                name.push_str(" →");
+            }
+            Row::new(vec![
+                Cell::from(Span::styled(name, name_style)),
+                Cell::from(Line::from(if e.is_dir { String::new() } else { human_size(e.size) }).alignment(Alignment::Right))
+                    .style(t.muted()),
+                Cell::from(e.modified.map(format_time).unwrap_or_default()).style(t.muted()),
+            ])
+        })
+        .collect();
+    let table = Table::new(rows, [Constraint::Min(10), Constraint::Length(8), Constraint::Length(16)])
+        .column_spacing(1)
+        .row_highlight_style(if focused { t.selected() } else { Style::new().add_modifier(Modifier::REVERSED) });
+    let mut state = TableState::default().with_offset(pane.offset).with_selected(Some(pane.selected));
+    f.render_stateful_widget(table, list_area, &mut state);
+    pane.offset = state.offset();
+
+    if let (Some(err), Some(a)) = (&pane.error, err_area) {
+        f.render_widget(Paragraph::new(err.as_str()).style(Style::new().fg(t.error)).wrap(Wrap { trim: true }), a);
+    }
+}
+
+fn draw_transfers(f: &mut Frame, t: &Theme, s: &SftpTab, area: Rect) {
+    let b = block(t, " Transfers (x: clear finished) ", false);
+    let inner = b.inner(area);
+    f.render_widget(b, area);
+    let lines: Vec<Line> = s
+        .transfers
+        .iter()
+        .rev()
+        .take(inner.height as usize)
+        .map(|tr| {
+            let progress = match tr.total {
+                Some(total) if total > 0 => {
+                    format!("{} / {} ({}%)", human_size(tr.done), human_size(total), tr.done * 100 / total)
+                }
+                _ => human_size(tr.done),
+            };
+            let (state, style) = match &tr.state {
+                TransferState::Running => ("…".to_string(), Style::new().fg(t.warning)),
+                TransferState::Done => ("✓".to_string(), Style::new().fg(t.success)),
+                TransferState::Failed(e) => (format!("✗ {e}"), Style::new().fg(t.error)),
+            };
+            Line::from(vec![
+                Span::styled(format!(" {state} "), style),
+                Span::raw(format!("{}  ", tr.label)),
+                Span::styled(progress, t.muted()),
+            ])
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Formats as `YYYY-MM-DD HH:MM` (UTC) without pulling in a date crate.
+fn format_time(t: SystemTime) -> String {
+    let Ok(d) = t.duration_since(UNIX_EPOCH) else { return String::new() };
+    let secs = d.as_secs() as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + (month <= 2) as i64;
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}", rem / 3600, (rem % 3600) / 60)
+}
+
+// ---------------------------------------------------------------- modals
+
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width.saturating_sub(2));
+    let h = h.min(area.height.saturating_sub(2));
+    Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h)
+}
+
+fn set_cursor(f: &mut Frame, x: u16, y: u16, input: &TextInput) {
+    let offset = unicode_width(input.before_cursor());
+    f.set_cursor_position(Position::new(x + offset, y));
+}
+
+fn unicode_width(s: &str) -> u16 {
+    Line::raw(s).width() as u16
+}
+
+fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let Some(modal) = &app.modal else { return };
+    match modal {
+        Modal::Help => {
+            let r = centered(area, 72, 30);
+            f.render_widget(Clear, r);
+            let k = |key: &str, desc: &str| {
+                Line::from(vec![Span::styled(format!("  {key:<22}"), t.accent()), Span::raw(desc.to_string())])
+            };
+            let h = |s: &str| Line::styled(s.to_string(), t.title());
+            let lines = vec![
+                h("Everywhere"),
+                k("Alt+1 … Alt+9", "switch to tab"),
+                k("Alt+← / Alt+→", "previous / next tab"),
+                k("Alt+W", "close tab"),
+                k("Alt+T", "theme picker"),
+                k("Alt+H", "this help"),
+                k("Alt+Q", "quit"),
+                h("Hosts"),
+                k("Enter", "open terminal (ssh)"),
+                k("s", "open file transfer (sftp)"),
+                k("/", "filter hosts"),
+                k("n / e / d", "new / edit / delete connection"),
+                k("r", "reload config files"),
+                h("Terminal"),
+                k("Shift+PgUp / PgDn", "scroll back"),
+                k("Enter (when closed)", "reconnect"),
+                h("File transfer"),
+                k("Tab / ← →", "switch pane"),
+                k("Enter / Backspace", "open dir / go up"),
+                k("c or F5", "copy to other pane"),
+                k("m or F7", "make directory"),
+                k("R or F2", "rename"),
+                k("d, Del or F8", "delete"),
+                k("g", "go to path"),
+                k(". / r / x", "hidden files / refresh / clear transfers"),
+            ];
+            let p = Paragraph::new(lines).block(block(t, format!(" Help — config: {} ", app.cfg_path.display()), true));
+            f.render_widget(p, r);
+        }
+        Modal::ThemePicker { selected, .. } => {
+            let themes = app.all_themes();
+            let r = centered(area, 40, themes.len() as u16 + 4);
+            f.render_widget(Clear, r);
+            let items: Vec<ListItem> = themes
+                .iter()
+                .map(|d| {
+                    let swatch = |c: &str| {
+                        Span::styled("■", Style::new().fg(std::str::FromStr::from_str(c).unwrap_or_default()))
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::raw(format!(" {:<18}", d.name)),
+                        swatch(&d.bg),
+                        swatch(&d.fg),
+                        swatch(&d.accent),
+                        swatch(&d.success),
+                        swatch(&d.warning),
+                        swatch(&d.error),
+                    ]))
+                })
+                .collect();
+            let mut state = ListState::default().with_selected(Some(*selected));
+            let list = List::new(items)
+                .highlight_style(t.selected())
+                .block(block(t, " Theme (Enter save · Esc cancel) ", true));
+            f.render_stateful_widget(list, r, &mut state);
+        }
+        Modal::Editor(ed) => {
+            let r = centered(area, 70, EDITOR_LABELS.len() as u16 + 6);
+            f.render_widget(Clear, r);
+            let title = if ed.editing.is_some() { " Edit connection " } else { " New connection " };
+            let b = block(t, title, true);
+            let inner = b.inner(r);
+            f.render_widget(b, r);
+            let label_w = 16u16;
+            for (i, (label, field)) in EDITOR_LABELS.iter().zip(&ed.fields).enumerate() {
+                let y = inner.y + i as u16;
+                if y >= inner.bottom() {
+                    break;
+                }
+                let focused = i == ed.focus;
+                let style = if focused { t.accent() } else { t.muted() };
+                f.render_widget(
+                    Paragraph::new(Span::styled(format!("{label:>14}: "), style)),
+                    Rect::new(inner.x, y, label_w, 1),
+                );
+                let field_area = Rect::new(inner.x + label_w, y, inner.width.saturating_sub(label_w), 1);
+                let value_style = if focused { Style::new().fg(t.fg).add_modifier(Modifier::UNDERLINED) } else { Style::new().fg(t.fg) };
+                f.render_widget(Paragraph::new(field.value.as_str()).style(value_style), field_area);
+                if focused {
+                    set_cursor(f, field_area.x, y, field);
+                }
+            }
+            let y = inner.y + EDITOR_LABELS.len() as u16 + 1;
+            let footer = match &ed.error {
+                Some(e) => Line::styled(format!(" {e}"), Style::new().fg(t.error)),
+                None => Line::styled(
+                    " Tab/↑↓ move · Ctrl+S save · Esc cancel · args: shell-quoted · tags: comma-separated",
+                    t.muted(),
+                ),
+            };
+            if y < inner.bottom() {
+                f.render_widget(Paragraph::new(footer), Rect::new(inner.x, y, inner.width, 1));
+            }
+        }
+        Modal::Prompt(p) => {
+            let r = centered(area, 60, 3);
+            f.render_widget(Clear, r);
+            let b = block(t, format!(" {} (Enter ok · Esc cancel) ", p.title), true);
+            let inner = b.inner(r);
+            f.render_widget(Paragraph::new(p.input.value.as_str()).block(b), r);
+            set_cursor(f, inner.x, inner.y, &p.input);
+        }
+        Modal::Confirm { text, .. } => {
+            let w = (unicode_width(text) + 6).clamp(30, 80);
+            let r = centered(area, w, 5);
+            f.render_widget(Clear, r);
+            let lines = vec![Line::raw(text.clone()), Line::raw(""), Line::styled("y: yes   n: no", t.muted())];
+            f.render_widget(
+                Paragraph::new(lines).alignment(Alignment::Center).wrap(Wrap { trim: true }).block(block(t, " Confirm ", true)),
+                r,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn formats_time() {
+        assert_eq!(format_time(UNIX_EPOCH), "1970-01-01 00:00");
+        // 2024-02-29 12:34 UTC
+        assert_eq!(format_time(UNIX_EPOCH + Duration::from_secs(1_709_210_040)), "2024-02-29 12:34");
+    }
+}
