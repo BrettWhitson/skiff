@@ -150,6 +150,8 @@ pub struct UiState {
     mods: Modifiers,
     drag_last: Point,
     last_click: Option<(Id, Instant, Point)>,
+    /// Widget that owns the keyboard (an open menu); carried to the next frame.
+    capture: Option<Id>,
 }
 
 impl Default for UiState {
@@ -166,6 +168,7 @@ impl Default for UiState {
             mods: Modifiers::NONE,
             drag_last: Point::default(),
             last_click: None,
+            capture: None,
         }
     }
 }
@@ -205,6 +208,7 @@ impl Painter<'_> {
     /// Draws one line with its line box's top-left at `pos`; returns its width.
     pub fn text(&mut self, pos: Point, text: &str, font: FontKind, px: f32, color: Color) -> i32 {
         let w = text_layout::measure(self.fonts, self.cache, font, text, px).ceil() as i32;
+        let ink = text_layout::ink_bounds(self.fonts, self.cache, font, text, px, pos);
         let h = text_layout::line_height(self.fonts, font, px) as i32;
         if !text.is_empty() {
             self.list.push(Prim::Text {
@@ -213,7 +217,7 @@ impl Painter<'_> {
                 font,
                 px,
                 color,
-                bounds: Rect::new(pos.x, pos.y, w, h),
+                bounds: Rect::new(pos.x, pos.y, w, h).union(ink),
             });
         }
         w
@@ -250,6 +254,8 @@ pub struct Ui<'a> {
     hits: Vec<Hit>,
     focusables: Vec<Id>,
     focus_move: Option<bool>,
+    capture: Option<Id>,
+    next_capture: Option<Id>,
     repaint_in: Option<Duration>,
     cursor: CursorIcon,
 }
@@ -366,6 +372,7 @@ impl<'a> Ui<'a> {
             st.drag_last = st.mouse;
         }
         frame.hovered = top_hit(&st.prev_hits, st.mouse).map(|h| h.id);
+        let capture = st.capture;
         let input = Input { events, mouse: st.mouse, left_down: st.left, right_down: st.right, mods: st.mods };
         let window = Rect::new(0, 0, size.w, size.h);
         Ui {
@@ -386,6 +393,8 @@ impl<'a> Ui<'a> {
             hits: vec![],
             focusables: vec![],
             focus_move: None,
+            capture,
+            next_capture: None,
             repaint_in: None,
             cursor: CursorIcon::Default,
         }
@@ -394,9 +403,10 @@ impl<'a> Ui<'a> {
     fn finish(mut self) -> (Option<Duration>, CursorIcon) {
         // Tab / Shift+Tab nobody took moves focus.
         let mut mv = self.focus_move;
+        let captured = self.capture.is_some();
         for e in &self.input.events {
             if let Event::KeyDown { key: Key::Tab, mods, .. } = e {
-                if !mods.ctrl && !mods.alt && !mods.logo {
+                if !captured && !mods.ctrl && !mods.alt && !mods.logo {
                     mv = Some(!mods.shift);
                 }
             }
@@ -423,6 +433,7 @@ impl<'a> Ui<'a> {
         let overlay = std::mem::take(&mut self.overlay_list);
         self.list.prims.extend(overlay.prims);
         self.st.prev_hits = std::mem::take(&mut self.hits);
+        self.st.capture = self.next_capture;
         (self.repaint_in, self.cursor)
     }
 
@@ -583,6 +594,19 @@ impl<'a> Ui<'a> {
 
     pub fn focused(&self) -> Option<Id> {
         self.st.focus
+    }
+
+    /// Routes keyboard input to `id` for this frame and the next (call it
+    /// every frame while e.g. a menu is open). Other widgets check
+    /// `keys_for` and leave keys alone meanwhile.
+    pub fn capture_keyboard(&mut self, id: Id) {
+        self.capture = Some(id);
+        self.next_capture = Some(id);
+    }
+
+    /// Whether widget `id` may act on keyboard input this frame.
+    pub fn keys_for(&self, id: Id) -> bool {
+        self.capture.is_none_or(|c| c == id)
     }
 
     pub fn focus_next(&mut self) {

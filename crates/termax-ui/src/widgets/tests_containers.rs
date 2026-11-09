@@ -293,3 +293,83 @@ fn full_frame_render_time_1080p() {
     assert_eq!(c.pixels.len(), 1920 * 1080);
     assert!(ms < 50.0, "full repaint took {ms:.1} ms");
 }
+
+#[test]
+fn open_menu_captures_keys_from_focused_list() {
+    let mut h = Harness::new(400, 400, 1.0);
+    let items = [
+        MenuItem { label: "Open", shortcut: None, enabled: true },
+        MenuItem { label: "Delete", shortcut: None, enabled: true },
+    ];
+    let sel = Cell::new(None::<usize>);
+    let act = Cell::new(None::<usize>);
+    let chosen = Cell::new(None::<usize>);
+    let menu = Id::new("m");
+    let mut f = |ui: &mut Ui| {
+        let mut s = sel.get();
+        let r = list(ui, Id::new("l"), Rect::new(0, 0, 200, 200), 50, 20, &mut s, |_, _, _, _| {});
+        sel.set(s);
+        if r.activated.is_some() {
+            act.set(r.activated);
+        }
+        if let Some((_, at)) = r.context {
+            open_context_menu(ui, menu, at);
+        }
+        if let Some(i) = context_menu(ui, menu, &items) {
+            chosen.set(Some(i));
+        }
+    };
+    h.frame(vec![], &mut f);
+    h.frame(click(Point::new(50, 45)), &mut f);
+    h.frame(right_click(Point::new(50, 45)), &mut f);
+    h.frame(key(Key::Down), &mut f);
+    h.frame(key(Key::Down), &mut f);
+    h.frame(key(Key::Enter), &mut f);
+    assert_eq!(chosen.get(), Some(1));
+    assert_eq!(sel.get(), Some(2), "list selection must not move under an open menu");
+    assert_eq!(act.get(), None, "Enter must not also activate the list row");
+    // Menu closed: the list gets keys again.
+    h.frame(key(Key::Down), &mut f);
+    assert_eq!(sel.get(), Some(3));
+}
+
+#[test]
+fn menu_items_shrinking_while_open_does_not_panic() {
+    let mut h = Harness::new(400, 400, 1.0);
+    let three = [
+        MenuItem { label: "a", shortcut: None, enabled: true },
+        MenuItem { label: "b", shortcut: None, enabled: true },
+        MenuItem { label: "c", shortcut: None, enabled: true },
+    ];
+    let menu = Id::new("m");
+    h.frame(vec![], &mut |ui: &mut Ui| {
+        open_context_menu(ui, menu, Point::new(10, 10));
+        context_menu(ui, menu, &three);
+    });
+    h.frame(vec![Event::KeyDown { key: Key::Up, mods: NONE, text: None }], &mut |ui: &mut Ui| {
+        context_menu(ui, menu, &three);
+    });
+    let r = std::cell::Cell::new(Some(99));
+    h.frame(key(Key::Enter), &mut |ui: &mut Ui| r.set(context_menu(ui, menu, &three[..1])));
+    assert_eq!(r.get(), None);
+}
+
+#[test]
+fn splitter_width_survives_shrink_and_restore() {
+    let mut h = Harness::new(1000, 400, 1.0);
+    let width = Cell::new(300.0f32);
+    let mut f = |ui: &mut Ui| {
+        let mut w = width.get();
+        let r = ui.window_rect();
+        splitter_h(ui, Id::new("sp"), r, &mut w, 160.0, 600.0);
+        width.set(w);
+    };
+    h.frame(vec![], &mut f);
+    h.resize(0, 0);
+    h.frame(vec![], &mut f);
+    h.resize(200, 400);
+    h.frame(vec![], &mut f);
+    h.resize(1000, 400);
+    h.frame(vec![], &mut f);
+    assert_eq!(width.get(), 300.0);
+}

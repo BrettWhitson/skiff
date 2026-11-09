@@ -197,6 +197,9 @@ impl TileRenderer {
         }
 
         let full = self.size != (w, h) || self.prev.len() != n;
+        // Merge dirty tiles into rects (row runs, stacked when aligned),
+        // then paint each rect in one pass: a line of text crossing many
+        // dirty tiles is walked once, not once per tile.
         let mut damage: Vec<Rect> = vec![];
         for ty in 0..rows {
             let mut run: Option<(i32, i32)> = None; // (first col, last col)
@@ -206,11 +209,6 @@ impl TileRenderer {
                     full || self.prev[i] != hashes[i]
                 };
                 if dirty {
-                    let tr = Rect::new(tx * t, ty * t, t, t).intersect(canvas.bounds()).unwrap();
-                    canvas.push_clip(tr);
-                    canvas.fill_rect(tr, background.with_alpha(255));
-                    replay(list, canvas, fonts, cache);
-                    canvas.pop_clip();
                     run = Some((run.map_or(tx, |r| r.0), tx));
                 } else if let Some((a, b)) = run.take() {
                     let r = Rect::new(a * t, ty * t, ((b + 1) * t).min(w) - a * t, t.min(h - ty * t));
@@ -220,6 +218,12 @@ impl TileRenderer {
                     }
                 }
             }
+        }
+        for r in &damage {
+            canvas.push_clip(*r);
+            canvas.fill_rect(*r, background.with_alpha(255));
+            replay(list, canvas, fonts, cache);
+            canvas.pop_clip();
         }
         self.prev = hashes;
         self.size = (w, h);
@@ -358,3 +362,7 @@ mod tests {
         assert_eq!(area(&dmg), 130 * 70);
     }
 }
+
+#[cfg(test)]
+#[path = "display_perf_tests.rs"]
+mod perf_tests;

@@ -160,67 +160,105 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
             let ci = ui.char_index_at_x(&shown, FontKind::Ui, px, x);
             ed.move_to(ci, !mouse_down_here);
         }
-        let events = ui.input().events.clone();
-        for e in &events {
-            match e {
-                Event::Text(t) => ed.insert(t),
-                Event::Paste(t) => ed.insert(t),
-                Event::KeyDown { key, mods, .. } => {
-                    let (ctrl, shift) = (mods.ctrl && !mods.alt, mods.shift);
-                    let cur = ed.st.cursor;
-                    match key {
-                        Key::Left if ed.has_selection() && !shift => {
-                            let a = ed.selection().0;
-                            ed.move_to(a, false)
-                        }
-                        Key::Right if ed.has_selection() && !shift => {
-                            let b = ed.selection().1;
-                            ed.move_to(b, false)
-                        }
-                        Key::Left => {
-                            let to = if ctrl { word_left(&ed.chars, cur) } else { cur.saturating_sub(1) };
-                            ed.move_to(to, shift)
-                        }
-                        Key::Right => {
-                            let to = if ctrl { word_right(&ed.chars, cur) } else { cur + 1 };
-                            ed.move_to(to, shift)
-                        }
-                        Key::Home => ed.move_to(0, shift),
-                        Key::End => ed.move_to(ed.chars.len(), shift),
-                        Key::Backspace if ed.has_selection() => ed.delete_selection(),
-                        Key::Backspace => {
-                            let from = if ctrl { word_left(&ed.chars, cur) } else { cur.saturating_sub(1) };
-                            ed.delete_range(from, cur)
-                        }
-                        Key::Delete if ed.has_selection() => ed.delete_selection(),
-                        Key::Delete => {
-                            let to = if ctrl { word_right(&ed.chars, cur) } else { (cur + 1).min(ed.chars.len()) };
-                            ed.delete_range(cur, to)
-                        }
-                        Key::Enter => submitted = true,
-                        Key::Char('a') if ctrl => {
-                            ed.st.anchor = 0;
-                            ed.st.cursor = ed.chars.len();
-                        }
-                        Key::Char('c') if ctrl && !opts.password && ed.has_selection() => {
-                            let s = ed.selected();
-                            ui.clipboard().set(&s);
-                        }
-                        Key::Char('x') if ctrl && !opts.password && ed.has_selection() => {
-                            let s = ed.selected();
-                            ui.clipboard().set(&s);
-                            ed.delete_selection();
-                        }
-                        Key::Char('v') if ctrl => {
-                            if let Some(t) = ui.clipboard().get() {
-                                ed.insert(&t);
-                            }
-                        }
-                        _ => {}
+        if ui.keys_for(id) {
+            // Handled events are consumed; everything else (Tab, app
+            // shortcuts such as Ctrl+Shift+X) stays for others.
+            let events = std::mem::take(&mut ui.input_mut().events);
+            let mut rest = Vec::with_capacity(events.len());
+            for e in events {
+                let handled = match &e {
+                    Event::Text(t) | Event::Paste(t) => {
+                        ed.insert(t);
+                        true
                     }
+                    Event::KeyDown { key, mods, .. } if !mods.logo => {
+                        let (ctrl, shift) = (mods.ctrl && !mods.alt, mods.shift);
+                        // Clipboard/select-all only on plain Ctrl: Ctrl+Shift is the app's.
+                        let cmd = ctrl && !shift;
+                        let cur = ed.st.cursor;
+                        match key {
+                            Key::Left if ed.has_selection() && !shift => {
+                                let a = ed.selection().0;
+                                ed.move_to(a, false);
+                                true
+                            }
+                            Key::Right if ed.has_selection() && !shift => {
+                                let b = ed.selection().1;
+                                ed.move_to(b, false);
+                                true
+                            }
+                            Key::Left => {
+                                let to = if ctrl { word_left(&ed.chars, cur) } else { cur.saturating_sub(1) };
+                                ed.move_to(to, shift);
+                                true
+                            }
+                            Key::Right => {
+                                let to = if ctrl { word_right(&ed.chars, cur) } else { cur + 1 };
+                                ed.move_to(to, shift);
+                                true
+                            }
+                            Key::Home => {
+                                ed.move_to(0, shift);
+                                true
+                            }
+                            Key::End => {
+                                ed.move_to(ed.chars.len(), shift);
+                                true
+                            }
+                            Key::Backspace if ed.has_selection() => {
+                                ed.delete_selection();
+                                true
+                            }
+                            Key::Backspace => {
+                                let from = if ctrl { word_left(&ed.chars, cur) } else { cur.saturating_sub(1) };
+                                ed.delete_range(from, cur);
+                                true
+                            }
+                            Key::Delete if ed.has_selection() => {
+                                ed.delete_selection();
+                                true
+                            }
+                            Key::Delete => {
+                                let to = if ctrl { word_right(&ed.chars, cur) } else { (cur + 1).min(ed.chars.len()) };
+                                ed.delete_range(cur, to);
+                                true
+                            }
+                            Key::Enter => {
+                                submitted = true;
+                                true
+                            }
+                            Key::Char('a') if cmd => {
+                                ed.st.anchor = 0;
+                                ed.st.cursor = ed.chars.len();
+                                true
+                            }
+                            Key::Char('c') if cmd && !opts.password && ed.has_selection() => {
+                                let s = ed.selected();
+                                ui.clipboard().set(&s);
+                                true
+                            }
+                            Key::Char('x') if cmd && !opts.password && ed.has_selection() => {
+                                let s = ed.selected();
+                                ui.clipboard().set(&s);
+                                ed.delete_selection();
+                                true
+                            }
+                            Key::Char('v') if cmd => {
+                                if let Some(t) = ui.clipboard().get() {
+                                    ed.insert(&t);
+                                }
+                                true
+                            }
+                            _ => false,
+                        }
+                    }
+                    _ => false,
+                };
+                if !handled {
+                    rest.push(e);
                 }
-                _ => {}
             }
+            ui.input_mut().events = rest;
         }
     }
     ed.st.had_focus = r.focused;

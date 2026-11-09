@@ -8,7 +8,7 @@ use super::label::label;
 /// A checkbox with a label; clicking either (or Space when focused) toggles.
 pub fn checkbox(ui: &mut Ui, id: Id, rect: Rect, value: &mut bool, text: &str) -> Response {
     let mut r = ui.interact(id, rect, Sense::focusable());
-    keyboard_activate(ui, &mut r);
+    keyboard_activate(ui, id, &mut r);
     if r.clicked {
         *value = !*value;
     }

@@ -6,8 +6,8 @@ use crate::ui::{Id, Response, Sense, Ui};
 use super::label::elide;
 
 /// Activates a focused widget on Space or Enter (consuming the key).
-pub(crate) fn keyboard_activate(ui: &mut Ui, r: &mut Response) {
-    if r.focused {
+pub(crate) fn keyboard_activate(ui: &mut Ui, id: Id, r: &mut Response) {
+    if r.focused && ui.keys_for(id) {
         let space = ui.input_mut().take_key(&Key::Space, Modifiers::NONE);
         let enter = ui.input_mut().take_key(&Key::Enter, Modifiers::NONE);
         if space || enter {
@@ -19,7 +19,7 @@ pub(crate) fn keyboard_activate(ui: &mut Ui, r: &mut Response) {
 /// A push button with a centred label. Focusable; Space/Enter activate it.
 pub fn button(ui: &mut Ui, id: Id, rect: Rect, text: &str) -> Response {
     let mut r = ui.interact(id, rect, Sense::focusable());
-    keyboard_activate(ui, &mut r);
+    keyboard_activate(ui, id, &mut r);
     if r.hovered {
         ui.set_cursor_icon(CursorIcon::Pointer);
     }

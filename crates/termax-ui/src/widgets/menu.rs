@@ -25,6 +25,7 @@ struct MenuState {
 
 pub fn open_context_menu(ui: &mut Ui, id: Id, at: Point) {
     *ui.memory::<MenuState>(id) = MenuState { open: true, at, hover: None, fresh: true };
+    ui.capture_keyboard(id);
 }
 
 pub fn close_context_menu(ui: &mut Ui, id: Id) {
@@ -71,6 +72,9 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     let y = if st.at.y + h > win.bottom() { (st.at.y - h).max(0) } else { st.at.y };
     let menu = Rect::new(x, y, w, h);
 
+    if st.hover.is_some_and(|h| h >= items.len()) {
+        st.hover = None;
+    }
     let mut chosen = None;
     let mut close = false;
     if ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
@@ -83,7 +87,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
         st.hover = step(items, st.hover, false);
     }
     if ui.input_mut().take_key(&Key::Enter, Modifiers::NONE) {
-        chosen = st.hover.filter(|&i| items[i].enabled);
+        chosen = st.hover.filter(|&i| items.get(i).is_some_and(|it| it.enabled));
     }
     let mouse_moved = ui.input().events.iter().any(|e| matches!(e, Event::MouseMove(_)));
     if !st.fresh && ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(_, p) if !menu.contains(*p))) {
@@ -130,6 +134,8 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     st.fresh = false;
     if chosen.is_some() || close {
         st.open = false;
+    } else {
+        ui.capture_keyboard(id);
     }
     *ui.memory::<MenuState>(id) = st;
     chosen

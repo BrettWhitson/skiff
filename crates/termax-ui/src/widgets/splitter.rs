@@ -13,8 +13,9 @@ pub fn splitter_h(ui: &mut Ui, id: Id, rect: Rect, first: &mut f32, min: f32, ma
     let room = ((rect.w - gap) as f32 / s).max(0.0);
     let hi = max.min(room).max(min.min(room));
     let lo = min.min(hi);
-    *first = first.clamp(lo, hi);
-    let mut w = (*first * s).round() as i32;
+    // Clamp only what is laid out; `first` changes only when dragged, so a
+    // narrow or minimized window never loses the user's width.
+    let mut w = (first.clamp(lo, hi) * s).round() as i32;
 
     let handle = Rect::new(rect.x + w, rect.y, gap, rect.h);
     let r = ui.interact(id, handle, Sense::drag());

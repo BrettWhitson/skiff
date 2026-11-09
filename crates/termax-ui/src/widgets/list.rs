@@ -37,7 +37,7 @@ pub fn list(
         *selected = rows.checked_sub(1);
     }
 
-    if r.focused && rows > 0 {
+    if r.focused && rows > 0 && ui.keys_for(id) {
         let page = (rect.h / rh).max(1) as usize;
         let events = ui.input().events.clone();
         let mut moved = false;

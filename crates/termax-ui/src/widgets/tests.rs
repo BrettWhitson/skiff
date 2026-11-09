@@ -239,3 +239,27 @@ fn zero_size_frame_is_noop() {
     h.frame(text("x"), &mut f);
     assert!(h.render().pixels.is_empty());
 }
+
+#[test]
+fn ctrl_shift_shortcuts_are_left_for_the_app() {
+    let mut h = Harness::new(300, 100, 1.0);
+    let field = Field::new("hello");
+    let mut f = field_ui(&field, false);
+    focused(&mut h, &mut f);
+    h.frame(key(Key::Char('a'), CTRL), &mut f);
+    let cs = Modifiers { ctrl: true, shift: true, alt: false, logo: false };
+    h.frame(key(Key::Char('x'), cs), &mut f);
+    assert_eq!(field.get(), "hello", "Ctrl+Shift+X is an app shortcut, not cut");
+    // Keys the field handles are consumed; others stay for the app.
+    let seen = Cell::new((false, false));
+    let mut g = |ui: &mut Ui| {
+        f(ui);
+        let left = ui.input().key_pressed(&Key::Left, NONE);
+        let shortcut = ui.input().key_pressed(&Key::Char('x'), cs);
+        seen.set((left, shortcut));
+    };
+    let mut ev = key(Key::Left, NONE);
+    ev.extend(key(Key::Char('x'), cs));
+    h.frame(ev, &mut g);
+    assert_eq!(seen.get(), (false, true));
+}
