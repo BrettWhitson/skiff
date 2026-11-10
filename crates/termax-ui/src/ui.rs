@@ -597,6 +597,14 @@ impl<'a> Ui<'a> {
         }
     }
 
+    /// The screen reader's focus is `id` this frame, whatever has keyboard
+    /// focus (an open menu and its highlighted item).
+    pub fn a11y_focus(&mut self, id: Id) {
+        if let Some(b) = self.a11y.as_mut() {
+            b.focus_override = Some(id);
+        }
+    }
+
     /// Takes a screen-reader action aimed at `id` this frame, if any.
     pub fn take_a11y_action(&mut self, id: Id, pick: impl Fn(&A11yAction) -> bool) -> Option<A11yAction> {
         let i = self.input.events.iter().position(|e| matches!(e, Event::A11y { target, action } if *target == id && pick(action)))?;

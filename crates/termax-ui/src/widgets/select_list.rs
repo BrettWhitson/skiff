@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::a11y::Role;
 use crate::geom::{Point, Rect};
 use crate::input::{Event, Key, MouseButton};
 use crate::ui::{Id, Response, Sense, Ui};
@@ -102,6 +103,23 @@ pub fn select_list(
     rows: usize,
     row_h: i32,
     sel: &mut Selection,
+    f: impl FnMut(&mut Ui, Rect, usize, bool),
+) -> SelectListResponse {
+    select_list_named(ui, id, rect, "", rows, row_h, sel, |_| String::new(), f)
+}
+
+/// `select_list` with names for screen readers. A screen-reader Click
+/// selects a row; a Click on the only selected row activates it.
+#[allow(clippy::too_many_arguments)]
+pub fn select_list_named(
+    ui: &mut Ui,
+    id: Id,
+    rect: Rect,
+    name: &str,
+    rows: usize,
+    row_h: i32,
+    sel: &mut Selection,
+    row_name: impl Fn(usize) -> String,
     mut f: impl FnMut(&mut Ui, Rect, usize, bool),
 ) -> SelectListResponse {
     let r = ui.interact(id, rect, Sense::focusable());
@@ -159,13 +177,32 @@ pub fn select_list(
     let mouse = ui.input().mouse;
     let left_down = ui.input().left_down;
     let content_h = (rows as i64 * rh as i64).min(i32::MAX as i64) as i32;
-    scroll_area(ui, sid, rect, content_h, |ui, vis, off| {
+    ui.a11y_group(id, Role::List, name, |ui| scroll_area(ui, sid, rect, content_h, |ui, vis, off| {
         let first = (off / rh) as usize;
         let last = (((off + vis.h + rh - 1) / rh) as usize).min(rows);
         let p = ui.style().palette;
         for i in first..last {
             let row = Rect::new(vis.x, vis.y + i as i32 * rh - off, vis.w, rh);
-            let rr = ui.interact(id.with(i), row, Sense::click());
+            let rid = id.with(i);
+            let rr = ui.interact(rid, row, Sense::click());
+            if ui.a11y_clicked(rid) {
+                if sel.contains(i) && sel.len() == 1 {
+                    out.activated = Some(i);
+                } else {
+                    sel.select_only(i);
+                    ui.request_focus(id);
+                }
+            }
+            if ui.a11y_on() {
+                let nm = row_name(i);
+                let on = sel.contains(i);
+                if let Some(n) = ui.a11y_node(rid, Role::ListItem, &nm) {
+                    n.selected = Some(on);
+                }
+                if sel.cursor == Some(i) {
+                    ui.a11y_focus_child(id, rid);
+                }
+            }
             // A press arrives as `pressed`, or as `clicked` when the button
             // went down and up within one frame.
             if down_now && (rr.pressed || rr.clicked) {
@@ -202,7 +239,7 @@ pub fn select_list(
             }
             f(ui, row, i, is_sel);
         }
-    });
+    }));
 
     if let Some((i, at)) = press.at {
         if !left_down {

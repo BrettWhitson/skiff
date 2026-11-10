@@ -959,6 +959,7 @@ impl GuiApp {
         let mut show_forwards = false;
         match &mut tab.kind {
             TabKind::Terminal(t) => {
+                t.announce = self.cfg.gui.announce_output;
                 let id = Id::new(("term", tab.id));
                 if newly_shown {
                     ui.request_focus(id);
@@ -1073,6 +1074,9 @@ impl GuiApp {
         if let Some(h) = hovered {
             label(ui, parts[1], &h, Some(p.fg));
         } else if let Some(w) = self.warnings.last().cloned() {
+            if let Some(n) = ui.a11y_node(Id::new("status-warning"), termax_ui::a11y::Role::Status, &w) {
+                n.live = true;
+            }
             label(ui, parts[1], &w, Some(p.warning));
         }
         label(ui, parts[2], &right, Some(p.muted));

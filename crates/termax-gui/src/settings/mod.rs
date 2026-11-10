@@ -120,7 +120,7 @@ pub fn split_row(ui: &Ui, row: Rect) -> (Rect, Rect) {
 pub fn field(ui: &mut Ui, id: Id, row: Rect, text: &str, value: &mut String) -> bool {
     let (l, c) = split_row(ui, row);
     label(ui, l, text, None);
-    text_input(ui, id, c, value, TextInputOpts::default()).changed
+    text_input(ui, id, c, value, TextInputOpts { label: text, ..Default::default() }).changed
 }
 
 /// An inline error (or nothing).

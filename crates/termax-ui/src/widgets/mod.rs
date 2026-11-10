@@ -20,7 +20,7 @@ pub use label::{elide, label, label_with};
 pub use list::{ListResponse, list, list_named};
 pub use menu::{MenuItem, close_context_menu, context_menu, menu_is_open, open_context_menu};
 pub use progress::progress_bar;
-pub use select_list::{SelectListResponse, Selection, select_list};
+pub use select_list::{SelectListResponse, Selection, select_list, select_list_named};
 pub use scroll::{ScrollState, scroll_area, scroll_into_view, scroll_to};
 pub use splitter::splitter_h;
 pub use tabs::{TabTitle, TabsResponse, tabs};

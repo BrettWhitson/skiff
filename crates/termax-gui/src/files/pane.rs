@@ -16,7 +16,7 @@ use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Sense, Ui};
 use termax_ui::widgets::{
-    Selection, TextInputOpts, button, checkbox, dropdown, elide, label, select_list, text_input,
+    Selection, TextInputOpts, button, checkbox, dropdown, elide, label, select_list_named, text_input,
 };
 
 use super::ops::{self, Op};
@@ -604,7 +604,16 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
     let lid = id.with("list");
     let vis: Vec<FileEntry> = pane.visible().into_iter().cloned().collect();
     let px = ui.font_px();
-    let r = select_list(ui, lid, rect, vis.len(), ROW_H, &mut pane.sel, |ui, row, i, _| {
+    let list_name = format!("{} files", pane.loc.label());
+    let row_name = |i: usize| {
+        let e = &vis[i];
+        let kind = if e.is_dir { "folder".to_string() } else { human_size(e.size) };
+        match e.modified {
+            Some(t) => format!("{}, {kind}, modified {}", e.name, format_time(t)),
+            None => format!("{}, {kind}", e.name),
+        }
+    };
+    let r = select_list_named(ui, lid, rect, &list_name, vis.len(), ROW_H, &mut pane.sel, row_name, |ui, row, i, _| {
         let e = &vis[i];
         let lh = ui.line_height(FontKind::Ui, px);
         let y = row.y + (row.h - lh) / 2;

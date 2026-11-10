@@ -329,3 +329,39 @@ fn shift_f10_opens_host_menu() {
     f.frame(vec![]);
     assert!(f.try_find("Open terminal").is_some(), "{:?}", f.texts());
 }
+
+#[test]
+fn sidebar_tree_names_hosts() {
+    let f = Fixture::new();
+    let t = f.h.tree();
+    let names: Vec<&str> = t.nodes.iter().map(|n| n.name.as_str()).collect();
+    let row = t.find("alpha, not checked, 127.0.0.1:1").unwrap_or_else(|| panic!("{names:?}"));
+    assert_eq!(row.role, termax_ui::a11y::Role::ListItem);
+    assert_eq!(t.find("Hosts").map(|n| n.role), Some(termax_ui::a11y::Role::Region));
+}
+
+#[test]
+fn a11y_click_opens_host() {
+    use termax_ui::a11y::A11yAction;
+    let mut f = Fixture::new();
+    let row = f.h.tree().find("alpha, not checked, 127.0.0.1:1").expect("row").id;
+    let click = Event::A11y { target: row, action: A11yAction::Click };
+    f.frame(vec![click.clone()]);
+    f.frame(vec![]);
+    assert!(f.app.tabs.is_empty(), "the first Click selects");
+    f.frame(vec![click]);
+    f.frame(vec![]);
+    assert!(matches!(f.app.tabs.first().map(|t| &t.kind), Some(TabKind::Terminal(_))), "the second Click opens it");
+    assert_eq!(f.h.tree().find("Terminal: alpha").map(|n| n.role), Some(termax_ui::a11y::Role::Terminal));
+}
+
+#[test]
+fn settings_inputs_have_labels() {
+    let mut f = Fixture::new();
+    f.app.open_settings();
+    f.frame(vec![]);
+    f.click_text("Connections");
+    f.click_text("Add");
+    let t = f.h.tree();
+    assert_eq!(t.find("Name").map(|n| n.role), Some(termax_ui::a11y::Role::TextInput));
+}

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use termax_core::hosts::HostEntry;
 use termax_core::terminal::TerminalSession;
+use termax_ui::a11y::Role;
 use termax_ui::geom::{Point, Rect, Size};
 use termax_ui::input::{CursorIcon, Event, Key, Modifiers};
 use termax_ui::text::FontKind;
@@ -17,6 +18,7 @@ use crate::theme::GuiTheme;
 use self::render::{CursorDraw, draw_screen};
 use self::select::{SelectState, handle_mouse, selection_text};
 
+pub mod announce;
 pub mod input;
 pub mod render;
 pub mod select;
@@ -45,6 +47,13 @@ pub struct TermTab {
     pub select: SelectState,
     blink_from: Instant,
     wheel_rest: f32,
+    /// Which output screen readers hear (`gui.announce_output`); set by the app.
+    pub announce: termax_core::config::Announce,
+    announcer: announce::Announcer,
+    /// The screen text the tree last showed.
+    last_screen: String,
+    /// The latest announcement (a live region's text).
+    live: String,
 }
 
 /// Rows × columns that fit `rect` (at least 2 × 10, as the pty needs).
@@ -76,6 +85,10 @@ impl TermTab {
             select: SelectState::default(),
             blink_from: Instant::now(),
             wheel_rest: 0.0,
+            announce: termax_core::config::Announce::All,
+            announcer: announce::Announcer::new(Instant::now()),
+            last_screen: String::new(),
+            live: String::new(),
         }
     }
 
@@ -201,6 +214,10 @@ pub fn view(
     if let Some(e) = tab.error.clone() {
         ui.painter().rect(rect, theme.term_bg, 0.0);
         label(ui, Rect::new(inner.x, inner.y, inner.w, cell.h + ui.px(4)), &e, Some(theme.palette.danger));
+        let name = format!("Terminal: {}", tab.host.name);
+        if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
+            n.value = Some(e);
+        }
         return;
     }
     let Some(session) = tab.session.as_mut() else { return };
@@ -247,12 +264,43 @@ pub fn view(
             if !bytes.is_empty() {
                 session.write(&bytes); // also snaps the view back to live output
                 tab.reset_blink();
+                tab.announcer.typed(&ui.input().text());
             }
         }
     }
 
-    let Some(session) = tab.session.as_mut() else { return };
+    let name = format!("Terminal: {}", tab.host.name);
+    let Some(session) = tab.session.as_mut() else {
+        if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
+            n.value = tab.error.clone();
+        }
+        return;
+    };
     let parser = session.parser.clone();
+    if ui.a11y_on() {
+        let text = parser.lock().map(|p| p.screen().contents()).unwrap_or_default();
+        let speak = match tab.announce {
+            termax_core::config::Announce::All => true,
+            termax_core::config::Announce::Focused => focused,
+            termax_core::config::Announce::Off => false,
+        };
+        if speak && text != tab.last_screen {
+            tab.announcer.push_output(&announce::new_output(&tab.last_screen, &text));
+        }
+        tab.last_screen.clone_from(&text);
+        if let Some(s) = tab.announcer.take(Instant::now()) {
+            tab.live = s;
+        }
+        if tab.announcer.has_pending() {
+            ui.request_repaint_in(announce::EVERY);
+        }
+        if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
+            n.value = Some(text);
+        }
+        if let Some(n) = ui.a11y_node(id.with("live"), Role::Status, &tab.live) {
+            n.live = true;
+        }
+    }
     let offset = parser.lock().map(|p| p.screen().scrollback()).unwrap_or(0);
     if handle_mouse(ui, id, inner, cell, &mut tab.select, offset)
         && let Ok(p) = parser.lock()

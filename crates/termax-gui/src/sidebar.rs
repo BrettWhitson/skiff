@@ -16,7 +16,7 @@ use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Ui};
 use termax_ui::widgets::{
-    MenuItem, TextInputOpts, button, context_menu, dropdown, elide, label, list, open_context_menu, text_input,
+    MenuItem, TextInputOpts, button, context_menu, dropdown, elide, label, list_named, open_context_menu, text_input,
 };
 
 const ROW_H: i32 = 26;
@@ -193,7 +193,15 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let mut hovered = None;
     let collapsed = &sb.collapsed;
     let filtering = !sb.filter.trim().is_empty();
-    let lr = list(ui, Id::new("sidebar-list"), list_r, rows.len(), ROW_H, &mut sb.selected, |ui, r, i, _sel| {
+    let row_name = |i: usize| match &rows[i] {
+        Row::Header(g) => format!("{g}, {}", if collapsed.contains(g) && !filtering { "collapsed" } else { "expanded" }),
+        Row::Host(hi) => {
+            let h = &hosts[*hi];
+            let st = ctx.statuses.get(&h.name).map_or_else(|| "not checked".to_string(), |s| s.label());
+            format!("{}, {st}, {}", h.name, h.target())
+        }
+    };
+    let lr = list_named(ui, Id::new("sidebar-list"), list_r, "Host list", rows.len(), ROW_H, &mut sb.selected, row_name, |ui, r, i, _sel| {
         let lh = ui.line_height(FontKind::Ui, px);
         let y = r.y + (r.h - lh) / 2;
         match &rows[i] {
@@ -328,6 +336,9 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
                     None => format!("Delete {}?", host.name),
                 };
                 label(ui, rows[0], &what, Some(p.danger));
+                if let Some(n) = ui.a11y_node(Id::new("sidebar-delete-confirm"), termax_ui::a11y::Role::Dialog, &what) {
+                    n.live = true;
+                }
                 let btns = ui.split_h(rows[1], &[L::Frac(0.5), L::Frac(0.5)], 6);
                 if button(ui, Id::new("sidebar-del-yes"), btns[0], "Delete").clicked {
                     action = Some(SidebarAction::Delete(h));

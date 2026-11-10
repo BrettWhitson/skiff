@@ -135,6 +135,43 @@ impl Default for Settings {
     }
 }
 
+/// Which terminal output screen readers hear (`gui.announce_output`):
+/// `true` (all tabs), `false`, or `"focused"` (only the focused terminal).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Announce {
+    #[default]
+    All,
+    Off,
+    Focused,
+}
+
+impl Serialize for Announce {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Announce::All => s.serialize_bool(true),
+            Announce::Off => s.serialize_bool(false),
+            Announce::Focused => s.serialize_str("focused"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Announce {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            B(bool),
+            S(String),
+        }
+        match Repr::deserialize(d)? {
+            Repr::B(true) => Ok(Announce::All),
+            Repr::B(false) => Ok(Announce::Off),
+            Repr::S(s) if s.eq_ignore_ascii_case("focused") => Ok(Announce::Focused),
+            Repr::S(s) => Err(serde::de::Error::custom(format!("announce_output: expected true, false or \"focused\", got {s:?}"))),
+        }
+    }
+}
+
 /// GUI-only settings (`[gui]`). The TUI ignores them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -146,11 +183,23 @@ pub struct GuiSettings {
     pub ui_font_path: Option<String>,
     pub font_size: f32,
     pub ui_scale: f32,
+    /// New terminal output read out by screen readers.
+    pub announce_output: Announce,
+    /// Blinking text and terminal cursors.
+    pub cursor_blink: bool,
 }
 
 impl Default for GuiSettings {
     fn default() -> Self {
-        Self { font_family: None, font_path: None, ui_font_path: None, font_size: 14.0, ui_scale: 1.0 }
+        Self {
+            font_family: None,
+            font_path: None,
+            ui_font_path: None,
+            font_size: 14.0,
+            ui_scale: 1.0,
+            announce_output: Announce::All,
+            cursor_blink: true,
+        }
     }
 }
 
