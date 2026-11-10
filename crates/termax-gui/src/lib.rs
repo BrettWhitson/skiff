@@ -1,5 +1,9 @@
 //! termax desktop GUI.
 
 pub mod app;
+pub mod engine;
+pub mod files;
 pub mod keys;
+pub mod sidebar;
+pub mod term;
 pub mod theme;

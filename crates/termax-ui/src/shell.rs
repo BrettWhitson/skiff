@@ -48,6 +48,8 @@ pub struct FrameCtx<'a> {
 
 pub trait App {
     fn frame(&mut self, ctx: &mut FrameCtx);
+    /// Called once when the event loop is shutting down (save state here).
+    fn exit(&mut self) {}
 }
 
 pub struct WindowOptions {
@@ -395,6 +397,10 @@ impl<A: App> Shell<A> {
 }
 
 impl<A: App> ApplicationHandler<Wake> for Shell<A> {
+    fn exiting(&mut self, _el: &ActiveEventLoop) {
+        self.app.exit();
+    }
+
     fn new_events(&mut self, _el: &ActiveEventLoop, cause: StartCause) {
         if let StartCause::ResumeTimeReached { .. } = cause {
             self.redraw_at = None;
