@@ -134,7 +134,7 @@ fn same_host_same_folder_copy_is_refused() {
     let mut e = Env::with(d.path(), vec![h.clone()], Location::Host(Box::new(h.clone())), Location::Host(Box::new(h)), None);
     e.until("both connected", |e| e.loaded(0) && e.loaded(1));
     e.click("keep.txt");
-    e.click("Copy \u{2192}");
+    e.click_named("Copy to the right pane");
     e.frame(vec![]);
     assert!(e.tab.transfers.rows.is_empty(), "no transfer started");
     assert!(e.texts().iter().any(|t| t.contains("onto itself")), "{:?}", e.texts());
@@ -151,8 +151,7 @@ fn dropped_connection_offers_reconnect() {
     let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(Box::new(h)), None);
     e.until("remote listing", |e| e.loaded(1));
     fx.server_mut().kill();
-    let refresh = e.find_right("Refresh");
-    e.click_at(refresh);
+    e.click_named_last("Refresh");
     e.until("listing fails", |e| e.texts().iter().any(|t| t == "Reconnect"));
     let r = e.find_right("Reconnect");
     e.click_at(r);

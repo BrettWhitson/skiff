@@ -153,6 +153,36 @@ impl Env {
         self.double_click_at(p);
     }
 
+    /// Clicks the last drawn text equal to `s` (a dialog's button drawn
+    /// over a toolbar button with the same label).
+    pub fn click_last(&mut self, s: &str) {
+        let p = self.h.list().prims.iter().rev().find_map(|p| match p {
+            Prim::Text { text, origin, .. } if text == s => Some(Point::new(origin.x + 4, origin.y + 6)),
+            _ => None,
+        });
+        let p = p.unwrap_or_else(|| panic!("no text {s:?}; have {:?}", self.texts()));
+        self.click_at(p);
+    }
+
+    /// Activates the control whose accessible name is `name` the way a
+    /// screen reader does (a Click action), plus a follow-up frame.
+    pub fn click_named(&mut self, name: &str) {
+        let id = self.h.tree().find(name).map(|n| n.id).unwrap_or_else(|| {
+            panic!("no control named {name:?}; have {:?}", self.h.tree().nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>())
+        });
+        self.frame(vec![Event::A11y { target: id, action: skiff_ui::a11y::A11yAction::Click }]);
+        self.frame(vec![]);
+    }
+
+    /// Like `click_named`, for the last control with that name (the right
+    /// pane's copy of a per-pane button).
+    pub fn click_named_last(&mut self, name: &str) {
+        let id = self.h.tree().nodes.iter().rev().find(|n| n.name == name).map(|n| n.id);
+        let id = id.unwrap_or_else(|| panic!("no control named {name:?}"));
+        self.frame(vec![Event::A11y { target: id, action: skiff_ui::a11y::A11yAction::Click }]);
+        self.frame(vec![]);
+    }
+
     /// A key press plus the follow-up frame the app requests after input.
     pub fn key(&mut self, k: Key, mods: Modifiers) {
         self.frame(vec![Event::KeyDown { key: k, mods, text: None }]);

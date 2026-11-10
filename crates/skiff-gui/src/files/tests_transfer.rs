@@ -5,7 +5,9 @@ use std::path::Path;
 use skiff_ui::geom::Point;
 use skiff_ui::input::{Event, Key, Modifiers, MouseButton};
 
-use super::transfers::RowState;
+use skiff_ui::widgets::ToastKind;
+
+use super::transfers::{RowState, format_eta, summary};
 use crate::testing::Env;
 
 const CTRL: Modifiers = Modifiers { ctrl: true, shift: false, alt: false, logo: false };
@@ -81,7 +83,7 @@ fn overwrite_prompt_skip_all() {
         Event::MouseUp(MouseButton::Left, y),
     ]);
     e.frame(vec![Event::Modifiers(Modifiers::NONE)]);
-    e.click("Copy \u{2192}");
+    e.click_named("Copy to the right pane");
     e.until("overwrite question", |e| e.tab.transfers.rows.iter().any(|r| matches!(r.state, RowState::Waiting(_))));
     assert!(e.texts().iter().any(|t| t.contains("exists")), "{:?}", e.texts());
     e.click("Apply to all");
@@ -98,7 +100,7 @@ fn cancel_marks_row_cancelled() {
     std::fs::write(b.path().join("x.txt"), b"old x").unwrap();
     let mut e = env(a.path(), b.path());
     e.click("x.txt");
-    e.click("Copy \u{2192}");
+    e.click_named("Copy to the right pane");
     e.until("overwrite question", |e| e.tab.transfers.rows.iter().any(|r| matches!(r.state, RowState::Waiting(_))));
     // the row's own Cancel (the question's buttons are Overwrite / Skip)
     e.click("Cancel");
@@ -118,12 +120,29 @@ fn failed_transfer_retry_succeeds() {
     e.until("right in target", move |e| e.loaded(1) && e.tab.panes[1].cwd == gs);
     std::fs::remove_dir(&gone).unwrap();
     e.click("x.txt");
-    e.click("Copy \u{2192}");
+    e.click_named("Copy to the right pane");
     e.until("failed", |e| matches!(e.tab.transfers.rows[0].state, RowState::Failed(_)));
+    assert_eq!(summary(&e.tab.transfers), "1 failed");
+    let notices = e.tab.take_notices();
+    assert!(matches!(notices.as_slice(), [(ToastKind::Error, t)] if t.starts_with("Copying x.txt failed")), "{notices:?}");
     std::fs::create_dir(&gone).unwrap();
     e.click("Retry");
     e.until("retried", |e| matches!(e.tab.transfers.rows[0].state, RowState::Done(_)));
     assert_eq!(std::fs::read(gone.join("x.txt")).unwrap(), b"new x");
+    assert_eq!(summary(&e.tab.transfers), "1 done");
+    assert!(matches!(e.tab.take_notices().as_slice(), [(ToastKind::Success, t)] if t.starts_with("Copied x.txt to ")));
+    // The header collapses the drawer (and says so to screen readers).
+    e.click_named("Transfers, 1 done");
+    assert!(e.tab.transfers.collapsed);
+    assert_eq!(e.h.tree().find("Transfers, 1 done").and_then(|n| n.expanded), Some(false));
+}
+
+/// Time left reads naturally at every scale.
+#[test]
+fn eta_text() {
+    assert_eq!(format_eta(8), "8s left");
+    assert_eq!(format_eta(192), "3m 12s left");
+    assert_eq!(format_eta(3900), "1h 5m left");
 }
 
 /// A file dropped from the OS onto a pane is copied into that pane's folder.
@@ -161,7 +180,7 @@ fn queue_runs_at_most_four_at_once() {
     }
     let mut e = env(a.path(), b.path());
     e.tab.panes[0].sel.set = (0..12).collect();
-    e.click("Copy \u{2192}");
+    e.click_named("Copy to the right pane");
     let mut most = 0;
     let mut saw_queued = false;
     let start = std::time::Instant::now();

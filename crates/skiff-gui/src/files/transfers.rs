@@ -1,5 +1,8 @@
-//! The transfer list under the panes: progress, speed, cancel, retry and
-//! inline overwrite questions (with "apply to all" across one copy action).
+//! The transfer queue drawer under the panes: a collapsible card whose
+//! header sums up the queue ("2 active · 1 failed"), with one row per copy
+//! (name, route, size, rate, ETA, a 4 px progress bar, Cancel / Retry) and
+//! inline overwrite questions ("apply to all" across one copy action).
+//! Finished copy actions leave a notice for the app to show as a toast.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -7,11 +10,17 @@ use std::time::Instant;
 use skiff_core::fs::endpoint::Endpoint;
 use skiff_core::fs::human_size;
 use skiff_core::fs::transfer::{self, OverwriteDecision, OverwritePolicy, TransferEvent, TransferHandle, TransferRequest, TransferSummary};
+use skiff_ui::a11y::Role;
 use skiff_ui::geom::Rect;
+use skiff_ui::icons::Icon;
+use skiff_ui::input::{CursorIcon, Key, Modifiers};
 use skiff_ui::layout::Size as L;
-use skiff_ui::text::FontKind;
-use skiff_ui::ui::{Id, Ui};
-use skiff_ui::widgets::{button, checkbox, elide, label, progress_bar, scroll_area};
+use skiff_ui::style::{TextRole, tokens};
+use skiff_ui::ui::{Id, Sense, Ui};
+use skiff_ui::widgets::{
+    Align, ButtonKind, ButtonOpts, Elide, TextOpts, ToastKind, button, button_width, button_with, checkbox, icon_button, progress_bar,
+    scroll_area, text,
+};
 use tokio::sync::oneshot;
 
 use super::FilesCtx;
@@ -141,11 +150,18 @@ impl TransferRow {
     }
 }
 
+/// Most notices kept for the app to pick up (older ones are dropped).
+const MAX_NOTICES: usize = 8;
+
 /// A tab's transfers, oldest first, with the running-slot limit and
 /// per-batch "apply to all" answers.
 #[derive(Default)]
 pub struct TransferList {
     pub rows: Vec<TransferRow>,
+    /// The drawer shows only its header.
+    pub collapsed: bool,
+    /// Finished copy actions to tell the user about (as toasts), oldest first.
+    pub notices: Vec<(ToastKind, String)>,
     /// Last transfer id handed out.
     next_id: u64,
     /// Last batch id handed out.
@@ -157,6 +173,7 @@ pub struct TransferList {
 impl TransferList {
     /// A fresh batch id for one copy action.
     pub fn new_batch(&mut self) -> u64 {
+        self.collapsed = false; // show the new copies
         self.next_batch += 1;
         self.next_batch
     }
@@ -300,10 +317,43 @@ impl TransferList {
                     Ok(s) => RowState::Done(s),
                     Err(e) => RowState::Failed(e),
                 };
+                let (side, batch) = (row.spec.dst_side, row.batch);
+                self.notify_if_finished(batch);
                 // Refresh the destination once its last transfer ends.
-                let side = row.spec.dst_side;
                 let more = self.rows.iter().any(|r| r.is_active() && r.spec.dst_side == side);
                 (!more).then_some(side)
+            }
+        }
+    }
+
+    /// When copy action `batch` has nothing left running, queues one notice
+    /// for it: the failures if any copy failed, else what was copied where
+    /// (an action that was only cancelled says nothing).
+    fn notify_if_finished(&mut self, batch: u64) {
+        let rows: Vec<&TransferRow> = self.rows.iter().filter(|r| r.batch == batch).collect();
+        if rows.iter().any(|r| r.is_active()) {
+            return;
+        }
+        let failed: Vec<&&TransferRow> = rows.iter().filter(|r| matches!(r.state, RowState::Failed(_))).collect();
+        let done = rows.iter().filter(|r| matches!(r.state, RowState::Done(_))).count();
+        let dst = rows.first().map(|r| r.spec.dst_label.clone()).unwrap_or_default();
+        let notice = match (failed.as_slice(), done) {
+            ([one], 0) => {
+                let why = if let RowState::Failed(e) = &one.state { e.as_str() } else { "" };
+                Some((ToastKind::Error, format!("Copying {} failed: {why}", file_name(&one.spec.src_path))))
+            }
+            ([], 0) => None,
+            ([], 1) => {
+                let one = rows.iter().find(|r| matches!(r.state, RowState::Done(_))).map_or("", |r| file_name(&r.spec.src_path));
+                Some((ToastKind::Success, format!("Copied {one} to {dst}")))
+            }
+            ([], n) => Some((ToastKind::Success, format!("Copied {n} items to {dst}"))),
+            (f, _) => Some((ToastKind::Error, format!("{} of {} copies to {dst} failed", f.len(), f.len() + done))),
+        };
+        if let Some(n) = notice {
+            self.notices.push(n);
+            if self.notices.len() > MAX_NOTICES {
+                self.notices.remove(0);
             }
         }
     }
@@ -357,103 +407,161 @@ impl TransferList {
     }
 }
 
-/// Height the transfer list wants (0 when empty), logical px.
-pub fn wanted_height(list: &TransferList) -> i32 {
-    // Header plus one 32 px line per row, capped (the rest scrolls).
-    if list.rows.is_empty() { 0 } else { (34 + 32 * list.rows.len() as i32).min(200) }
+/// The last part of a path (either separator).
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
-/// Draws the transfer list (header with "Clear finished", then one scrolling
-/// line per row) and applies the buttons pressed. `panes` is used by Retry.
+/// The drawer header's summary: "2 active · 1 failed", or "3 done" when
+/// nothing is active or failed ("" when every row was cancelled).
+pub fn summary(list: &TransferList) -> String {
+    let active = list.running();
+    let failed = list.rows.iter().filter(|r| matches!(r.state, RowState::Failed(_))).count();
+    let done = list.rows.iter().filter(|r| matches!(r.state, RowState::Done(_))).count();
+    let mut parts = vec![];
+    if active > 0 {
+        parts.push(format!("{active} active"));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} failed"));
+    }
+    if parts.is_empty() && done > 0 {
+        parts.push(format!("{done} done"));
+    }
+    parts.join(SEP)
+}
+
+/// Separator between the parts of a summary or status line.
+const SEP: &str = " \u{00B7} ";
+
+/// Time left as "8s left", "3m 12s left" or "1h 5m left".
+pub fn format_eta(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s left"),
+        s if s < 3600 => format!("{}m {}s left", s / 60, s % 60),
+        s => format!("{}h {}m left", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// A running row's progress line: "1.2M of 3.4M · 5.1M/s · 8s left" (parts
+/// that are not known yet are left out).
+pub fn progress_text(row: &TransferRow) -> String {
+    let mut parts = vec![match row.total {
+        Some(t) => format!("{} of {}", human_size(row.done), human_size(t)),
+        None => human_size(row.done),
+    }];
+    if row.speed >= 1.0 {
+        parts.push(format!("{}/s", human_size(row.speed as u64)));
+        if let Some(t) = row.total {
+            parts.push(format_eta((t.saturating_sub(row.done) as f64 / row.speed).ceil() as u64));
+        }
+    }
+    parts.join(SEP)
+}
+
+/// Height of the drawer header, logical px.
+const HEAD_H: i32 = 36;
+/// Height of one transfer row, logical px.
+const ROW_H: i32 = 48;
+/// Rows shown before the list scrolls.
+const MAX_ROWS: i32 = 4;
+/// The smallest open drawer: the header and one row, logical px.
+pub const MIN_OPEN_H: i32 = HEAD_H + ROW_H + 2;
+
+/// Height the drawer wants (0 when there are no transfers), logical px.
+pub fn wanted_height(list: &TransferList) -> i32 {
+    match list.rows.len() as i32 {
+        0 => 0,
+        _ if list.collapsed => HEAD_H,
+        n => HEAD_H + ROW_H * n.min(MAX_ROWS) + 2,
+    }
+}
+
+/// Draws the drawer (header with the collapse toggle, summary and "Clear
+/// finished", then one scrolling row per transfer) and applies the buttons
+/// pressed. `panes` is used by Retry.
 pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx, panes: [(String, Option<Endpoint>); 2]) {
     if list.rows.is_empty() || rect.h <= 0 {
         return;
     }
     let p = ui.style().palette;
     let id = Id::new(("transfers", ctx.tab_id));
-    let radius = ui.px(6) as f32;
-    ui.painter().rect(rect, p.surface, radius);
-    let inner = rect.inset(ui.px(6));
-    let parts = ui.split_v(inner, &[L::Px(26), L::Fill], 4);
-    let head = ui.split_h(parts[0], &[L::Fill, L::Px(150)], 6);
-    let running = list.running();
-    let title = if running > 0 { format!("Transfers \u{00B7} {running} running") } else { "Transfers".to_string() };
-    label(ui, head[0], &title, Some(p.muted));
-    if button(ui, id.with("clear"), head[1], "Clear finished").clicked {
+    let radius = tokens::RADIUS_MD * ui.scale();
+    let bw = ui.px(1).max(1);
+    {
+        let mut painter = ui.painter();
+        painter.rect(rect, p.surface, radius);
+        painter.border(rect, p.border, bw, radius);
+    }
+    let pad = ui.px(tokens::SPACE_SM);
+    let head = Rect::new(rect.x + bw, rect.y + bw, rect.w - 2 * bw, ui.px(HEAD_H) - bw);
+
+    // Header: the strip left of "Clear finished" toggles the drawer (a
+    // focusable button for keyboards, announced with the summary).
+    let tid = id.with("toggle");
+    let finished = list.rows.iter().any(|r| !r.is_active());
+    let clear_w = button_width(ui, "Clear finished", 0);
+    let ch = ui.px(tokens::ROW_H);
+    let clear_r = Rect::new(head.right() - pad - clear_w, head.y + (head.h - ch) / 2, clear_w, ch);
+    let toggle_r = Rect::new(head.x, head.y, clear_r.x - head.x - pad, head.h);
+    let mut tr = ui.interact(tid, toggle_r, Sense::focusable());
+    if tr.focused && ui.keys_for(tid) {
+        let enter = ui.input_mut().take_key(&Key::Enter, Modifiers::NONE);
+        tr.clicked |= enter || ui.input_mut().take_key(&Key::Space, Modifiers::NONE);
+    }
+    let sum = summary(list);
+    let name = if sum.is_empty() { "Transfers".to_string() } else { format!("Transfers, {sum}") };
+    if let Some(n) = ui.a11y_node(tid, Role::Button, &name) {
+        n.expanded = Some(!list.collapsed);
+    }
+    if tr.hovered {
+        ui.set_cursor_icon(CursorIcon::Pointer);
+    }
+    if tr.clicked {
+        list.collapsed = !list.collapsed;
+    }
+    let s = ui.px(tokens::ICON);
+    let mut x = head.x + pad;
+    let chevron = if list.collapsed { Icon::ChevronUp } else { Icon::ChevronDown };
+    ui.painter().icon(Rect::new(x, head.y + (head.h - s) / 2, s, s), chevron, if tr.hovered { p.fg } else { p.muted });
+    x += s + pad;
+    let strong = TextOpts { role: Some(TextRole::Strong), ..Default::default() };
+    x += text(ui, Rect::new(x, head.y, (toggle_r.right() - x).max(0), head.h), "Transfers", strong) + pad;
+    // Summary pieces; failures in the danger colour.
+    let caption = |c| TextOpts { role: Some(TextRole::Caption), color: Some(c), ..Default::default() };
+    for (k, piece) in sum.split(SEP).filter(|s| !s.is_empty()).enumerate() {
+        if k > 0 {
+            x += text(ui, Rect::new(x, head.y, (toggle_r.right() - x).max(0), head.h), SEP, caption(p.muted));
+        }
+        let c = if piece.ends_with("failed") { p.danger } else { p.muted };
+        x += text(ui, Rect::new(x, head.y, (toggle_r.right() - x).max(0), head.h), piece, caption(c));
+    }
+    let ghost = ButtonOpts { kind: ButtonKind::Ghost, enabled: finished, ..Default::default() };
+    if button_with(ui, id.with("clear"), clear_r, "Clear finished", ghost).clicked {
         list.rows.retain(|r| r.is_active());
     }
-    let row_h = ui.px(32);
+    if list.collapsed || list.rows.is_empty() {
+        return;
+    }
+    ui.painter().rect(Rect::new(head.x, head.bottom(), head.w, bw), p.border, 0.0);
+    let body = Rect::new(head.x, head.bottom() + bw, head.w, rect.bottom() - bw - head.bottom() - bw);
+
+    let row_h = ui.px(ROW_H);
     let content = row_h * list.rows.len() as i32;
     // Button presses are collected while the rows are borrowed and applied after.
     let mut actions: Vec<(usize, &'static str)> = vec![];
-    scroll_area(ui, id.with("scroll"), parts[1], content, |ui, vis, off| {
-        let px = ui.font_px();
+    scroll_area(ui, id.with("scroll"), body, content, |ui, vis, off| {
         for (i, row) in list.rows.iter_mut().enumerate() {
-            let r = Rect::new(vis.x, vis.y + i as i32 * row_h - off, vis.w, row_h - ui.px(4));
+            let r = Rect::new(vis.x, vis.y + i as i32 * row_h - off, vis.w, row_h);
             // Skip rows scrolled out of view.
             if r.bottom() < vis.y || r.y > vis.bottom() {
                 continue;
             }
-            let rid = id.with(("row", i));
-            let name = row.spec.src_path.rsplit(['/', '\\']).next().unwrap_or("").to_string();
-            let what = format!("{name}  {} \u{2192} {}", row.spec.src_label, row.spec.dst_label);
-            match &mut row.state {
-                // The overwrite question replaces the whole line.
-                RowState::Waiting(q) => {
-                    let cols = ui.split_h(r, &[L::Fill, L::Px(90), L::Px(64), L::Px(140), L::Px(76)], 6);
-                    let qname = q.path.rsplit(['/', '\\']).next().unwrap_or(&q.path).to_string();
-                    label(ui, cols[0], &format!("{qname} exists \u{2014} replace it?"), Some(p.warning));
-                    if button(ui, rid.with("ow"), cols[1], "Overwrite").clicked {
-                        actions.push((i, "overwrite"));
-                    }
-                    if button(ui, rid.with("skip"), cols[2], "Skip").clicked {
-                        actions.push((i, "skip"));
-                    }
-                    checkbox(ui, rid.with("all"), cols[3], &mut q.apply_all, "Apply to all");
-                    if button(ui, rid.with("cancel"), cols[4], "Cancel").clicked {
-                        actions.push((i, "cancel"));
-                    }
-                }
-                state => {
-                    let cols = ui.split_h(r, &[L::Fill, L::Px(150), L::Px(90), L::Px(76)], 6);
-                    let shown = elide(ui, &what, FontKind::Ui, px, cols[0].w);
-                    label(ui, cols[0], &shown, None);
-                    let bar = Rect::new(cols[1].x, cols[1].y + cols[1].h / 2 - ui.px(4), cols[1].w, ui.px(8));
-                    match state {
-                        RowState::Running => {
-                            let f = row.total.filter(|t| *t > 0).map(|t| row.done as f32 / t as f32);
-                            progress_bar(ui, bar, f);
-                            label(ui, cols[2], &format!("{}/s", human_size(row.speed as u64)), Some(p.muted));
-                            if button(ui, rid.with("cancel"), cols[3], "Cancel").clicked {
-                                actions.push((i, "cancel"));
-                            }
-                        }
-                        RowState::Queued => {
-                            label(ui, cols[1], "queued", Some(p.muted));
-                            if button(ui, rid.with("cancel"), cols[3], "Cancel").clicked {
-                                actions.push((i, "cancel"));
-                            }
-                        }
-                        RowState::Done(s) => {
-                            progress_bar(ui, bar, Some(1.0));
-                            let t = if s.skipped > 0 { format!("done, {} skipped", s.skipped) } else { "done".into() };
-                            label(ui, cols[2], &t, Some(p.success));
-                        }
-                        RowState::Cancelled => {
-                            label(ui, Rect::new(cols[1].x, cols[1].y, cols[1].w + cols[2].w, cols[1].h), "cancelled", Some(p.muted));
-                        }
-                        RowState::Failed(e) => {
-                            let span = Rect::new(cols[1].x, cols[1].y, cols[2].right() - cols[1].x, cols[1].h);
-                            let shown = elide(ui, e, FontKind::Ui, px, span.w);
-                            label(ui, span, &shown, Some(p.danger));
-                            if button(ui, rid.with("retry"), cols[3], "Retry").clicked {
-                                actions.push((i, "retry"));
-                            }
-                        }
-                        RowState::Waiting(_) => {}
-                    }
-                }
+            if i > 0 {
+                ui.painter().rect(Rect::new(r.x + pad, r.y, r.w - 2 * pad, bw), p.border, 0.0);
             }
+            let inner = Rect::new(r.x + pad + ui.px(tokens::SPACE_XS), r.y, r.w - 2 * pad - ui.px(tokens::SPACE_XS), r.h);
+            row_view(ui, id.with(("row", i)), inner, row, i, &mut actions);
         }
     });
     for (i, a) in actions {
@@ -464,5 +572,113 @@ pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx, pa
             "retry" => list.retry(i, ctx, panes.clone()),
             _ => {}
         }
+    }
+}
+
+/// One transfer row in `r`: icon, name and route on the first line with the
+/// status at the right, a 4 px progress bar below, and Cancel / Retry. An
+/// overwrite question takes the whole row instead.
+fn row_view(ui: &mut Ui, rid: Id, r: Rect, row: &mut TransferRow, i: usize, actions: &mut Vec<(usize, &'static str)>) {
+    let p = ui.style().palette;
+    let pad = ui.px(tokens::SPACE_SM);
+    let s = ui.px(tokens::ICON);
+    let ctl = ui.px(tokens::CONTROL_H);
+    let by = r.y + (r.h - ctl) / 2;
+    let name = file_name(&row.spec.src_path).to_string();
+    let caption = |c| TextOpts { role: Some(TextRole::Caption), color: Some(c), ..Default::default() };
+    // The overwrite question replaces the whole line.
+    if let RowState::Waiting(q) = &mut row.state {
+        let cols = ui.split_h(r, &[L::Fill, L::Px(96), L::Px(64), L::Px(124), L::Px(76)], tokens::SPACE_XS);
+        let line = |c: Rect| Rect::new(c.x, by, c.w, ctl);
+        ui.painter().icon(Rect::new(cols[0].x, r.y + (r.h - s) / 2, s, s), Icon::Warning, p.warning);
+        let qname = file_name(&q.path).to_string();
+        let tr = Rect::new(cols[0].x + s + pad, r.y, cols[0].w - s - pad, r.h);
+        text(ui, tr, &format!("{qname} exists \u{2014} replace it?"), TextOpts { elide: Elide::Middle, ..Default::default() });
+        if button_with(ui, rid.with("ow"), line(cols[1]), "Overwrite", ButtonOpts::kind(ButtonKind::Primary)).clicked {
+            actions.push((i, "overwrite"));
+        }
+        if button(ui, rid.with("skip"), line(cols[2]), "Skip").clicked {
+            actions.push((i, "skip"));
+        }
+        checkbox(ui, rid.with("all"), line(cols[3]), &mut q.apply_all, "Apply to all");
+        if button_with(ui, rid.with("cancel"), line(cols[4]), "Cancel", ButtonOpts::kind(ButtonKind::Ghost)).clicked {
+            actions.push((i, "cancel"));
+        }
+        return;
+    }
+    // Right end: Retry (failed) and/or a Cancel icon (unfinished).
+    let mut right = r.right();
+    if row.is_active() {
+        right -= ctl;
+        let label = format!("Cancel copying {name}");
+        if icon_button(ui, rid.with("cancel"), Rect::new(right, by, ctl, ctl), Icon::Close, &label, ButtonKind::Ghost).clicked {
+            actions.push((i, "cancel"));
+        }
+    }
+    if matches!(row.state, RowState::Failed(_)) {
+        let w = button_width(ui, "Retry", 1);
+        right -= w;
+        let opts = ButtonOpts { icon: Some(Icon::Refresh), ..Default::default() };
+        if button_with(ui, rid.with("retry"), Rect::new(right, by, w, ctl), "Retry", opts).clicked {
+            actions.push((i, "retry"));
+        }
+    }
+    right -= pad;
+    // Line 1: icon, name, route; status on the right.
+    let lh = ui.px(20);
+    let y1 = r.y + (r.h - lh - ui.px(10)) / 2;
+    let (icon, icon_c) = match row.state {
+        RowState::Failed(_) => (Icon::Error, p.danger),
+        RowState::Done(_) => (Icon::Check, p.success),
+        _ => (Icon::Transfer, p.muted),
+    };
+    ui.painter().icon(Rect::new(r.x, y1 + (lh - s) / 2, s, s), icon, icon_c);
+    let tx = r.x + s + pad + ui.px(tokens::SPACE_XS);
+    let (status, sc) = match &row.state {
+        RowState::Running => (progress_text(row), p.muted),
+        RowState::Queued => ("Queued".to_string(), p.muted),
+        RowState::Done(sum) if sum.skipped > 0 => (format!("Done, {} skipped", sum.skipped), p.success),
+        RowState::Done(_) => (row.total.map_or("Done".to_string(), |t| format!("Done{SEP}{}", human_size(t))), p.success),
+        RowState::Cancelled => ("Cancelled".to_string(), p.muted),
+        RowState::Failed(e) => (e.clone(), p.danger),
+        RowState::Waiting(_) => (String::new(), p.muted),
+    };
+    // The status gets up to half the line; the name and route take the rest.
+    let avail = (right - tx).max(0);
+    let (sfont, spx) = ui.text_style(TextRole::Caption);
+    let sw = (ui.measure(&status, sfont, spx).ceil() as i32).min(avail / 2);
+    let status_r = Rect::new(right - sw, y1, sw, lh);
+    text(ui, status_r, &status, TextOpts { align: Align::End, elide: Elide::End, ..caption(sc) });
+    let name_room = (status_r.x - pad - tx).max(0);
+    let strong = TextOpts { role: Some(TextRole::Strong), elide: Elide::Middle, ..Default::default() };
+    let nw = text(ui, Rect::new(tx, y1, name_room, lh), &name, strong);
+    let route = format!("{} \u{2192} {}", row.spec.src_label, row.spec.dst_label);
+    let rx = tx + nw + pad;
+    if rx < status_r.x - pad {
+        text(ui, Rect::new(rx, y1, status_r.x - pad - rx, lh), &route, TextOpts { elide: Elide::Middle, ..caption(p.muted) });
+    }
+    // Line 2: the 4 px bar (striped while the size is unknown).
+    let bar = Rect::new(tx, y1 + lh + ui.px(6), (right - tx).max(0), ui.px(4).max(2));
+    let track = p.surface_alt.mix(p.fg, 0.08);
+    let radius = bar.h as f32 / 2.0;
+    let fill = |ui: &mut Ui, f: f32, c| {
+        ui.painter().rect(bar, track, radius);
+        let w = (bar.w as f32 * f.clamp(0.0, 1.0)).round() as i32;
+        if w > 0 {
+            ui.painter().rect(Rect::new(bar.x, bar.y, w, bar.h), c, radius);
+        }
+    };
+    match &row.state {
+        RowState::Running => match row.total.filter(|t| *t > 0) {
+            Some(t) => fill(ui, row.done as f32 / t as f32, p.accent),
+            None => progress_bar(ui, bar, None),
+        },
+        RowState::Queued => fill(ui, 0.0, p.accent),
+        RowState::Done(_) => fill(ui, 1.0, p.success),
+        RowState::Failed(_) => fill(ui, 1.0, p.danger),
+        _ => fill(ui, 0.0, p.muted),
+    }
+    if let Some(n) = ui.a11y_node(rid, Role::Label, &format!("{name}, {route}: {status}")) {
+        n.bounds = r;
     }
 }

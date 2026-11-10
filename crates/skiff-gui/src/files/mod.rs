@@ -1,6 +1,7 @@
-//! File-transfer tabs: two panes, each Local or any host, with a transfer
-//! list below. `pane` draws one side, `ops` runs listing/connect/file
-//! operations on the engine, and `transfers` queues and shows copies.
+//! File-transfer tabs: two panes, each Local or any host, with the
+//! transfer queue drawer below. `pane` draws one side, `ops` runs
+//! listing/connect/file operations on the engine, and `transfers` queues
+//! and shows copies.
 
 use std::path::PathBuf;
 
@@ -12,7 +13,9 @@ use skiff_core::fs::transfer::TransferEvent;
 use skiff_core::hosts::HostEntry;
 use skiff_ui::geom::Rect;
 use skiff_ui::layout::Size as L;
+use skiff_ui::style::tokens;
 use skiff_ui::ui::Ui;
+use skiff_ui::widgets::ToastKind;
 
 use crate::engine::Engine;
 
@@ -108,9 +111,9 @@ impl FilesTab {
         FilesTab { panes: [Pane::new(left), Pane::new(right)], transfers: TransferList::default() }
     }
 
-    /// Tab title: "⇅ left ↔ right" from the two location labels.
+    /// Tab title: "left ↔ right" from the two location labels (the tab strip adds the icon).
     pub fn title(&self) -> String {
-        format!("\u{21C5} {} \u{2194} {}", self.panes[0].loc.label(), self.panes[1].loc.label())
+        format!("{} \u{2194} {}", self.panes[0].loc.label(), self.panes[1].loc.label())
     }
 
     /// The tab is closing: cancel its transfers, stop its connections and
@@ -135,6 +138,12 @@ impl FilesTab {
             p.refresh(ctx, side);
         }
         self.transfers.pump(ctx);
+    }
+
+    /// Takes the notices queued since the last call (finished or failed
+    /// copy actions), for the app to show as toasts.
+    pub fn take_notices(&mut self) -> Vec<(ToastKind, String)> {
+        std::mem::take(&mut self.transfers.notices)
     }
 
     /// Each pane's location label and current connection (for retries).
@@ -201,12 +210,16 @@ impl FilesTab {
     }
 }
 
-/// Draws both panes side by side, the transfer list below, and acts on
+/// Draws both panes side by side, the transfer drawer below, and acts on
 /// their copy requests, pane-to-pane drags and OS file drops.
 pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
-    let list_h = transfers::wanted_height(&tab.transfers);
-    let rows = ui.split_v(rect, &[L::Fill, L::Px(list_h)], if list_h > 0 { 6 } else { 0 });
-    let cols = ui.split_h(rows[0], &[L::Frac(0.5), L::Frac(0.5)], 6);
+    // The drawer takes at most 40% of the tab (its rows scroll), never less
+    // than its header and one row.
+    let room = (rect.h as f32 / ui.scale() * 0.4) as i32;
+    let list_h = transfers::wanted_height(&tab.transfers).min(room.max(transfers::MIN_OPEN_H));
+    let gap = tokens::SPACE_SM;
+    let rows = ui.split_v(rect, &[L::Fill, L::Px(list_h)], if list_h > 0 { gap } else { 0 });
+    let cols = ui.split_h(rows[0], &[L::Frac(0.5), L::Frac(0.5)], gap);
     // Files dropped from the OS this frame.
     let dropped: Vec<PathBuf> = ui
         .input()
