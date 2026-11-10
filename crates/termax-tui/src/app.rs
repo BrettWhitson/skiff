@@ -28,6 +28,11 @@ use termax_core::sshconfig::edit::{ConfigSet, backups_dir, display_path};
 use termax_core::state::UiState;
 use termax_core::status::{self, Status as HostStatus};
 use termax_core::terminal::{TerminalSession, encode_key};
+
+/// How long a question must be on screen before it takes keys.
+const QUESTION_DELAY: Duration = Duration::from_millis(250);
+
+type SharedParser = Arc<std::sync::Mutex<vt100::Parser>>;
 use termax_core::theme::{self, ThemeDef};
 
 /// Results from background tasks, delivered to the UI thread.
@@ -235,6 +240,9 @@ pub struct App {
     pub tab_cols: Vec<(u16, u16)>,
     /// The mouse button a program was told is down.
     pub mouse_held: Option<u8>,
+    /// The session told about `mouse_held` (by its parser) and the last
+    /// cell reported, so the release goes to it even after focus moved.
+    mouse_target: Option<(SharedParser, (u16, u16))>,
     pub selection: Option<Selection>,
     /// Text to put on the user's clipboard (written as OSC 52).
     pub clipboard_out: Option<String>,
@@ -255,8 +263,16 @@ pub struct App {
     askpass: Option<Arc<Broker>>,
     /// The ssh client's version once checked (`None` inside: unknown).
     ssh_version: Option<Option<(u32, u32)>>,
-    /// Questions waiting for the screen (one modal at a time).
+    /// Questions waiting for the screen (one modal at a time). Each shows
+    /// only while its own SFTP tab is active; until then the tab is flagged.
     pub questions: VecDeque<Question>,
+    /// When the question on screen opened: keys typed within
+    /// `question_delay` of that were meant for something else and are ignored.
+    pub question_shown: Option<Instant>,
+    pub question_delay: Duration,
+    /// ssh notices that need no answer ("touch your security key"), with
+    /// the host they're for; shown on the status line until withdrawn.
+    pub notices: Vec<(String, AskRequest)>,
     next_id: u64,
     rt: Handle,
     tx: UnboundedSender<Msg>,
@@ -294,6 +310,7 @@ impl App {
             other_pane: None,
             tab_cols: vec![],
             mouse_held: None,
+            mouse_target: None,
             selection: None,
             clipboard_out: None,
             paste_bursts: cfg!(windows),
@@ -302,6 +319,9 @@ impl App {
             askpass: None,
             ssh_version: None,
             questions: VecDeque::new(),
+            question_shown: None,
+            question_delay: QUESTION_DELAY,
+            notices: vec![],
             next_id: 1,
             rt,
             tx,
@@ -757,9 +777,9 @@ impl App {
         if let (TabKind::Terminal(s), Some(sp)) = (&mut tab.kind, &mut tab.split) {
             std::mem::swap(s, &mut sp.other);
             sp.focus_first = !sp.focus_first;
-            // These belong to the pane that had the focus.
+            // This belongs to the pane that had the focus (a held button
+            // is released to it by `check_mouse_held`).
             self.selection = None;
-            self.mouse_held = None;
         }
     }
 
@@ -769,7 +789,6 @@ impl App {
         if let Some(sp) = tab.split.take() {
             tab.kind = TabKind::Terminal(sp.other);
             self.selection = None;
-            self.mouse_held = None;
         }
     }
 
@@ -799,6 +818,18 @@ impl App {
             let msg = match msg {
                 Msg::Status { host, status } => {
                     self.statuses.insert(host, status);
+                    continue;
+                }
+                Msg::Ask(req) if req.kind == AskKind::Notice => {
+                    match self.ask_owner(&req) {
+                        Some(i) => {
+                            let TabKind::Sftp(s) = &self.tabs[i].kind else { unreachable!("an sftp tab") };
+                            self.notices.push((s.host_name.clone(), req));
+                        }
+                        None => {
+                            let _ = req.reply.send(None);
+                        }
+                    }
                     continue;
                 }
                 Msg::Ask(req) => {
@@ -872,9 +903,47 @@ impl App {
         }
     }
 
-    /// Puts away a question that no longer applies (ssh withdrew it, or its
-    /// transfer ended) and shows the next waiting one when nothing else is open.
+    /// The tab (index) whose connection attempt asks `req`, if it still may.
+    fn ask_owner(&self, req: &AskRequest) -> Option<usize> {
+        if req.cancelled.is_cancelled() || req.reply.is_closed() {
+            return None;
+        }
+        // Only the current attempt of a tab still connecting may ask.
+        self.tabs
+            .iter()
+            .position(|t| matches!(&t.kind, TabKind::Sftp(s) if s.ask_tag() == req.tag && matches!(s.status, Status::Connecting)))
+    }
+
+    /// The tab (index) question `q` belongs to; `None` once it no longer applies.
+    fn question_owner(&self, q: &Question) -> Option<usize> {
+        match q {
+            Question::Ask(req) => self.ask_owner(req),
+            Question::Overwrite { tab, reply, .. } => {
+                if reply.is_closed() {
+                    return None;
+                }
+                self.tabs.iter().position(|t| t.id == *tab && matches!(t.kind, TabKind::Sftp(_)))
+            }
+        }
+    }
+
+    /// Tabs (indexes) with a question waiting for them to be shown.
+    pub fn waiting_tabs(&self) -> Vec<usize> {
+        self.questions.iter().filter_map(|q| self.question_owner(q)).collect()
+    }
+
+    /// The question on screen opened too recently to take keys.
+    fn question_too_new(&self) -> bool {
+        matches!(self.modal, Some(Modal::Ask { .. } | Modal::Overwrite { .. }))
+            && self.question_shown.is_some_and(|at| at.elapsed() < self.question_delay)
+    }
+
+    /// Puts away questions that no longer apply (ssh withdrew them, their
+    /// transfer or tab ended) and shows the next one for the active tab
+    /// when nothing else is open. A question never opens over another tab:
+    /// keys typed there (a shell command, say) must not answer it.
     fn next_question(&mut self) {
+        self.notices.retain(|(_, r)| !r.cancelled.is_cancelled() && !r.reply.is_closed());
         let stale = match &self.modal {
             Some(Modal::Ask { req, .. }) => req.cancelled.is_cancelled() || req.reply.is_closed(),
             Some(Modal::Overwrite { reply, .. }) => reply.is_closed(),
@@ -883,39 +952,28 @@ impl App {
         if stale {
             self.modal = None;
         }
-        while self.modal.is_none()
-            && let Some(q) = self.questions.pop_front()
-        {
-            match q {
-                Question::Ask(req) => {
-                    // Only the current attempt of a tab still connecting may ask.
-                    let host = self.tabs.iter().find_map(|t| match &t.kind {
-                        TabKind::Sftp(s) if s.ask_tag() == req.tag && matches!(s.status, Status::Connecting) => Some(s.host_name.clone()),
-                        _ => None,
+        let mut waiting = VecDeque::new();
+        for q in std::mem::take(&mut self.questions) {
+            match self.question_owner(&q) {
+                Some(i) if self.modal.is_none() && i == self.active => {
+                    let TabKind::Sftp(s) = &self.tabs[i].kind else { unreachable!("an sftp tab") };
+                    let host = s.host_name.clone();
+                    self.modal = Some(match q {
+                        Question::Ask(req) => Modal::Ask { host, input: TextInput::default(), req },
+                        Question::Overwrite { tab, id, path, reply } => Modal::Overwrite { tab, id, host, path, reply },
                     });
-                    match host {
-                        Some(host) if !req.cancelled.is_cancelled() => {
-                            self.modal = Some(Modal::Ask { host, input: TextInput::default(), req })
-                        }
-                        _ => {
-                            let _ = req.reply.send(None);
-                        }
-                    }
+                    self.question_shown = Some(Instant::now());
                 }
-                Question::Overwrite { tab, id, path, reply } => {
-                    let host = self.tabs.iter().find_map(|t| match &t.kind {
-                        TabKind::Sftp(s) if t.id == tab => Some(s.host_name.clone()),
-                        _ => None,
-                    });
-                    // A closed tab's transfer was cancelled; dropping `reply` is enough.
-                    if let Some(host) = host
-                        && !reply.is_closed()
-                    {
-                        self.modal = Some(Modal::Overwrite { tab, id, host, path, reply });
+                Some(_) => waiting.push_back(q),
+                // A closed tab's transfer was cancelled; dropping `reply` is enough.
+                None => {
+                    if let Question::Ask(req) = q {
+                        let _ = req.reply.send(None);
                     }
                 }
             }
         }
+        self.questions = waiting;
     }
 
     fn sftp_tab_mut(&mut self, id: u64) -> Option<&mut SftpTab> {
@@ -951,6 +1009,45 @@ impl App {
             Event::Paste(text) => self.handle_paste(&text),
             Event::Mouse(m) => self.handle_mouse(m),
             _ => {}
+        }
+        self.check_mouse_held();
+    }
+
+    /// A program told a button is down must hear it come up: if a dialog
+    /// opened or another tab or pane took the focus mid-drag, the release
+    /// is sent now, to the session that saw the press.
+    fn check_mouse_held(&mut self) {
+        let Some((parser, cell)) = &self.mouse_target else {
+            self.mouse_held = None;
+            return;
+        };
+        let focused = match &self.tabs[self.active].kind {
+            TabKind::Terminal(s) => Arc::ptr_eq(&s.parser, parser),
+            _ => false,
+        };
+        if self.mouse_held.is_none() || (focused && self.modal.is_none()) {
+            if self.mouse_held.is_none() {
+                self.mouse_target = None;
+            }
+            return;
+        }
+        let (button, cell) = (self.mouse_held.take().unwrap_or(0), *cell);
+        let parser = parser.clone();
+        self.mouse_target = None;
+        let session = self.tabs.iter_mut().find_map(|t| {
+            let other = t.split.as_mut().map(|sp| &mut sp.other);
+            match &mut t.kind {
+                TabKind::Terminal(s) if Arc::ptr_eq(&s.parser, &parser) => Some(s),
+                _ => other.filter(|o| Arc::ptr_eq(&o.parser, &parser)),
+            }
+        });
+        if let Some(s) = session {
+            let mode = s.parser.lock().map(|p| (p.screen().mouse_protocol_mode(), p.screen().mouse_protocol_encoding())).ok();
+            if let Some((mode, enc)) = mode
+                && let Some(bytes) = termx::encode_mouse(mode, enc, MouseEv::Release(button), cell.0, cell.1, false, false, false)
+            {
+                s.write(&bytes);
+            }
         }
     }
 
@@ -1028,6 +1125,7 @@ impl App {
                 }
                 MouseEventKind::Up(b) if inside || held => {
                     self.mouse_held = None;
+                    self.mouse_target = None;
                     MouseEv::Release(button(b))
                 }
                 MouseEventKind::Drag(b) if inside || held => MouseEv::Drag(button(b)),
@@ -1036,6 +1134,9 @@ impl App {
                 MouseEventKind::ScrollDown if inside => MouseEv::WheelDown,
                 _ => return,
             };
+            if self.mouse_held.is_some() {
+                self.mouse_target = Some((s.parser.clone(), cell));
+            }
             let (alt_key, ctrl) = (m.modifiers.contains(KeyModifiers::ALT), m.modifiers.contains(KeyModifiers::CONTROL));
             if let Some(bytes) = termx::encode_mouse(mode, enc, ev, cell.0, cell.1, false, alt_key, ctrl) {
                 s.write(&bytes);
@@ -1138,6 +1239,9 @@ impl App {
 
     fn handle_paste(&mut self, text: &str) {
         let line = text.lines().next().unwrap_or("");
+        if self.question_too_new() {
+            return; // meant for whatever was there before
+        }
         match &mut self.modal {
             Some(Modal::Editor(ed)) => {
                 if let Some(i) = ed.focused_input() {
@@ -1456,6 +1560,9 @@ impl App {
     }
 
     fn handle_modal_key(&mut self, key: KeyEvent) {
+        if self.question_too_new() {
+            return;
+        }
         let Some(modal) = self.modal.take() else {
             return;
         };
@@ -1570,7 +1677,7 @@ impl App {
                     input.handle_key(key);
                     Some(Modal::Ask { host, input, req })
                 }
-                (AskKind::Confirm, _) => Some(Modal::Ask { host, input, req }),
+                (AskKind::Confirm | AskKind::Notice, _) => Some(Modal::Ask { host, input, req }),
             },
             Modal::Overwrite { tab, id, host, path, reply } => {
                 let decision = match key.code {

@@ -60,8 +60,11 @@ fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
     let mut spans = vec![Span::styled(" termax ", t.title()), Span::styled("│", t.muted())];
     let mut x = area.x + unicode_width(" termax │");
     let mut cols = vec![];
+    let waiting = app.waiting_tabs();
     for (i, tab) in app.tabs.iter().enumerate() {
+        let asks = waiting.contains(&i);
         let marker = match &tab.kind {
+            _ if asks => " ?",
             TabKind::Terminal(_) => "",
             TabKind::Sftp(s) if matches!(s.status, Status::Failed(_)) => " ✗",
             _ => "",
@@ -70,7 +73,11 @@ fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
         let w = unicode_width(&label);
         cols.push((x, x + w));
         x += w + 1;
-        let style = if i == app.active { t.selected() } else { t.muted() };
+        let style = match () {
+            _ if i == app.active => t.selected(),
+            _ if asks => Style::new().fg(t.warning),
+            _ => t.muted(),
+        };
         spans.push(Span::styled(label, style));
         spans.push(Span::styled("│", t.muted()));
     }
@@ -92,9 +99,20 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         set_cursor(f, area.x + head.len() as u16, area.y, query);
         return;
     }
-    let line = if let Some((msg, is_err, _)) = &app.status {
+    let waiting = app.waiting_tabs();
+    let line = if let Some((host, req)) = app.notices.first() {
+        Line::from(Span::styled(format!(" {host}: {}", req.prompt.trim()), Style::new().fg(t.warning)))
+    } else if let Some((msg, is_err, _)) = &app.status {
         let kind = if *is_err { "Error" } else { "Info" };
         Line::from(Span::styled(format!(" {kind}: {msg}"), Style::new().fg(if *is_err { t.error } else { t.success })))
+    } else if let Some(&i) = waiting.iter().find(|&&i| i != app.active) {
+        let text = format!(
+            " {} is waiting for an answer: switch to tab {} ({})",
+            app.tabs[i].title,
+            i + 1,
+            app.keys.show(Action::Tab((i + 1).min(9) as u8))
+        );
+        Line::from(Span::styled(text, Style::new().fg(t.warning)))
     } else {
         let hints = match &app.tabs[app.active].kind {
             TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear".to_string(),

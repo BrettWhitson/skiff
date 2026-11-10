@@ -132,7 +132,12 @@ formatting in `config.toml` are kept.
 password, a one-time code or a yes/no for an unknown host key, it asks
 termax (`SSH_ASKPASS`, OpenSSH 8.4 or newer): the TUI shows the question in
 a dialog (input masked; `y` / `n` for host keys; `Esc` cancels) and the GUI
-in the pane. Answers go straight to ssh and are never stored. When termax
+in the pane. A question only opens on its own SFTP tab: while you work in
+another tab, that tab is flagged with `?` and the status line says where to
+answer, and keys typed in the first moment after a question opens are
+ignored. A security-key notice ("confirm user presence") needs no answer:
+it shows on the status line (the GUI's pane) and goes away when the key is
+touched. Answers go straight to ssh and are never stored. When termax
 can't prompt (an older OpenSSH), `sftp_batch_mode = true` makes ssh fail at
 once with its own message instead; key and agent auth always work.
 
@@ -233,6 +238,11 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | File exists | `o` / `s` / `a` / `S` | Overwrite / skip / overwrite all / skip all for this transfer |
 | | `c` or `Esc` | Cancel the transfer |
 
+A copied file is written next to its destination as `.<name>.termax-part`
+and moved into place only when complete, so cancelling (or a failure) never
+damages a file being overwritten. Over SFTP the old file is removed just
+before the move, since SFTP servers don't rename onto an existing file.
+
 All other keys in a terminal tab go straight to the remote shell. Only the
 shortcuts from the keymap are intercepted (by default `Alt+` chords, and only
 without `Shift`: `Alt+Shift+F` and the like reach the shell; a letter
@@ -246,7 +256,10 @@ action takes a chord, or several separated by commas. A chord is modifiers
 (`ctrl`, `alt`, `shift`) and a key joined by `+`: a character, `left`,
 `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `tab`, `enter`,
 `esc`, `space`, `backspace`, `delete`, `insert`, `plus`, `minus` or `f1`-`f12`.
-Every chord needs `ctrl` or `alt`, except the F-keys.
+Every chord needs `ctrl` or `alt`, except the F-keys. `Ctrl+C`, `Ctrl+D`,
+`Ctrl+Z`, `Ctrl+\` and `Ctrl+[` belong to the shell and are refused (the
+default stays). For symbols such as `alt+?` or `alt++`, `Shift` is ignored,
+since many layouts need it to type them.
 
 ```toml
 [tui_keys]
