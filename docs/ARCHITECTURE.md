@@ -251,6 +251,21 @@ middle / start elision) are showcased in the toolkit demo
 only after keyboard navigation; `Style::reduce_motion` (from the OS
 animation setting) stops pulses and transitions.
 
+### GUI pages
+
+The Files, Forwards and Settings tabs are built from those components.
+A file pane (`files/pane.rs`) is a card: location picker, Up / Refresh and a
+breadcrumb path bar (`crumbs`), a grouped toolbar ending in Delete, a
+sortable table (`sort_entries`, folders first) with type-ahead and a footer
+(`footer_text`). The transfer drawer (`files/transfers.rs`) collapses to its
+header, whose `summary` reads like "2 active · 1 failed"; finished batches
+leave a notice (`FilesTab::take_notices`) for the app to show as a toast.
+Settings (`settings/mod.rs`) has a 200 px nav with a search box over an
+index of every setting (`index`, `search`; each entry knows the control to
+focus), and content at most 720 px wide (list + editor pages are wider).
+Deletes and "discard changes?" questions are toolkit dialogs; settings
+notices also go out through `SettingsState::take_notices`.
+
 ## Key files
 
 | Area | Files |

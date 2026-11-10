@@ -35,6 +35,11 @@ First release under the name Skiff (formerly termax).
   them.
 - **GUI pane drag** with the mouse needs `Alt+Shift` (or the grip), so plain
   `Alt+click` reaches programs that read the mouse.
+- **GUI Settings apply as you go** (text fields on `Enter` or leaving the field);
+  the General and Appearance pages no longer have Save / Apply buttons.
+  The host and snippet editors keep an explicit Save.
+- "Discard changes?" and delete questions are modal dialogs instead of
+  inline bars.
 
 ### Added
 
@@ -63,6 +68,21 @@ First release under the name Skiff (formerly termax).
 - Split panes in both front-ends: drag panes and tabs to split, swap, join
   and pop out (GUI), divider snapping, keyboard move / resize / equalize.
 - Settings gear at the end of the GUI tab strip; Snippets page in Settings.
+- **GUI Files.** Breadcrumb path bar (click a segment, or `Ctrl+L` / click
+  the last one to type a path), sortable Name / Size / Modified headers,
+  file / folder / link icons, a footer with the item count and selection,
+  type-ahead selection, a grouped toolbar with Delete last in red, a
+  labelled "Hidden files" toggle, and delete confirmed in a dialog.
+  Copies show in a collapsible drawer: a 4 px progress bar, size, rate and
+  time left per file, Cancel, Retry on failure, and a summary in its header
+  ("2 active · 1 failed").
+- **GUI Forwards.** A table with a header row and status pills; Start /
+  Stop per row with Edit and Delete in a "More actions" menu; deleting asks
+  in a dialog; an empty state with "Add a forward".
+- **GUI Settings.** Search across every page, a 200 px nav, section
+  headers, number steppers, Keybindings grouped with keycaps, a filter,
+  a "changed" dot and reset; Connections and Snippets have Add in the list
+  header, and the host editor is grouped into Basic and Advanced.
 - Remappable TUI shortcuts (`[tui_keys]`), SFTP password prompts and
   cancellable transfers in the TUI.
 

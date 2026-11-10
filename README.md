@@ -170,6 +170,12 @@ A copy is written to `.<name>.<id>.skiff-part` and moved into place only
 when complete, so cancelling never damages the file being overwritten; a
 leftover `*.skiff-part` only appears if Skiff was killed mid-copy and is
 safe to delete. Details: [ARCHITECTURE.md](docs/ARCHITECTURE.md#sftp-engine).
+In the GUI each pane has a breadcrumb path (click a folder, or click the
+current one or press `Ctrl+L` to type a path), Name / Size / Modified
+column headers that sort, type-ahead (type a name to select it) and a
+footer with the item count and selection size; copies show in a
+collapsible drawer under the panes with a progress bar, rate and time left
+per file, and a summary such as "2 active · 1 failed".
 
 **Passwords.** SFTP and forwards have no terminal, so ssh asks Skiff
 (`SSH_ASKPASS`): a dialog in the TUI (`y` / `n` for host keys, `Esc`
@@ -178,8 +184,9 @@ tabs are flagged. Security-key "touch" notices show on the status line.
 
 **Port forwards** (`f` in the TUI, "Port forward…" in the GUI) run
 `ssh -N -L/-R/-D …` and are saved as `[[forward]]`. In the TUI a forward is
-a tab (close it to stop); the GUI's Forwards tab starts, stops, edits and
-deletes them. Forwards stop when Skiff exits, even if it is killed (best
+a tab (close it to stop); the GUI's Forwards tab lists them with their
+status and starts or stops each one, with Edit and Delete in its "More
+actions" menu. Forwards stop when Skiff exits, even if it is killed (best
 effort on macOS).
 
 **Status** (`p` in the TUI, "Check status" in the GUI) connects to each
@@ -284,7 +291,9 @@ Keyboard navigation (no mouse needed):
 | `←` `→` on the sidebar divider | Narrow / widen the sidebar |
 | `Enter` / `Space` | Open the selected row; press buttons and checkboxes |
 | `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
-| `Delete` | Delete the selected host (asks first) |
+| `Delete` | Delete the selected host or file (asks first) |
+| `Ctrl+L` | Type a path in the focused file pane |
+| Letters in a file list | Select the first name that starts with them |
 | `Ctrl+Shift+F6` | Send F6 to the program in the terminal |
 
 ## Accessibility

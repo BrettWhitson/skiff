@@ -278,8 +278,15 @@ A chord is modifiers and a key joined by `+`:
 While a terminal has focus, a chord of plain `Ctrl` or plain `Alt` plus a
 character always goes to the shell, so such a binding only works outside
 terminals. An unknown action or a chord that doesn't parse is reported as a
-warning and that action keeps its default. Settings → Keybindings records
-chords and flags ones shared by two actions.
+warning and that action keeps its default. Settings → Keybindings groups
+the actions, records chords, flags ones shared by two actions, marks changed
+ones with a dot and resets them to the default.
+
+The GUI's Settings apply as you go: switches, dropdowns and number steppers
+at once, text fields on `Enter` or when you leave them (a value that can't
+be used is refused with the reason under the field). Only the host and
+snippet editors have a Save button. The search box above the Settings pages
+finds any setting, host or snippet by name.
 
 | Action | Windows / Linux default | macOS default |
 |---|---|---|
