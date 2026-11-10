@@ -147,6 +147,17 @@ impl Canvas {
         }
     }
 
+    /// Like `blend_mask`, with each mask row shifted right by
+    /// `(h - 1 - row) * shear` pixels (synthetic italic).
+    #[allow(clippy::too_many_arguments)]
+    pub fn blend_mask_sheared(&mut self, x: i32, y: i32, w: i32, h: i32, mask: &[u8], c: Color, shear: f32) {
+        for row in 0..h.max(0) {
+            let dx = ((h - 1 - row) as f32 * shear).round() as i32;
+            let s = (row * w) as usize;
+            self.blend_mask(x + dx, y + row, w, 1, &mask[s..s + w as usize], c);
+        }
+    }
+
     /// Blends `c` through an alpha mask (`w`×`h` bytes, row-major) at (x, y).
     pub fn blend_mask(&mut self, x: i32, y: i32, w: i32, h: i32, mask: &[u8], c: Color) {
         let Some(area) = Rect::new(x, y, w, h).intersect(self.clip()) else { return };

@@ -693,10 +693,15 @@ pub mod testing {
                 quit: false,
                 background: Color::BLACK,
                 cursor: CursorIcon::Default,
+                replace_fonts: None,
             };
             Ui::run(&mut self.state, &mut ctx, &self.style, |ui| f(ui));
             self.repaint_in = ctx.request_redraw_in;
             self.cursor = ctx.cursor;
+            if let Some(fonts) = ctx.replace_fonts.take() {
+                self.fonts = fonts;
+                self.cache.clear();
+            }
         }
 
         pub fn list(&self) -> &DisplayList {

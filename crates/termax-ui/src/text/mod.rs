@@ -105,6 +105,7 @@ impl FontStack {
     }
 }
 
+#[derive(Clone)]
 pub struct Fonts {
     pub ui: FontStack,
     pub mono: FontStack,
