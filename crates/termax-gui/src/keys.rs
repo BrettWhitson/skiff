@@ -192,6 +192,38 @@ impl Chord {
         Ok(Chord { key, mods })
     }
 
+    /// A pressed key as config text (`ctrl+shift+q`); `None` for keys
+    /// that cannot be bound (bare modifiers, unknown keys).
+    pub fn from_press(key: &Key, mods: Modifiers) -> Option<String> {
+        let k = match normalize(key) {
+            Key::Char(c) => c.to_string(),
+            Key::F(n) => format!("f{n}"),
+            Key::Tab => "tab".into(),
+            Key::Enter => "enter".into(),
+            Key::Escape => "esc".into(),
+            Key::Space => "space".into(),
+            Key::Up => "up".into(),
+            Key::Down => "down".into(),
+            Key::Left => "left".into(),
+            Key::Right => "right".into(),
+            Key::Home => "home".into(),
+            Key::End => "end".into(),
+            Key::PageUp => "pageup".into(),
+            Key::PageDown => "pagedown".into(),
+            Key::Insert => "insert".into(),
+            Key::Delete => "delete".into(),
+            Key::Backspace => "backspace".into(),
+            Key::Other(_) => return None,
+        };
+        let mut s = String::new();
+        for (on, name) in [(mods.ctrl, "ctrl+"), (mods.alt, "alt+"), (mods.shift, "shift+"), (mods.logo, "cmd+")] {
+            if on {
+                s.push_str(name);
+            }
+        }
+        Some(s + &k)
+    }
+
     fn matches(&self, key: &Key, mods: Modifiers) -> bool {
         self.mods == mods && self.key == normalize(key)
     }

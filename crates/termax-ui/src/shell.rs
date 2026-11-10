@@ -148,6 +148,7 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
             st.mods = Modifiers::NONE;
             vec![Event::FocusLost]
         }
+        WindowEvent::Focused(true) => vec![Event::FocusGained],
         WindowEvent::CursorLeft { .. } => {
             st.cursor = Point::new(-1, -1);
             vec![Event::MouseMove(st.cursor)]

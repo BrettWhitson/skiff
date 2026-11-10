@@ -16,8 +16,9 @@ fn main() -> anyhow::Result<()> {
     }
     let cfg_path = std::env::var_os("TERMAX_CONFIG").map(PathBuf::from).unwrap_or_else(Config::default_path);
     let cfg = Config::load_or_create(&cfg_path)?;
+    let ui_font = cfg.gui.ui_font_path.as_deref().map(Path::new);
     let mono = cfg.gui.font_path.as_deref().map(Path::new);
-    let fonts = Fonts::load(None, mono).or_else(|_| Fonts::load(None, None))?;
+    let fonts = Fonts::load(ui_font, mono).or_else(|_| Fonts::load(None, None))?;
     let size = termax_core::state::UiState::load(&termax_core::state::UiState::path_for(&cfg_path))
         .window_size
         .unwrap_or((1280, 800));

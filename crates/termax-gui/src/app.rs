@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use termax_core::config::{Config, Connection};
+use termax_core::config::{Config, Connection, FileWatcher};
 use termax_core::hosts::{self, HostEntry, Source};
 use termax_core::state;
 use termax_core::theme::{ThemeDef, builtin};
@@ -14,7 +14,7 @@ use termax_ui::input::Event;
 use termax_ui::layout::Size as L;
 use termax_ui::shell::{App, FrameCtx, Waker};
 use termax_ui::style::Style;
-use termax_ui::text::FontKind;
+use termax_ui::text::{FontKind, Fonts};
 use termax_ui::ui::{Id, Ui, UiState};
 use termax_ui::widgets::{TabTitle, button, label, splitter_h, tabs};
 
@@ -40,6 +40,8 @@ pub fn start_broker(engine: &Engine, helper: PathBuf) -> anyhow::Result<termax_c
 
 /// How long geometry changes wait before being written to `state.toml`.
 const GEOMETRY_SAVE_DELAY: Duration = Duration::from_secs(1);
+/// How often `config.toml` is checked for outside edits (window focused).
+const CONFIG_POLL: Duration = Duration::from_secs(1);
 
 pub enum TabKind {
     Terminal(Box<TermTab>),
@@ -94,6 +96,14 @@ pub struct GuiApp {
     shown_tab: Option<u64>,
     /// A files tab whose close waits for "Close anyway" (transfers running).
     closing: Option<u64>,
+    /// Form state of the settings tab (kept while the tab is closed).
+    pub settings: crate::settings::SettingsState,
+    /// Fonts to install after this frame (set by the settings screen).
+    pub pending_fonts: Option<Fonts>,
+    /// Notices outside edits of `config.toml`.
+    watcher: FileWatcher,
+    last_poll: Instant,
+    window_focused: bool,
     ui_state: UiState,
 }
 
@@ -150,6 +160,7 @@ impl GuiApp {
             },
             _ => None,
         };
+        let cfg_path_for_watch = cfg_path.clone();
         GuiApp {
             baseline: cfg.clone(),
             cfg,
@@ -179,6 +190,11 @@ impl GuiApp {
             ssh_version: None,
             shown_tab: None,
             closing: None,
+            settings: Default::default(),
+            pending_fonts: None,
+            watcher: FileWatcher::new(&cfg_path_for_watch),
+            last_poll: Instant::now(),
+            window_focused: true,
             ui_state: UiState::default(),
         }
     }
@@ -212,6 +228,15 @@ impl GuiApp {
     }
 
     pub fn open_settings(&mut self) {
+        if let Some(i) = self.edit_target.take() {
+            let mut st = std::mem::take(&mut self.settings);
+            st.section = crate::settings::Section::Connections;
+            st.conn.edit(i, self);
+            self.settings = st;
+        } else if std::mem::take(&mut self.new_connection) {
+            self.settings.section = crate::settings::Section::Connections;
+            self.settings.conn.new_form();
+        }
         match self.tabs.iter().position(|t| matches!(t.kind, TabKind::Settings)) {
             Some(i) => self.active = i,
             None => {
@@ -275,6 +300,12 @@ impl GuiApp {
             Ok(()) => self.baseline = self.cfg.clone(),
             Err(e) => self.warn(format!("could not save config: {e}")),
         }
+        self.watcher.poll(); // our own write is not an outside edit
+        let (km, warnings) = Keymap::platform(&self.cfg.keys);
+        self.keymap = km;
+        for w in warnings {
+            self.warn(w);
+        }
         self.rebuild_hosts();
     }
 
@@ -286,7 +317,7 @@ impl GuiApp {
         }
     }
 
-    fn unique_name(&self, base: &str) -> String {
+    pub(crate) fn unique_name(&self, base: &str) -> String {
         let taken = |n: &str| self.cfg.connections.iter().any(|c| c.name == n);
         let mut name = format!("{base} (copy)");
         let mut k = 2;
@@ -557,7 +588,10 @@ impl GuiApp {
         if had_messages || !ui.input().events.is_empty() {
             ui.request_repaint_in(Duration::ZERO);
         }
-        self.handle_shortcuts(ui);
+        self.watch_config(ui);
+        if !self.settings.capturing() || !self.tabs.get(self.active).is_some_and(|t| matches!(t.kind, TabKind::Settings)) {
+            self.handle_shortcuts(ui);
+        }
         self.track_window_size(ui);
 
         let win = ui.window_rect();
@@ -650,6 +684,7 @@ impl GuiApp {
         let line = Rect::new(content.x + ui.px(16), content.y + ui.px(16), content.w - ui.px(32), ui.px(24));
         let newly_shown = self.shown_tab != Some(tab.id);
         self.shown_tab = Some(tab.id);
+        let mut show_settings = false;
         match &mut tab.kind {
             TabKind::Terminal(t) => {
                 let id = Id::new(("term", tab.id));
@@ -672,8 +707,41 @@ impl GuiApp {
                 crate::files::view(ui, content.inset(ui.px(6)), f, &ctx);
             }
             TabKind::Settings => {
-                label(ui, line, "Settings", None);
+                let _ = line;
+                show_settings = true;
             }
+        }
+        if show_settings {
+            crate::settings::view(ui, content, self);
+        }
+    }
+
+    /// Reloads `config.toml` after an outside edit: checked once a second
+    /// while the window has focus, and at once when it regains focus.
+    fn watch_config(&mut self, ui: &mut Ui) {
+        let mut poll_now = false;
+        for e in &ui.input().events {
+            match e {
+                Event::FocusLost => self.window_focused = false,
+                Event::FocusGained => {
+                    self.window_focused = true;
+                    poll_now = true;
+                }
+                _ => {}
+            }
+        }
+        if !self.window_focused {
+            return;
+        }
+        let age = self.last_poll.elapsed();
+        if poll_now || age >= CONFIG_POLL {
+            self.last_poll = Instant::now();
+            if self.watcher.poll() {
+                self.reload_config();
+            }
+            ui.request_repaint_in(CONFIG_POLL);
+        } else {
+            ui.request_repaint_in(CONFIG_POLL - age);
         }
     }
 
@@ -730,6 +798,9 @@ impl App for GuiApp {
         let style = self.style.clone();
         Ui::run(&mut st, ctx, &style, |ui| self.ui(ui));
         self.ui_state = st;
+        if let Some(f) = self.pending_fonts.take() {
+            ctx.replace_fonts = Some(f);
+        }
     }
 
     fn exit(&mut self) {

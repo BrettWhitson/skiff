@@ -26,6 +26,57 @@ pub struct Connection {
     pub tags: Vec<String>,
 }
 
+/// Field labels of the connection editor (TUI and GUI), in order.
+pub const CONNECTION_LABELS: [&str; 9] =
+    ["Name", "Host", "User", "Port", "Identity file", "ProxyJump", "Extra ssh args", "Remote dir", "Tags"];
+
+impl Connection {
+    /// The editor's text fields, in `CONNECTION_LABELS` order.
+    pub fn to_fields(&self) -> [String; 9] {
+        let o = |v: &Option<String>| v.clone().unwrap_or_default();
+        [
+            self.name.clone(),
+            self.host.clone(),
+            o(&self.user),
+            self.port.map(|p| p.to_string()).unwrap_or_default(),
+            o(&self.identity_file),
+            o(&self.proxy_jump),
+            shell_words::join(&self.extra_args),
+            o(&self.remote_dir),
+            self.tags.join(", "),
+        ]
+    }
+
+    /// Parses and validates the editor's fields (name and host required,
+    /// port 1-65535 when given).
+    pub fn from_fields(fields: &[String; 9]) -> Result<Connection, String> {
+        let v = |i: usize| fields[i].trim().to_string();
+        let opt = |i: usize| Some(v(i)).filter(|s| !s.is_empty());
+        if v(0).is_empty() {
+            return Err("Name is required".into());
+        }
+        if v(1).is_empty() {
+            return Err("Host is required".into());
+        }
+        let port = match opt(3) {
+            None => None,
+            Some(p) => Some(p.parse::<u16>().ok().filter(|&n| n > 0).ok_or_else(|| format!("Invalid port: {p}"))?),
+        };
+        let extra_args = shell_words::split(&v(6)).map_err(|e| format!("Extra ssh args: {e}"))?;
+        Ok(Connection {
+            name: v(0),
+            host: v(1),
+            user: opt(2),
+            port,
+            identity_file: opt(4),
+            proxy_jump: opt(5),
+            extra_args,
+            remote_dir: opt(7),
+            tags: v(8).split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -67,15 +118,17 @@ impl Default for Settings {
 #[serde(default)]
 pub struct GuiSettings {
     pub font_family: Option<String>,
-    /// Path to a font file to use instead of the bundled fonts.
+    /// Terminal (monospace) font file to use instead of the bundled fonts.
     pub font_path: Option<String>,
+    /// Interface font file to use instead of the bundled fonts.
+    pub ui_font_path: Option<String>,
     pub font_size: f32,
     pub ui_scale: f32,
 }
 
 impl Default for GuiSettings {
     fn default() -> Self {
-        Self { font_family: None, font_path: None, font_size: 14.0, ui_scale: 1.0 }
+        Self { font_family: None, font_path: None, ui_font_path: None, font_size: 14.0, ui_scale: 1.0 }
     }
 }
 

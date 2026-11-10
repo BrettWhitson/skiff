@@ -4,6 +4,7 @@ pub mod app;
 pub mod engine;
 pub mod files;
 pub mod keys;
+pub mod settings;
 pub mod sidebar;
 pub mod switcher;
 pub mod term;

@@ -37,8 +37,7 @@ pub struct Tab {
     pub kind: TabKind,
 }
 
-pub const EDITOR_LABELS: [&str; 9] =
-    ["Name", "Host", "User", "Port", "Identity file", "ProxyJump", "Extra ssh args", "Remote dir", "Tags"];
+pub use termax_core::config::CONNECTION_LABELS as EDITOR_LABELS;
 
 pub struct Editor {
     pub fields: Vec<TextInput>,
@@ -50,46 +49,13 @@ pub struct Editor {
 
 impl Editor {
     fn new(c: &Connection, editing: Option<usize>) -> Self {
-        let o = |v: &Option<String>| v.clone().unwrap_or_default();
-        let fields = [
-            c.name.clone(),
-            c.host.clone(),
-            o(&c.user),
-            c.port.map(|p| p.to_string()).unwrap_or_default(),
-            o(&c.identity_file),
-            o(&c.proxy_jump),
-            shell_words::join(&c.extra_args),
-            o(&c.remote_dir),
-            c.tags.join(", "),
-        ];
+        let fields = c.to_fields();
         Self { fields: fields.into_iter().map(TextInput::new).collect(), focus: 0, editing, error: None }
     }
 
     fn to_connection(&self) -> Result<Connection, String> {
-        let v = |i: usize| self.fields[i].value.trim().to_string();
-        let opt = |i: usize| Some(v(i)).filter(|s| !s.is_empty());
-        if v(0).is_empty() {
-            return Err("Name is required".into());
-        }
-        if v(1).is_empty() {
-            return Err("Host is required".into());
-        }
-        let port = match opt(3) {
-            None => None,
-            Some(p) => Some(p.parse::<u16>().map_err(|_| format!("Invalid port: {p}"))?),
-        };
-        let extra_args = shell_words::split(&v(6)).map_err(|e| format!("Extra ssh args: {e}"))?;
-        Ok(Connection {
-            name: v(0),
-            host: v(1),
-            user: opt(2),
-            port,
-            identity_file: opt(4),
-            proxy_jump: opt(5),
-            extra_args,
-            remote_dir: opt(7),
-            tags: v(8).split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
-        })
+        let fields: [String; 9] = std::array::from_fn(|i| self.fields[i].value.clone());
+        Connection::from_fields(&fields)
     }
 }
 
