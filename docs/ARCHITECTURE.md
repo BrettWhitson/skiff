@@ -207,7 +207,7 @@ tiles into a CPU `Canvas`; the shell copies the damaged areas to the window
 with `softbuffer`. Text uses `fontdue` behind a `GlyphRasterizer` trait,
 font stacks with fallbacks, and a glyph cache. Everything also runs
 headless (`ui::testing::Harness`, `shell::render_offscreen`), which is how
-the GUI is tested and how `examples/screenshots.rs` renders docs images.
+the GUI is tested and how `examples/screenshots.rs` renders offscreen images.
 
 Accessibility is part of the widget contract: while drawing, each widget
 adds a node (role, name, value, state, bounds) to an `a11y` tree. The tree

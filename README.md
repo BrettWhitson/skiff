@@ -26,22 +26,6 @@ exactly as they do on the command line.
 - **Accessible**: screen readers in the GUI (AccessKit), full keyboard use,
   WCAG-checked contrast, interface scaling, a plain TUI mode.
 
-## Screenshots
-
-| | |
-|---|---|
-| ![Terminal tabs](docs/screenshots/1-terminal.png) | ![File transfer](docs/screenshots/2-file-transfer.png) |
-| Terminal | File transfer |
-| ![Quick switcher](docs/screenshots/3-quick-switcher.png) | ![Password prompt](docs/screenshots/4-password-prompt.png) |
-| Quick switcher | Password prompt |
-| ![Settings](docs/screenshots/5-settings.png) | ![Port forwards](docs/screenshots/6-forwards.png) |
-| Settings | Port forwards |
-
-Settings pages: [Connections](docs/screenshots/Connections.png),
-[Appearance](docs/screenshots/Appearance.png),
-[Keybindings](docs/screenshots/Keybindings.png),
-[General](docs/screenshots/General.png).
-
 ## Install
 
 ```bash
