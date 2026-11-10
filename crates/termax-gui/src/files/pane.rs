@@ -146,6 +146,22 @@ impl Pane {
         self.entries.iter().filter(|e| self.show_hidden || !e.name.starts_with('.')).collect()
     }
 
+    /// Replaces the listing, keeping the same files selected.
+    fn reselect(&mut self, entries: Vec<FileEntry>) {
+        let name_at = |vis: &[&FileEntry], i: Option<usize>| i.and_then(|i| vis.get(i)).map(|e| e.name.clone());
+        let vis = self.visible();
+        let names: Vec<String> = self.sel.iter().filter_map(|i| vis.get(i).map(|e| e.name.clone())).collect();
+        let (anchor, cursor) = (name_at(&vis, self.sel.anchor), name_at(&vis, self.sel.cursor));
+        self.entries = entries;
+        let vis = self.visible();
+        let index_of = |n: &String| vis.iter().position(|e| &e.name == n);
+        let set = names.iter().filter_map(index_of).collect();
+        let (anchor, cursor) = (anchor.as_ref().and_then(index_of), cursor.as_ref().and_then(index_of));
+        self.sel.set = set;
+        self.sel.anchor = anchor;
+        self.sel.cursor = cursor;
+    }
+
     /// Full paths of the selected entries, with `is_dir`.
     pub fn selected(&self) -> Vec<(String, bool, String)> {
         let vis = self.visible();
@@ -246,8 +262,12 @@ impl Pane {
                         sort_entries(&mut entries);
                         if cwd != self.cwd {
                             self.sel.clear();
+                            self.entries = entries;
+                        } else {
+                            // Same folder refreshed: rows may have moved, so
+                            // the selection follows names, not row numbers.
+                            self.reselect(entries);
                         }
-                        self.entries = entries;
                         self.cwd = cwd;
                         self.state = PaneState::Idle;
                     }
@@ -378,14 +398,20 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
         let radius = ui.px(4) as f32;
         ui.painter().rect(banner_r, p.danger.with_alpha(40), radius);
         let disconnected = pane.ep.is_none() && pane.is_remote();
-        let parts = ui.split_h(banner_r, &[L::Fill, L::Px(80)], 6);
+        // A connected remote pane can still lose its connection (server
+        // restart, timeout): offer to connect again next to Dismiss.
+        let reconnect = pane.ep.is_some() && pane.is_remote();
+        let parts = ui.split_h(banner_r, &[L::Fill, L::Px(if reconnect { 96 } else { 0 }), L::Px(80)], 6);
         label(ui, Rect::new(parts[0].x + ui.px(8), parts[0].y, parts[0].w - ui.px(8), parts[0].h), &msg, Some(p.danger));
-        if disconnected {
-            if button(ui, id.with("retry"), parts[1], "Retry").clicked {
+        if reconnect && button(ui, id.with("reconnect"), parts[1], "Reconnect").clicked {
+            let loc = pane.loc.clone();
+            pane.set_location(loc);
+        } else if disconnected {
+            if button(ui, id.with("retry"), parts[2], "Retry").clicked {
                 let loc = pane.loc.clone();
                 pane.set_location(loc);
             }
-        } else if button(ui, id.with("dismiss"), parts[1], "Dismiss").clicked {
+        } else if button(ui, id.with("dismiss"), parts[2], "Dismiss").clicked {
             pane.banner = None;
             if matches!(pane.state, PaneState::Error(_)) {
                 pane.state = PaneState::Idle;

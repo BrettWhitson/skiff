@@ -161,3 +161,19 @@ fn unsaved_form_survives_reload() {
     f.frame(vec![]);
     assert!(f.texts().iter().any(|t| t == "my-ssh"), "{:?}", f.texts());
 }
+
+#[test]
+fn form_follows_its_connection_when_others_are_deleted() {
+    let mut f = Fixture::new();
+    f.right_click_text("beta");
+    f.click_text("Edit");
+    set_field(&mut f, "Port", "3333"); // unsaved edit
+    f.app.cfg.connections.remove(0); // alpha deleted elsewhere (sidebar, outside edit)
+    f.app.save_config();
+    f.frame(vec![]);
+    f.click_text("Save"); // used to overwrite whatever sat at beta's old index
+    f.click_text("Duplicate"); // used to index past the end
+    let names: Vec<&str> = f.app.cfg.connections.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["beta", "beta (copy)"], "nothing else overwritten");
+    assert_eq!(f.app.cfg.connections[0].port, Some(3333));
+}

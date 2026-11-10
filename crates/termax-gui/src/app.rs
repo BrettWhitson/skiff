@@ -224,7 +224,11 @@ impl GuiApp {
         if self.ssh_version.is_none() {
             self.ssh_version = Some(termax_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
         }
-        self.push_tab(TabKind::Files(Box::new(FilesTab::new(left, right))))
+        let mut tab = FilesTab::new(left, right);
+        for p in &mut tab.panes {
+            p.show_hidden = self.cfg.settings.show_hidden_files;
+        }
+        self.push_tab(TabKind::Files(Box::new(tab)))
     }
 
     pub fn open_settings(&mut self) {

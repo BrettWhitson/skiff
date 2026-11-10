@@ -136,3 +136,52 @@ fn clear_finished_removes_done_rows() {
     e.click("Clear finished");
     assert!(e.tab.transfers.rows.is_empty());
 }
+
+#[test]
+fn queue_runs_at_most_four_at_once() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    for i in 0..12 {
+        std::fs::write(a.path().join(format!("f{i:02}.bin")), vec![1u8; 200_000]).unwrap();
+    }
+    let mut e = env(a.path(), b.path());
+    e.tab.panes[0].sel.set = (0..12).collect();
+    e.click("Copy \u{2192}");
+    let mut most = 0;
+    let mut saw_queued = false;
+    let start = std::time::Instant::now();
+    while !all_done(&e) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(30), "never finished");
+        let rows = &e.tab.transfers.rows;
+        most = most.max(rows.iter().filter(|r| matches!(r.state, RowState::Running | RowState::Waiting(_))).count());
+        saw_queued |= rows.iter().any(|r| matches!(r.state, RowState::Queued));
+        e.frame(vec![]);
+    }
+    assert_eq!(e.tab.transfers.rows.len(), 12);
+    assert!(most <= 4, "{most} ran at once");
+    assert!(saw_queued);
+    for i in 0..12 {
+        assert!(b.path().join(format!("f{i:02}.bin")).exists());
+    }
+}
+
+#[test]
+fn retry_takes_the_panes_current_connection() {
+    use super::transfers::Spec;
+    use termax_core::fs::endpoint::Endpoint;
+    let mut spec = Spec {
+        src: Endpoint::Local,
+        src_path: "/x".into(),
+        src_side: Some(0),
+        dst: Endpoint::Local,
+        dst_dir: "/y".into(),
+        dst_side: 1,
+        src_label: "web-01".into(),
+        dst_host: "db-02".into(),
+        dst_label: "db-02:/y".into(),
+    };
+    // Same hosts still open: both endpoints are taken from the panes.
+    assert_eq!(spec.refresh_endpoints([("web-01".into(), Some(Endpoint::Local)), ("db-02".into(), Some(Endpoint::Local))]), (true, true));
+    // The source pane moved to another host: keep the original source.
+    assert_eq!(spec.refresh_endpoints([("other".into(), Some(Endpoint::Local)), ("db-02".into(), None)]), (false, false));
+}

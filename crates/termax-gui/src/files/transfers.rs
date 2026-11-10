@@ -33,13 +33,45 @@ pub struct FileDrag {
 pub struct Spec {
     pub src: Endpoint,
     pub src_path: String,
+    /// The pane the files came from (`None`: dropped from the OS).
+    pub src_side: Option<usize>,
     pub dst: Endpoint,
     pub dst_dir: String,
     /// The pane to refresh when done.
     pub dst_side: usize,
+    /// Source location label (host name or "Local").
     pub src_label: String,
+    /// Destination location label (host name or "Local").
+    pub dst_host: String,
     pub dst_label: String,
 }
+
+impl Spec {
+    /// Before a retry: a pane still showing the same location may have
+    /// reconnected since, so use its current connection. Returns which
+    /// endpoints (source, destination) were replaced.
+    pub fn refresh_endpoints(&mut self, panes: [(String, Option<Endpoint>); 2]) -> (bool, bool) {
+        let mut src = false;
+        if let Some(s) = self.src_side
+            && let Some((label, Some(ep))) = panes.get(s)
+            && *label == self.src_label
+        {
+            self.src = ep.clone();
+            src = true;
+        }
+        let mut dst = false;
+        if let Some((label, Some(ep))) = panes.get(self.dst_side)
+            && *label == self.dst_host
+        {
+            self.dst = ep.clone();
+            dst = true;
+        }
+        (src, dst)
+    }
+}
+
+/// Transfers running at once per tab; the rest wait in the list.
+pub const MAX_RUNNING: usize = 4;
 
 pub struct Question {
     pub path: String,
@@ -48,6 +80,8 @@ pub struct Question {
 }
 
 pub enum RowState {
+    /// Waiting for a free slot (at most `MAX_RUNNING` run at once).
+    Queued,
     Running,
     Waiting(Question),
     Done(TransferSummary),
@@ -73,6 +107,10 @@ pub struct TransferRow {
 
 impl TransferRow {
     pub fn is_active(&self) -> bool {
+        matches!(self.state, RowState::Queued | RowState::Running | RowState::Waiting(_))
+    }
+
+    fn in_flight(&self) -> bool {
         matches!(self.state, RowState::Running | RowState::Waiting(_))
     }
 }
@@ -114,7 +152,8 @@ impl TransferList {
     pub fn start(&mut self, ctx: &FilesCtx, spec: Spec, batch: u64) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
-        let handle = Self::launch(ctx, id, &spec);
+        let free = self.in_flight() < MAX_RUNNING;
+        let handle = free.then(|| Self::launch(ctx, id, &spec));
         self.rows.push(TransferRow {
             id,
             batch,
@@ -124,20 +163,39 @@ impl TransferList {
             current: String::new(),
             speed: 0.0,
             last: None,
-            state: RowState::Running,
-            handle: Some(handle),
+            state: if free { RowState::Running } else { RowState::Queued },
+            handle,
             cancelled: false,
         });
         id
     }
 
-    fn retry(&mut self, i: usize, ctx: &FilesCtx) {
+    fn in_flight(&self) -> usize {
+        self.rows.iter().filter(|r| r.in_flight()).count()
+    }
+
+    /// Starts queued transfers while there are free slots.
+    pub fn pump(&mut self, ctx: &FilesCtx) {
+        let mut free = MAX_RUNNING.saturating_sub(self.in_flight());
+        for row in self.rows.iter_mut().filter(|r| matches!(r.state, RowState::Queued)) {
+            if free == 0 {
+                break;
+            }
+            row.handle = Some(Self::launch(ctx, row.id, &row.spec));
+            row.state = RowState::Running;
+            free -= 1;
+        }
+    }
+
+    fn retry(&mut self, i: usize, ctx: &FilesCtx, panes: [(String, Option<Endpoint>); 2]) {
         self.next_id += 1;
         let id = self.next_id;
+        let free = self.in_flight() < MAX_RUNNING;
         let row = &mut self.rows[i];
-        row.handle = Some(Self::launch(ctx, id, &row.spec));
+        row.spec.refresh_endpoints(panes);
+        row.handle = free.then(|| Self::launch(ctx, id, &row.spec));
         row.id = id;
-        row.state = RowState::Running;
+        row.state = if free { RowState::Running } else { RowState::Queued };
         row.cancelled = false;
         row.done = 0;
         row.total = None;
@@ -198,7 +256,10 @@ impl TransferList {
                     Ok(s) => RowState::Done(s),
                     Err(e) => RowState::Failed(e),
                 };
-                Some(row.spec.dst_side)
+                // Refresh the destination once its last transfer ends.
+                let side = row.spec.dst_side;
+                let more = self.rows.iter().any(|r| r.is_active() && r.spec.dst_side == side);
+                (!more).then_some(side)
             }
         }
     }
@@ -234,6 +295,10 @@ impl TransferList {
 
     fn cancel(&mut self, i: usize) {
         let r = &mut self.rows[i];
+        if matches!(r.state, RowState::Queued) {
+            r.state = RowState::Cancelled;
+            return;
+        }
         r.cancelled = true;
         if let Some(h) = &r.handle {
             h.cancel();
@@ -250,7 +315,7 @@ pub fn wanted_height(list: &TransferList) -> i32 {
     if list.rows.is_empty() { 0 } else { (34 + 32 * list.rows.len() as i32).min(200) }
 }
 
-pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx) {
+pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx, panes: [(String, Option<Endpoint>); 2]) {
     if list.rows.is_empty() || rect.h <= 0 {
         return;
     }
@@ -310,6 +375,12 @@ pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx) {
                                 actions.push((i, "cancel"));
                             }
                         }
+                        RowState::Queued => {
+                            label(ui, cols[1], "queued", Some(p.muted));
+                            if button(ui, rid.with("cancel"), cols[3], "Cancel").clicked {
+                                actions.push((i, "cancel"));
+                            }
+                        }
                         RowState::Done(s) => {
                             progress_bar(ui, bar, Some(1.0));
                             let t = if s.skipped > 0 { format!("done, {} skipped", s.skipped) } else { "done".into() };
@@ -337,7 +408,7 @@ pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx) {
             "overwrite" => list.decide(i, true),
             "skip" => list.decide(i, false),
             "cancel" => list.cancel(i),
-            "retry" => list.retry(i, ctx),
+            "retry" => list.retry(i, ctx, panes.clone()),
             _ => {}
         }
     }

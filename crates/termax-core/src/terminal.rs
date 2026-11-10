@@ -160,7 +160,7 @@ impl TerminalSession {
 
     pub fn paste(&mut self, text: &str) {
         let bracketed = self.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
-        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        let text = sanitize_paste(text);
         if bracketed {
             self.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
         } else {
@@ -219,6 +219,13 @@ impl Drop for TerminalSession {
 }
 
 /// Encodes a key press as the bytes an xterm-compatible terminal would send.
+/// Pasted text as typed: newlines become Enter, and bracketed-paste
+/// markers are removed so the text cannot end the paste early and have the
+/// rest run as typed commands.
+pub fn sanitize_paste(text: &str) -> String {
+    text.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("\r\n", "\r").replace('\n', "\r")
+}
+
 pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     let m = key.modifiers;
     let ctrl = m.contains(KeyModifiers::CONTROL);

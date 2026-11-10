@@ -152,3 +152,20 @@ fn only_changed_row_damaged() {
     }
     assert!(h.list().prims.iter().filter(|p| matches!(p, Prim::CellRow { .. })).count() == 24);
 }
+
+#[test]
+fn minimize_keeps_the_grid() {
+    let fx = termax_testserver::TestFixture::with_shell(termax_testserver::FixtureAuth::Key).unwrap();
+    let mut tab = fixture_tab(&fx);
+    let (km, _) = Keymap::new(&BTreeMap::new(), false);
+    let t = theme();
+    let mut h = Harness::new(800, 600, 1.0);
+    h.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), &mut tab, &t, &km, None, &mut vec![]));
+    let (grid, resizes) = (tab.grid, tab.resizes);
+    h.resize(0, 0); // minimized
+    h.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), &mut tab, &t, &km, None, &mut vec![]));
+    assert_eq!((tab.grid, tab.resizes), (grid, resizes), "the pty (and the screen text) keep their size");
+    h.resize(800, 600);
+    h.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), &mut tab, &t, &km, None, &mut vec![]));
+    assert_eq!((tab.grid, tab.resizes), (grid, resizes));
+}

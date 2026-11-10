@@ -46,3 +46,11 @@ fn local_ssh_client_version_is_readable() {
     let v = client_version("ssh").expect("ssh -V");
     assert!(v.0 >= 7, "{v:?}");
 }
+
+#[test]
+fn paste_cannot_end_bracketed_paste_early() {
+    let evil = "ls\x1b[201~rm -rf ~\n\x1b[200~x";
+    let clean = termax_core::terminal::sanitize_paste(evil);
+    assert!(!clean.contains("\x1b[201~") && !clean.contains("\x1b[200~"), "{clean:?}");
+    assert_eq!(clean, "lsrm -rf ~\rx");
+}

@@ -116,3 +116,35 @@ fn remote_to_remote_relay_via_ui() {
     e.until("relayed", |e| e.names(1).contains(&"relay.bin".to_string()));
     assert_eq!(std::fs::read(fb.root().join("relay.bin")).unwrap(), vec![7u8; 300_000]);
 }
+
+#[test]
+fn same_host_same_folder_copy_is_refused() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    std::fs::write(fx.root().join("keep.txt"), b"precious").unwrap();
+    let h = host_for(&fx, "fx");
+    let d = local_dir();
+    let mut e = Env::with(d.path(), vec![h.clone()], Location::Host(h.clone()), Location::Host(h), None);
+    e.until("both connected", |e| e.loaded(0) && e.loaded(1));
+    e.click("keep.txt");
+    e.click("Copy \u{2192}");
+    e.frame(vec![]);
+    assert!(e.tab.transfers.rows.is_empty(), "no transfer started");
+    assert!(e.texts().iter().any(|t| t.contains("onto itself")), "{:?}", e.texts());
+    assert_eq!(std::fs::read(fx.root().join("keep.txt")).unwrap(), b"precious");
+}
+
+#[test]
+fn dropped_connection_offers_reconnect() {
+    let mut fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let h = host_for(&fx, "fx");
+    let d = local_dir();
+    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(h), None);
+    e.until("remote listing", |e| e.loaded(1));
+    fx.server_mut().kill();
+    let refresh = e.find_right("Refresh");
+    e.click_at(refresh);
+    e.until("listing fails", |e| e.texts().iter().any(|t| t == "Reconnect"));
+    let r = e.find_right("Reconnect");
+    e.click_at(r);
+    assert!(e.tab.panes[1].ep.is_none(), "reconnecting from scratch");
+}

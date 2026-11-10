@@ -292,3 +292,11 @@ fn late_ask_for_gone_tab_is_refused() {
     f.frame(vec![]);
     assert_eq!(rx.blocking_recv().unwrap(), None);
 }
+
+#[test]
+fn show_hidden_setting_seeds_file_panes() {
+    let mut f = Fixture::with_config(&CONFIG.replace("load_ssh_config = false", "load_ssh_config = false\nshow_hidden_files = true"));
+    let id = f.app.open_files(Location::Local, Location::Local);
+    let TabKind::Files(ft) = &f.app.tabs.iter().find(|t| t.id == id).unwrap().kind else { panic!() };
+    assert!(ft.panes.iter().all(|p| p.show_hidden));
+}

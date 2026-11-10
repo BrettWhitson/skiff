@@ -10,8 +10,9 @@ use super::{Rows, error_line, field};
 use crate::app::GuiApp;
 
 pub struct Form {
-    /// Index into `cfg.connections`; `None` for a new connection.
-    pub editing: Option<usize>,
+    /// Name of the connection being edited (as saved); `None` for a new
+    /// one. Looked up on use: the list can change under an open form.
+    pub editing: Option<String>,
     pub fields: [String; 9],
     pub dirty: bool,
 }
@@ -25,10 +26,18 @@ pub struct ConnState {
     selected: Option<usize>,
 }
 
+impl Form {
+    /// Where the edited connection is now.
+    fn index(&self, app: &GuiApp) -> Option<usize> {
+        let name = self.editing.as_ref()?;
+        app.cfg.connections.iter().position(|c| &c.name == name)
+    }
+}
+
 impl ConnState {
     pub fn edit(&mut self, i: usize, app: &GuiApp) {
         if let Some(c) = app.cfg.connections.get(i) {
-            self.form = Some(Form { editing: Some(i), fields: c.to_fields(), dirty: false });
+            self.form = Some(Form { editing: Some(c.name.clone()), fields: c.to_fields(), dirty: false });
             self.selected = Some(i);
         }
         self.error = None;
@@ -48,13 +57,23 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     if let Some(f) = &mut st.form
         && !f.dirty
     {
-        match f.editing.and_then(|i| app.cfg.connections.get(i)) {
-            Some(c) => f.fields = c.to_fields(),
+        match f.index(app) {
+            Some(i) => {
+                f.fields = app.cfg.connections[i].to_fields();
+                st.selected = Some(i);
+            }
             None => st.form = None,
         }
     }
+    // The highlighted row is where the edited connection is now (rows
+    // shift when others are deleted; a stale row would look like a click).
+    if let Some(f) = &st.form
+        && f.editing.is_some()
+    {
+        st.selected = f.index(app);
+    }
 
-    let cols = ui.split_h(rect, &[L::Px(220), L::Fill], 16);
+    let cols = ui.split_h(rect, &[L::Px(250), L::Fill], 16);
     let left = ui.split_v(cols[0], &[L::Fill, L::Px(30)], 8);
     let names: Vec<String> = app.cfg.connections.iter().map(|c| c.name.clone()).collect();
     let before = st.selected;
@@ -67,11 +86,11 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     {
         st.edit(i, app);
     }
-    let btns = ui.split_h(left[1], &[L::Frac(0.3), L::Frac(0.4), L::Frac(0.3)], 4);
+    let btns = ui.split_h(left[1], &[L::Frac(0.28), L::Frac(0.44), L::Frac(0.28)], 4);
     if button(ui, Id::new("settings-conn-add"), btns[0], "Add").clicked {
         st.new_form();
     }
-    let editing = st.form.as_ref().and_then(|f| f.editing);
+    let editing = st.form.as_ref().and_then(|f| f.index(app));
     if button(ui, Id::new("settings-conn-dup"), btns[1], "Duplicate").clicked
         && let Some(i) = editing
     {
@@ -121,7 +140,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     if button(ui, Id::new("settings-conn-save"), Rect::new(r.x + ui.px(super::LABEL_W), r.y, ui.px(100), r.h), "Save").clicked {
         st.error = save(form, app).err();
         if st.error.is_none() {
-            st.selected = form.editing;
+            st.selected = form.index(app);
         }
     }
     error_line(ui, rows.next(ui), &st.error);
@@ -129,16 +148,16 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
 
 fn save(form: &mut Form, app: &mut GuiApp) -> Result<(), String> {
     let c = Connection::from_fields(&form.fields)?;
-    let clash = app.cfg.connections.iter().enumerate().any(|(j, o)| Some(j) != form.editing && o.name == c.name);
+    // A connection deleted meanwhile is saved as a new one (edits kept).
+    let at = form.index(app);
+    let clash = app.cfg.connections.iter().enumerate().any(|(j, o)| Some(j) != at && o.name == c.name);
     if clash {
         return Err(format!("A connection named {} already exists", c.name));
     }
-    match form.editing {
-        Some(i) if i < app.cfg.connections.len() => app.cfg.connections[i] = c,
-        _ => {
-            app.cfg.connections.push(c);
-            form.editing = Some(app.cfg.connections.len() - 1);
-        }
+    form.editing = Some(c.name.clone());
+    match at {
+        Some(i) => app.cfg.connections[i] = c,
+        None => app.cfg.connections.push(c),
     }
     form.dirty = false;
     app.save_config();

@@ -112,21 +112,38 @@ impl FilesTab {
         {
             p.refresh(ctx, side);
         }
+        self.transfers.pump(ctx);
+    }
+
+    /// Each pane's location label and current connection (for retries).
+    pub fn pane_endpoints(&self) -> [(String, Option<Endpoint>); 2] {
+        [0, 1].map(|i| (self.panes[i].loc.label().to_string(), self.panes[i].ep.clone()))
     }
 
     /// Copies `items` (from pane `from`) into the other pane's folder.
     pub fn copy(&mut self, from: usize, items: Vec<(String, bool, String)>, ctx: &FilesCtx) {
         let to = 1 - from;
         let (Some(src), Some(dst)) = (self.panes[from].ep.clone(), self.panes[to].ep.clone()) else { return };
+        if items.is_empty() {
+            return;
+        }
+        // Two panes on the same host each have their own connection, so the
+        // engine cannot tell they are one file system: refuse here.
+        if self.panes[from].loc.label() == self.panes[to].loc.label() && self.panes[from].cwd == self.panes[to].cwd {
+            self.panes[to].banner = Some("Same folder: cannot copy onto itself".into());
+            return;
+        }
         let batch = self.transfers.new_batch();
         for (path, _, _) in items {
             let spec = Spec {
                 src: src.clone(),
                 src_path: path,
+                src_side: Some(from),
                 dst: dst.clone(),
                 dst_dir: self.panes[to].cwd.clone(),
                 dst_side: to,
                 src_label: self.panes[from].loc.label().to_string(),
+                dst_host: self.panes[to].loc.label().to_string(),
                 dst_label: format!("{}:{}", self.panes[to].loc.label(), self.panes[to].cwd),
             };
             self.transfers.start(ctx, spec, batch);
@@ -141,10 +158,12 @@ impl FilesTab {
             let spec = Spec {
                 src: Endpoint::Local,
                 src_path: p.display().to_string(),
+                src_side: None,
                 dst: dst.clone(),
                 dst_dir: self.panes[to].cwd.clone(),
                 dst_side: to,
                 src_label: "Local".into(),
+                dst_host: self.panes[to].loc.label().to_string(),
                 dst_label: format!("{}:{}", self.panes[to].loc.label(), self.panes[to].cwd),
             };
             self.transfers.start(ctx, spec, batch);
@@ -188,7 +207,8 @@ pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
         let to = if cols[0].contains(m) { 0 } else { 1 };
         tab.upload(to, dropped, ctx);
     }
-    transfers::view(ui, rows[1], &mut tab.transfers, ctx);
+    let eps = tab.pane_endpoints();
+    transfers::view(ui, rows[1], &mut tab.transfers, ctx, eps);
 }
 
 #[cfg(test)]

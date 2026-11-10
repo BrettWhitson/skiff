@@ -195,7 +195,10 @@ pub fn view(
         return;
     }
     let Some(session) = tab.session.as_mut() else { return };
-    if grid != tab.grid {
+    // Too small for even the minimum grid (minimized, collapsed): keep the
+    // pty's size, since shrinking it would cut the screen's text.
+    let hidden = inner.w < cell.w * 10 || inner.h < cell.h * 2;
+    if grid != tab.grid && !hidden {
         session.resize(grid.0, grid.1);
         tab.grid = grid;
         tab.resizes += 1;

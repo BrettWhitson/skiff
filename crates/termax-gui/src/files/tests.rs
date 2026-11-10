@@ -126,3 +126,22 @@ fn formats_modified_time() {
     let t = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     assert_eq!(format_time(t), "2023-11-14 22:13");
 }
+
+#[test]
+fn selection_follows_names_across_refresh() {
+    let d = tempfile::tempdir().unwrap();
+    for f in ["a.log", "c.log", "e.log"] {
+        std::fs::write(d.path().join(f), b"x").unwrap();
+    }
+    let mut e = Env::new(d.path());
+    e.until("listing", |e| e.loaded(0));
+    e.click("c.log");
+    let p = e.find("e.log");
+    e.frame(vec![Event::Modifiers(CTRL), Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)]);
+    e.frame(vec![Event::Modifiers(Modifiers::NONE)]);
+    std::fs::write(d.path().join("b.log"), b"x").unwrap();
+    e.click("Refresh");
+    e.until("b.log listed", |e| e.names(0).contains(&"b.log".to_string()));
+    let names: Vec<String> = e.tab.panes[0].selected().into_iter().map(|(_, _, n)| n).collect();
+    assert_eq!(names, vec!["c.log", "e.log"]);
+}
