@@ -6,6 +6,7 @@
 //! focus and every widget are implemented here.
 
 pub mod a11y;
+pub mod a11y_kit;
 pub mod canvas;
 pub mod clipboard;
 pub mod color;
