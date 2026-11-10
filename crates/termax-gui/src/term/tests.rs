@@ -139,7 +139,7 @@ fn only_changed_row_damaged() {
     let mut cache = GlyphCache::default();
     let mut canvas = termax_ui::canvas::Canvas::new(800, 24 * 16);
     let mut paint = |h: &mut Harness, p: &vt100::Parser| {
-        h.frame(vec![], &mut |ui| draw_screen(ui, ui.window_rect(), p.screen(), &t, Size::new(8, 16), 14.0, None, None));
+        h.frame(vec![], &mut |ui| draw_screen(ui, ui.window_rect(), p.screen(), &t, Size::new(8, 16), 14.0, None, None, &[]));
         renderer.render(h.list(), &mut canvas, &h.fonts, &mut cache, Color::BLACK)
     };
     paint(&mut h, &p);

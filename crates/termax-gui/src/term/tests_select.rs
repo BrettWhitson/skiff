@@ -213,3 +213,30 @@ fn shown_again_does_not_reannounce_screen() {
     l.frame(vec![], vec![]);
     assert!(!l.tab.announcer.has_pending(), "switching to a tab reads nothing old");
 }
+
+fn on_screen(l: &Live, s: &str) -> bool {
+    l.h.list().prims.iter().any(|p| matches!(p, termax_ui::display::Prim::Text { text, .. } if text == s))
+}
+
+#[test]
+fn gui_search_highlights_and_counts() {
+    let mut l = Live::new();
+    l.tab.session.as_mut().unwrap().write(b"needle one\rneedle two\rneedle three\r");
+    l.wait_for("needle three");
+    l.frame(vec![], vec![Action::Find]);
+    l.frame(vec![Event::Text("needle".into())], vec![]);
+    l.frame(vec![], vec![]);
+    let texts: Vec<String> = l.h.list().prims.iter().filter_map(|p| match p { termax_ui::display::Prim::Text { text, .. } => Some(text.clone()), _ => None }).collect();
+    assert!(on_screen(&l, "3 of 3"), "the newest match is current: {texts:?} {:?}", l.tab.search);
+    l.frame(vec![Event::KeyDown { key: Key::F(3), mods: Modifiers::NONE, text: None }], vec![]);
+    l.frame(vec![], vec![]);
+    assert!(on_screen(&l, "2 of 3"), "F3 goes to the next older match");
+    let accent = l.theme.palette.accent;
+    let lit = l.h.list().prims.iter().any(|p| match p {
+        termax_ui::display::Prim::CellRow { cells, .. } => cells.iter().any(|c| c.bg == accent),
+        _ => false,
+    });
+    assert!(lit, "the current match is highlighted");
+    l.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }], vec![]);
+    assert!(l.tab.search.is_none(), "Esc closes the search");
+}

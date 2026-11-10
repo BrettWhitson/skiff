@@ -22,7 +22,7 @@ pub enum Action {
     ZoomReset,
     ToggleSidebar,
     Settings,
-    /// Reserved (terminal search is a v1 non-goal).
+    /// Find in the terminal's output.
     Find,
     UiScaleUp,
     UiScaleDown,
@@ -113,7 +113,7 @@ impl Action {
                 ZoomReset => &["cmd+0"],
                 ToggleSidebar => &["cmd+b"],
                 Settings => &["cmd+,"],
-                Find => &[],
+                Find => &["cmd+f"],
                 UiScaleUp => &["cmd+alt+="],
                 UiScaleDown => &["cmd+alt+-"],
                 UiScaleReset => &["cmd+alt+0"],
@@ -132,7 +132,7 @@ impl Action {
             ZoomReset => &["ctrl+shift+0"],
             ToggleSidebar => &["ctrl+shift+b"],
             Settings => &["ctrl+shift+,"],
-            Find => &[],
+            Find => &["ctrl+shift+f"],
             UiScaleUp => &["ctrl+alt+="],
             UiScaleDown => &["ctrl+alt+-"],
             UiScaleReset => &["ctrl+alt+0"],

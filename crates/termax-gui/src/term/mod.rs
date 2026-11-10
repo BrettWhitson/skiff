@@ -21,6 +21,7 @@ use self::select::{SelectState, handle_mouse, selection_text};
 pub mod announce;
 pub mod input;
 pub mod render;
+pub mod search;
 pub mod select;
 
 const BLINK: Duration = Duration::from_millis(530);
@@ -59,6 +60,8 @@ pub struct TermTab {
     /// Take the screen as read without announcing it (tab shown again,
     /// or a screen reader just connected).
     resync: bool,
+    /// The open find bar.
+    pub search: Option<search::SearchState>,
 }
 
 /// Rows × columns that fit `rect` (at least 2 × 10, as the pty needs).
@@ -96,6 +99,7 @@ impl TermTab {
             last_screen: String::new(),
             live: String::new(),
             resync: false,
+            search: None,
         }
     }
 
@@ -184,19 +188,6 @@ pub fn view(
     if r.pressed {
         ui.request_focus(id);
     }
-    let focused = ui.has_focus(id);
-    if focused {
-        ui.capture_keyboard(id); // Tab and Esc belong to the shell
-        // F6 / Shift+F6 still leave the terminal (no keyboard trap);
-        // Ctrl+Shift+F6 sends F6 to the shell instead.
-        let f6 = ui.input().events.iter().find_map(|e| match e {
-            Event::KeyDown { key: Key::F(6), mods, .. } if !mods.ctrl && !mods.alt && !mods.logo => Some(!mods.shift),
-            _ => None,
-        });
-        if let Some(forward) = f6 {
-            ui.cycle_region(forward);
-        }
-    }
     let scale = ui.scale();
     let default_px = ui.mono_px() / scale;
     for a in actions.drain(..) {
@@ -212,7 +203,25 @@ pub fn view(
                     s.paste(&t);
                 }
             }
+            Action::Find => {
+                tab.search.get_or_insert_default();
+                ui.request_focus(id.with("find").with("input"));
+            }
             _ => {}
+        }
+    }
+    // After the actions: Find moves focus to the find bar this frame.
+    let focused = ui.has_focus(id);
+    if focused {
+        ui.capture_keyboard(id); // Tab and Esc belong to the shell
+        // F6 / Shift+F6 still leave the terminal (no keyboard trap);
+        // Ctrl+Shift+F6 sends F6 to the shell instead.
+        let f6 = ui.input().events.iter().find_map(|e| match e {
+            Event::KeyDown { key: Key::F(6), mods, .. } if !mods.ctrl && !mods.alt && !mods.logo => Some(!mods.shift),
+            _ => None,
+        });
+        if let Some(forward) = f6 {
+            ui.cycle_region(forward);
         }
     }
     let px = if tab.font_px > 0.0 { tab.font_px * scale } else { ui.mono_px() };
@@ -263,6 +272,9 @@ pub fn view(
     }
 
     let alive = session.is_alive();
+    if let Some(s) = tab.search.as_mut() {
+        search::step_keys(ui, s);
+    }
     if focused && ui.keys_for(id) {
         let events = ui.input().events.clone();
         if !alive {
@@ -352,7 +364,9 @@ pub fn view(
     };
     ui.painter().rect(rect, theme.term_bg, 0.0);
     if let Ok(mut p) = parser.lock() {
-        draw_screen(ui, inner, p.screen(), theme, cell, px, cursor, tab.select.sel.as_ref());
+        let rows = p.screen().size().0 as usize;
+        let marks = tab.search.as_ref().map(|s| s.marks(offset, rows)).unwrap_or_default();
+        draw_screen(ui, inner, p.screen(), theme, cell, px, cursor, tab.select.sel.as_ref(), &marks);
         if offset > 0 {
             draw_scrollbar(ui, rect, &mut p, offset, theme);
         }
@@ -366,6 +380,35 @@ pub fn view(
         let (radius, at) = (ui.px(4) as f32, Point::new(bar.x + ui.px(8), y));
         ui.painter().rect(bar, theme.palette.surface_alt, radius);
         ui.painter().text(at, msg, FontKind::Mono, px, theme.palette.warning);
+    }
+    find_bar(ui, id, inner, tab, &parser);
+}
+
+/// The find bar over the top-right of the terminal, while search is open:
+/// re-runs the search as the query or output changes and scrolls to the
+/// current match.
+fn find_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab, parser: &std::sync::Arc<std::sync::Mutex<vt100::Parser>>) {
+    let Some(s) = tab.search.as_mut() else { return };
+    let w = ui.px(360).min(inner.w);
+    let h = ui.px(32);
+    let rect = Rect::new(inner.right() - w, inner.y, w, h);
+    let (changed, out) = search::bar(ui, id.with("find"), rect, s);
+    let generation = tab.session.as_ref().map_or(0, |s| s.generation());
+    let Ok(mut p) = parser.lock() else { return };
+    if out.close {
+        tab.search = None;
+        p.screen_mut().set_scrollback(0);
+        ui.request_focus(id);
+        return;
+    }
+    s.update(&mut p, generation, changed);
+    if std::mem::take(&mut s.scroll_due) {
+        if let Some(off) = s.offset() {
+            // Keep the match a few rows below the top when there is room.
+            let rows = p.screen().size().0 as usize;
+            p.screen_mut().set_scrollback(off.saturating_sub(rows / 3));
+        }
+        ui.request_repaint_in(Duration::ZERO);
     }
 }
 

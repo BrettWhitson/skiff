@@ -738,7 +738,7 @@ impl GuiApp {
                 self.style = style_for(&self.theme, &self.cfg);
                 self.save_config();
             }
-            Action::Copy | Action::Paste | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
+            Action::Copy | Action::Paste | Action::Find | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
                 self.view_actions.push(a)
             }
             _ => {}
