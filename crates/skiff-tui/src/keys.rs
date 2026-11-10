@@ -134,7 +134,7 @@ impl Action {
             Action::SplitRight => &["alt+\\"],
             Action::SplitDown => &["alt+-"],
             Action::FocusNextPane => &["alt+o"],
-            Action::SwapPanes => &["alt+x"],
+            Action::SwapPanes => &["alt+shift+x"],
             Action::ResizePaneLeft => &["alt+shift+left"],
             Action::ResizePaneRight => &["alt+shift+right"],
             Action::ResizePaneUp => &["alt+shift+up"],

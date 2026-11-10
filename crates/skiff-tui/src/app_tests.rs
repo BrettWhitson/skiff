@@ -847,6 +847,8 @@ fn split_panes_swap_resize_equalize_and_drag() {
     let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
     assert_eq!(split(&t), (false, 0.5));
     alt(&mut t, 'x');
+    assert_eq!(split(&t), (false, 0.5), "Alt+X is the shell's (M-x)");
+    key(&mut t, KeyCode::Char('X'), alt_shift);
     assert_eq!(split(&t), (true, 0.5), "swapped: the focused pane is now on the left");
     key(&mut t, KeyCode::Right, alt_shift);
     assert_eq!(split(&t).1, 2.0 / 3.0, "the next snap point");

@@ -307,7 +307,7 @@ them.
 
 ```toml
 [tui_keys]
-close_tab = "alt+z"
+close_tab = "alt+x"
 split_right = "alt+v"
 help = "f1, alt+h"
 ```
@@ -324,7 +324,7 @@ help = "f1, alt+h"
 | `snippets` | `alt+s` (terminal tabs) |
 | `split_right` / `split_down` | `alt+\` / `alt+-` (terminal tabs) |
 | `focus_next_pane` | `alt+o` (terminal tabs) |
-| `swap_panes` | `alt+x` (split tabs) |
+| `swap_panes` | `alt+shift+x` (split tabs) |
 | `resize_pane_left` / `_right` / `_up` / `_down` | `alt+shift+left` / `right` / `up` / `down` (split tabs) |
 | `equalize_panes` | `alt+=` (split tabs) |
 
@@ -343,7 +343,7 @@ mouse go to the focused pane, whose border is highlighted. `Alt+W` closes
 the focused pane and its session; with one pane left it closes the tab. A
 tab holds at most two panes: splitting a split tab again switches its direction. Each
 pane's terminal is resized to fit its part. Port-forward tabs can't be split.
-`Alt+X` swaps the two panes. `Alt+Shift+←` / `→` (side by side) or `↑` / `↓`
+`Alt+Shift+X` swaps the two panes. `Alt+Shift+←` / `→` (side by side) or `↑` / `↓`
 (stacked) move the divider to the next of 25 / 33 / 50 / 67 / 75% (an arrow
 across the split goes to the shell), and `Alt+=` makes the panes equal. With
 `tui_mouse = "always"`, drag the border between the panes; it snaps to those
