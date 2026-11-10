@@ -49,29 +49,17 @@ pub fn route(events: &[Event], keymap: &Keymap, app_cursor: bool) -> Vec<u8> {
     let mut skip_text = false;
     for e in events {
         match e {
-            Event::KeyDown {
-                key: Key::F(6),
-                mods,
-                ..
-            } if !mods.alt && !mods.logo => {
+            Event::KeyDown { key: Key::F(6), mods, .. } if !mods.alt && !mods.logo => {
                 // Plain / Shift+F6 move between regions; Ctrl+Shift+F6 is a
                 // plain F6 and Ctrl+F6 is Ctrl+F6.
                 match (mods.ctrl, mods.shift) {
-                    (true, true) => out.extend(encode_key(
-                        KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE),
-                        app_cursor,
-                    )),
-                    (true, false) => out.extend(encode_key(
-                        KeyEvent::new(KeyCode::F(6), KeyModifiers::CONTROL),
-                        app_cursor,
-                    )),
+                    (true, true) => out.extend(encode_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE), app_cursor)),
+                    (true, false) => out.extend(encode_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::CONTROL), app_cursor)),
                     _ => {}
                 }
             }
             Event::KeyDown { key, mods, text } => {
-                if !crate::keys::altgr_text(*mods, text.as_deref())
-                    && keymap.match_key(key, *mods, true).is_some()
-                {
+                if !crate::keys::altgr_text(*mods, text.as_deref()) && keymap.match_key(key, *mods, true).is_some() {
                     skip_text = text.is_some();
                     continue;
                 }
@@ -84,17 +72,8 @@ pub fn route(events: &[Event], keymap: &Keymap, app_cursor: bool) -> Vec<u8> {
                     continue;
                 }
                 // Alt+key: use the produced character (it carries Shift's case).
-                let (key, m) = match (
-                    mods.alt && !altgr,
-                    text.as_deref().and_then(|t| t.chars().next()),
-                ) {
-                    (true, Some(c)) => (
-                        Key::Char(c),
-                        Modifiers {
-                            shift: false,
-                            ..*mods
-                        },
-                    ),
+                let (key, m) = match (mods.alt && !altgr, text.as_deref().and_then(|t| t.chars().next())) {
+                    (true, Some(c)) => (Key::Char(c), Modifiers { shift: false, ..*mods }),
                     _ => (key.clone(), *mods),
                 };
                 if let Some(ev) = to_key_event(&key, m) {

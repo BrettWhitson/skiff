@@ -70,10 +70,22 @@ pub struct TransferSummary {
 
 pub enum TransferEvent {
     /// `current` is the file being copied; `total` is known for single files.
-    Progress { id: u64, done: u64, total: Option<u64>, current: String },
+    Progress {
+        id: u64,
+        done: u64,
+        total: Option<u64>,
+        current: String,
+    },
     /// The destination file exists; answer on `reply` (dropping it cancels).
-    NeedsDecision { id: u64, path: String, reply: oneshot::Sender<OverwriteDecision> },
-    Done { id: u64, result: Result<TransferSummary, String> },
+    NeedsDecision {
+        id: u64,
+        path: String,
+        reply: oneshot::Sender<OverwriteDecision>,
+    },
+    Done {
+        id: u64,
+        result: Result<TransferSummary, String>,
+    },
 }
 
 #[derive(Clone)]
@@ -243,11 +255,7 @@ impl Job {
             return;
         }
         self.last_emit = Instant::now();
-        let _ = self.events.send(TransferEvent::Progress {
-            id: self.id,
-            done: self.done,
-            total: self.total,
-            current: self.current.clone(),
-        });
+        let _ =
+            self.events.send(TransferEvent::Progress { id: self.id, done: self.done, total: self.total, current: self.current.clone() });
     }
 }

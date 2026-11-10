@@ -18,8 +18,8 @@ use crate::canvas::Canvas;
 use crate::clipboard::{Clipboard, MemoryClipboard, SystemClipboard};
 use crate::color::Color;
 use crate::display::{DisplayList, TileRenderer};
-use crate::geom::{Point, Rect};
 pub use crate::geom::Size;
+use crate::geom::{Point, Rect};
 use crate::input::{CursorIcon, Event, Key, Modifiers, MouseButton, map_char_key, map_named_key};
 use crate::text::Fonts;
 use crate::text::cache::GlyphCache;
@@ -132,10 +132,13 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
             }
             let text = event.text.as_ref().map(|t| t.to_string()).filter(|t| t.chars().all(|c| !c.is_control()));
             let mut out = vec![Event::KeyDown { key: key.clone(), mods, text: text.clone() }];
-            if let Some(t) = text {
-                if (!mods.ctrl || mods.alt) && !mods.logo && key != Key::Enter && key != Key::Tab {
-                    out.push(Event::Text(t));
-                }
+            if let Some(t) = text
+                && (!mods.ctrl || mods.alt)
+                && !mods.logo
+                && key != Key::Enter
+                && key != Key::Tab
+            {
+                out.push(Event::Text(t));
             }
             out
         }
@@ -205,15 +208,8 @@ fn frame_once(
         a11y_tree: None,
     };
     app.frame(&mut ctx);
-    let (redraw_in, title, quit, bg, cursor, replace_fonts, tree) = (
-        ctx.request_redraw_in,
-        ctx.title.take(),
-        ctx.quit,
-        ctx.background,
-        ctx.cursor,
-        ctx.replace_fonts.take(),
-        ctx.a11y_tree.take(),
-    );
+    let (redraw_in, title, quit, bg, cursor, replace_fonts, tree) =
+        (ctx.request_redraw_in, ctx.title.take(), ctx.quit, ctx.background, ctx.cursor, ctx.replace_fonts.take(), ctx.a11y_tree.take());
     let damage = renderer.render(list, canvas, fonts, cache, bg);
     FrameOut { damage, redraw_in, title, quit, cursor, replace_fonts, tree }
 }
@@ -354,8 +350,7 @@ impl<A: App> Shell<A> {
         let adapter = accesskit_winit::Adapter::with_event_loop_proxy(el, &window, self.proxy.clone());
         window.set_visible(true);
         let context = softbuffer::Context::new(window.clone()).map_err(|e| anyhow::anyhow!("softbuffer context: {e}"))?;
-        let surface =
-            softbuffer::Surface::new(&context, window.clone()).map_err(|e| anyhow::anyhow!("softbuffer surface: {e}"))?;
+        let surface = softbuffer::Surface::new(&context, window.clone()).map_err(|e| anyhow::anyhow!("softbuffer surface: {e}"))?;
         window.request_redraw();
         self.gfx = Some(Gfx { window, surface, adapter });
         Ok(())
@@ -453,10 +448,10 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
     }
 
     fn resumed(&mut self, el: &ActiveEventLoop) {
-        if self.gfx.is_none() {
-            if let Err(e) = self.create_window(el) {
-                self.fail(el, e);
-            }
+        if self.gfx.is_none()
+            && let Err(e) = self.create_window(el)
+        {
+            self.fail(el, e);
         }
     }
 

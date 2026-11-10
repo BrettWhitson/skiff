@@ -77,10 +77,7 @@ fn double_click_selects_word() {
         mouse(&mut h, &mut st, release(at(0, 8)));
     }
     st.resolve(p.screen(), 0);
-    assert_eq!(
-        selection_text(p.screen(), &st.sel.unwrap(), 0),
-        "/var/log/nginx"
-    );
+    assert_eq!(selection_text(p.screen(), &st.sel.unwrap(), 0), "/var/log/nginx");
 }
 
 #[test]
@@ -94,10 +91,7 @@ fn triple_click_selects_line() {
         mouse(&mut h, &mut st, release(at(1, 3)));
     }
     st.resolve(p.screen(), 0);
-    assert_eq!(
-        selection_text(p.screen(), &st.sel.unwrap(), 0),
-        "  the whole line"
-    );
+    assert_eq!(selection_text(p.screen(), &st.sel.unwrap(), 0), "  the whole line");
 }
 
 // ----- with a live session on the local test server ----------------------
@@ -106,10 +100,8 @@ fn fixture_tab(fx: &termax_testserver::TestFixture) -> TermTab {
     let mut args = fx.ssh_options();
     args.push("-tt".into());
     args.push(fx.destination());
-    let cfg = termax_core::config::Config::parse(
-        "[settings]\nload_ssh_config=false\n[[connection]]\nname=\"fx\"\nhost=\"127.0.0.1\"\n",
-    )
-    .unwrap();
+    let cfg =
+        termax_core::config::Config::parse("[settings]\nload_ssh_config=false\n[[connection]]\nname=\"fx\"\nhost=\"127.0.0.1\"\n").unwrap();
     let host = termax_core::hosts::collect(&cfg).0.remove(0);
     TermTab::with_command(host, "ssh".into(), args, 500)
 }
@@ -128,17 +120,10 @@ impl Live {
     }
 
     fn with_harness(h: Harness) -> Live {
-        let fx = termax_testserver::TestFixture::with_shell(termax_testserver::FixtureAuth::Key)
-            .unwrap();
+        let fx = termax_testserver::TestFixture::with_shell(termax_testserver::FixtureAuth::Key).unwrap();
         let tab = fixture_tab(&fx);
         let theme = from_def(&termax_core::theme::builtin()[1]);
-        let mut l = Live {
-            _fx: fx,
-            tab,
-            h,
-            km: Keymap::new(&BTreeMap::new(), false).0,
-            theme,
-        };
+        let mut l = Live { _fx: fx, tab, h, km: Keymap::new(&BTreeMap::new(), false).0, theme };
         l.frame(vec![], vec![]);
         // focus the view
         l.frame(
@@ -155,40 +140,17 @@ impl Live {
 
     fn frame(&mut self, events: Vec<Event>, mut actions: Vec<Action>) {
         let (tab, km, theme) = (&mut self.tab, &self.km, &self.theme);
-        self.h.frame(events, &mut |ui| {
-            view(
-                ui,
-                Id::new("t"),
-                ui.window_rect(),
-                tab,
-                theme,
-                km,
-                None,
-                &mut actions,
-            )
-        });
+        self.h.frame(events, &mut |ui| view(ui, Id::new("t"), ui.window_rect(), tab, theme, km, None, &mut actions));
     }
 
     fn screen_text(&self) -> String {
-        self.tab
-            .session
-            .as_ref()
-            .unwrap()
-            .parser
-            .lock()
-            .unwrap()
-            .screen()
-            .contents()
+        self.tab.session.as_ref().unwrap().parser.lock().unwrap().screen().contents()
     }
 
     fn wait_for(&mut self, s: &str) {
         let start = Instant::now();
         while !self.screen_text().contains(s) {
-            assert!(
-                start.elapsed() < Duration::from_secs(15),
-                "timed out waiting for {s:?}; screen: {}",
-                self.screen_text()
-            );
+            assert!(start.elapsed() < Duration::from_secs(15), "timed out waiting for {s:?}; screen: {}", self.screen_text());
             std::thread::sleep(Duration::from_millis(30));
         }
         self.frame(vec![], vec![]);
@@ -202,11 +164,7 @@ fn copy_and_paste_through_clipboard() {
     l.frame(vec![], vec![Action::Paste]);
     l.wait_for("pasted-text");
     // select "pasted" on the line it was echoed on, then copy
-    let row = l
-        .screen_text()
-        .lines()
-        .position(|x| x.contains("pasted-text"))
-        .unwrap() as i32;
+    let row = l.screen_text().lines().position(|x| x.contains("pasted-text")).unwrap() as i32;
     let (cw, chh) = l.tab.cell_size();
     let pt = |c: i32| Point::new(6 + c * cw + cw / 2, 6 + row * chh + chh / 2);
     l.frame(press(pt(0)), vec![]);
@@ -224,29 +182,9 @@ fn wheel_scrolls_and_key_snaps_back() {
     l.h.clipboard.text = Some(lines);
     l.frame(vec![], vec![Action::Paste]);
     l.wait_for("line59");
-    l.frame(
-        vec![
-            Event::MouseMove(Point::new(400, 200)),
-            Event::Wheel { dx: 0.0, dy: 48.0 },
-        ],
-        vec![],
-    );
-    assert_eq!(
-        l.tab.session.as_ref().unwrap().scroll_offset(),
-        3,
-        "one notch = 3 lines back"
-    );
-    l.frame(
-        vec![
-            Event::KeyDown {
-                key: Key::Char('a'),
-                mods: Modifiers::NONE,
-                text: Some("a".into()),
-            },
-            Event::Text("a".into()),
-        ],
-        vec![],
-    );
+    l.frame(vec![Event::MouseMove(Point::new(400, 200)), Event::Wheel { dx: 0.0, dy: 48.0 }], vec![]);
+    assert_eq!(l.tab.session.as_ref().unwrap().scroll_offset(), 3, "one notch = 3 lines back");
+    l.frame(vec![Event::KeyDown { key: Key::Char('a'), mods: Modifiers::NONE, text: Some("a".into()) }, Event::Text("a".into())], vec![]);
     assert_eq!(l.tab.session.as_ref().unwrap().scroll_offset(), 0);
 }
 
@@ -282,27 +220,17 @@ fn shown_again_does_not_reannounce_screen() {
     }
     l.tab.shown();
     l.frame(vec![], vec![]);
-    assert!(
-        !l.tab.announcer.has_pending(),
-        "switching to a tab reads nothing old"
-    );
+    assert!(!l.tab.announcer.has_pending(), "switching to a tab reads nothing old");
 }
 
 fn on_screen(l: &Live, s: &str) -> bool {
-    l.h.list()
-        .prims
-        .iter()
-        .any(|p| matches!(p, termax_ui::display::Prim::Text { text, .. } if text == s))
+    l.h.list().prims.iter().any(|p| matches!(p, termax_ui::display::Prim::Text { text, .. } if text == s))
 }
 
 #[test]
 fn gui_search_highlights_and_counts() {
     let mut l = Live::new();
-    l.tab
-        .session
-        .as_mut()
-        .unwrap()
-        .write(b"needle one\rneedle two\rneedle three\r");
+    l.tab.session.as_mut().unwrap().write(b"needle one\rneedle two\rneedle three\r");
     l.wait_for("needle three");
     l.frame(vec![], vec![Action::Find]);
     l.frame(vec![Event::Text("needle".into())], vec![]);
@@ -316,19 +244,8 @@ fn gui_search_highlights_and_counts() {
                 _ => None,
             })
             .collect();
-    assert!(
-        on_screen(&l, "3 of 3"),
-        "the newest match is current: {texts:?} {:?}",
-        l.tab.search
-    );
-    l.frame(
-        vec![Event::KeyDown {
-            key: Key::F(3),
-            mods: Modifiers::NONE,
-            text: None,
-        }],
-        vec![],
-    );
+    assert!(on_screen(&l, "3 of 3"), "the newest match is current: {texts:?} {:?}", l.tab.search);
+    l.frame(vec![Event::KeyDown { key: Key::F(3), mods: Modifiers::NONE, text: None }], vec![]);
     l.frame(vec![], vec![]);
     assert!(on_screen(&l, "2 of 3"), "F3 goes to the next older match");
     let accent = l.theme.palette.accent;
@@ -337,57 +254,29 @@ fn gui_search_highlights_and_counts() {
         _ => false,
     });
     assert!(lit, "the current match is highlighted");
-    l.frame(
-        vec![Event::KeyDown {
-            key: Key::Escape,
-            mods: Modifiers::NONE,
-            text: None,
-        }],
-        vec![],
-    );
+    l.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }], vec![]);
     assert!(l.tab.search.is_none(), "Esc closes the search");
 }
 
 #[test]
 fn f3_is_only_taken_with_focus_in_the_terminal() {
     let mut l = Live::new();
-    l.tab
-        .session
-        .as_mut()
-        .unwrap()
-        .write(b"needle one\rneedle two\r");
+    l.tab.session.as_mut().unwrap().write(b"needle one\rneedle two\r");
     l.wait_for("needle two");
     l.frame(vec![], vec![Action::Find]);
     l.frame(vec![Event::Text("needle".into())], vec![]);
     let current = |l: &Live| l.tab.search.as_ref().unwrap().found.current();
     let last = current(&l);
-    let f3 = || Event::KeyDown {
-        key: Key::F(3),
-        mods: Modifiers::NONE,
-        text: None,
-    };
+    let f3 = || Event::KeyDown { key: Key::F(3), mods: Modifiers::NONE, text: None };
     let f3_with_focus_on = |l: &mut Live, focus: Id| {
         let (tab, km, theme) = (&mut l.tab, &l.km, &l.theme);
         l.h.frame(vec![f3()], &mut |ui| {
             ui.request_focus(focus);
-            view(
-                ui,
-                Id::new("t"),
-                ui.window_rect(),
-                tab,
-                theme,
-                km,
-                None,
-                &mut vec![],
-            );
+            view(ui, Id::new("t"), ui.window_rect(), tab, theme, km, None, &mut vec![]);
         });
     };
     f3_with_focus_on(&mut l, Id::new("sidebar"));
-    assert_eq!(
-        current(&l),
-        last,
-        "F3 with focus outside the tab is left alone"
-    );
+    assert_eq!(current(&l), last, "F3 with focus outside the tab is left alone");
     f3_with_focus_on(&mut l, Id::new("t").with("find").with("input"));
     assert_ne!(current(&l), last, "the find bar has focus: F3 steps");
 }
@@ -407,20 +296,10 @@ fn gui_multiline_paste_prompts() {
     l.h.clipboard.text = Some("echo a\necho b".into());
     l.frame(vec![], vec![Action::Paste]);
     l.frame(vec![], vec![]);
-    assert!(
-        on_screen(&l, "Paste 2 lines into fx?"),
-        "the paste waits for a yes"
-    );
+    assert!(on_screen(&l, "Paste 2 lines into fx?"), "the paste waits for a yes");
     std::thread::sleep(Duration::from_millis(200));
     assert!(!l.screen_text().contains("echo a"), "nothing sent yet");
-    l.frame(
-        vec![Event::KeyDown {
-            key: Key::Enter,
-            mods: Modifiers::NONE,
-            text: None,
-        }],
-        vec![],
-    );
+    l.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }], vec![]);
     l.frame(vec![], vec![]);
     assert!(l.tab.pending_paste.is_none(), "a reflexive Enter cancels");
     std::thread::sleep(Duration::from_millis(200));
@@ -438,29 +317,12 @@ fn gui_multiline_paste_prompts() {
 fn shift_bypasses_mouse_reporting() {
     let mut l = Live::new();
     // The echo shell sends this back, so the "program" turns on SGR mouse.
-    l.tab
-        .session
-        .as_mut()
-        .unwrap()
-        .write(b"\x1b[?1000h\x1b[?1006h");
+    l.tab.session.as_mut().unwrap().write(b"\x1b[?1000h\x1b[?1006h");
     let start = Instant::now();
-    let on = |l: &Live| {
-        l.tab
-            .session
-            .as_ref()
-            .unwrap()
-            .parser
-            .lock()
-            .unwrap()
-            .screen()
-            .mouse_protocol_mode()
-            != vt100::MouseProtocolMode::None
-    };
+    let on =
+        |l: &Live| l.tab.session.as_ref().unwrap().parser.lock().unwrap().screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
     while !on(&l) {
-        assert!(
-            start.elapsed() < Duration::from_secs(15),
-            "mouse mode never turned on"
-        );
+        assert!(start.elapsed() < Duration::from_secs(15), "mouse mode never turned on");
         std::thread::sleep(Duration::from_millis(30));
     }
     let (cw, chh) = l.tab.cell_size();
@@ -468,14 +330,8 @@ fn shift_bypasses_mouse_reporting() {
     l.frame(press(pt(0)), vec![]);
     l.frame(vec![Event::MouseMove(pt(5))], vec![]);
     l.frame(release(pt(5)), vec![]);
-    assert!(
-        l.tab.select.sel.is_none(),
-        "the program gets the drag, no selection"
-    );
-    let shift = Modifiers {
-        shift: true,
-        ..Modifiers::NONE
-    };
+    assert!(l.tab.select.sel.is_none(), "the program gets the drag, no selection");
+    let shift = Modifiers { shift: true, ..Modifiers::NONE };
     l.frame(vec![Event::Modifiers(shift)], vec![]);
     l.frame(press(pt(0)), vec![]);
     l.frame(vec![Event::MouseMove(pt(5))], vec![]);
@@ -491,11 +347,7 @@ fn search_repaints_after_new_output() {
     l.frame(vec![], vec![]);
     l.tab.session.as_mut().unwrap().write(b"needle late\r");
     l.wait_for("needle late");
-    assert_eq!(
-        l.h.repaint_in,
-        Some(Duration::ZERO),
-        "new matches are drawn on the next frame, not whenever input comes"
-    );
+    assert_eq!(l.h.repaint_in, Some(Duration::ZERO), "new matches are drawn on the next frame, not whenever input comes");
 }
 
 #[test]
@@ -504,9 +356,7 @@ fn clicks_on_the_find_bar_stay_out_of_the_terminal() {
     l.frame(vec![], vec![Action::Find]);
     l.frame(vec![], vec![]);
     let bar = l.h.list().prims.iter().find_map(|p| match p {
-        termax_ui::display::Prim::Text { text, bounds, .. } if text == "Find" => {
-            Some(Point::new(bounds.x + 2, bounds.y + bounds.h / 2))
-        }
+        termax_ui::display::Prim::Text { text, bounds, .. } if text == "Find" => Some(Point::new(bounds.x + 2, bounds.y + bounds.h / 2)),
         _ => None,
     });
     let at = bar.expect("find bar placeholder");
@@ -514,8 +364,5 @@ fn clicks_on_the_find_bar_stay_out_of_the_terminal() {
         l.frame(press(at), vec![]);
         l.frame(release(at), vec![]);
     }
-    assert!(
-        l.tab.select.sel.is_none(),
-        "a double-click in the find box doesn't select terminal text"
-    );
+    assert!(l.tab.select.sel.is_none(), "a double-click in the find box doesn't select terminal text");
 }

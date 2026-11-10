@@ -170,7 +170,7 @@ fn main() {
 
     // 2. File transfer: Local <-> file-server, one copy finished.
     let fs = host(&s, "file-server");
-    s.app.open_files(Location::Local, Location::Host(fs));
+    s.app.open_files(Location::Local, Location::Host(Box::new(fs)));
     s.until("both panes listed", |a| match &a.tabs[a.active].kind {
         TabKind::Files(f) => f.panes.iter().all(|p| p.ep.is_some() && p.state == PaneState::Idle && !p.cwd.is_empty()),
         _ => false,
@@ -215,7 +215,7 @@ fn main() {
 
     // 4. Inline password prompt from ssh (askpass relay).
     let pw = host(&s, "staging-api");
-    s.app.open_files(Location::Local, Location::Host(pw));
+    s.app.open_files(Location::Local, Location::Host(Box::new(pw)));
     s.until("password prompt", |a| match &a.tabs[a.active].kind {
         TabKind::Files(f) => f.panes[1].prompt.is_some(),
         _ => false,

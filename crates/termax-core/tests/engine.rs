@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use termax_core::fs::connect::{connect_sftp, SshLaunch};
+use termax_core::fs::connect::{SshLaunch, connect_sftp};
 use termax_core::fs::endpoint::Endpoint;
 use termax_core::fs::transfer::{self, OverwriteDecision, OverwritePolicy, TransferEvent, TransferRequest, TransferSummary};
 use termax_testserver::{FixtureAuth, TestFixture};
@@ -83,11 +83,19 @@ async fn upload_download_roundtrip() {
     let bytes = data(3 * 1024 * 1024, 1);
     std::fs::write(local_a.path().join("big.bin"), &bytes).unwrap();
 
-    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&local_a.path().join("big.bin")), &r, "/"), OverwritePolicy::Ask, |_| panic!("no conflict"), |_| {}).await;
+    let (res, _) = run_transfer(
+        req(&Endpoint::Local, &p(&local_a.path().join("big.bin")), &r, "/"),
+        OverwritePolicy::Ask,
+        |_| panic!("no conflict"),
+        |_| {},
+    )
+    .await;
     assert_eq!(res.unwrap().files, 1);
     assert_eq!(std::fs::read(fx.root().join("big.bin")).unwrap(), bytes);
 
-    let (res, _) = run_transfer(req(&r, "/big.bin", &Endpoint::Local, &p(local_b.path())), OverwritePolicy::Ask, |_| panic!("no conflict"), |_| {}).await;
+    let (res, _) =
+        run_transfer(req(&r, "/big.bin", &Endpoint::Local, &p(local_b.path())), OverwritePolicy::Ask, |_| panic!("no conflict"), |_| {})
+            .await;
     assert_eq!(res.unwrap().bytes, bytes.len() as u64);
     assert_eq!(std::fs::read(local_b.path().join("big.bin")).unwrap(), bytes);
 }
@@ -115,7 +123,13 @@ async fn cancel_mid_transfer() {
     let local = tempfile::tempdir().unwrap();
     std::fs::write(local.path().join("huge.bin"), data(40 * 1024 * 1024, 3)).unwrap();
 
-    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&local.path().join("huge.bin")), &r, "/"), OverwritePolicy::Ask, |_| panic!(), |h| h.cancel()).await;
+    let (res, _) = run_transfer(
+        req(&Endpoint::Local, &p(&local.path().join("huge.bin")), &r, "/"),
+        OverwritePolicy::Ask,
+        |_| panic!(),
+        |h| h.cancel(),
+    )
+    .await;
     assert!(res.unwrap().cancelled);
     assert!(!fx.root().join("huge.bin").exists(), "partial file left behind");
 }
@@ -167,7 +181,13 @@ async fn overwrite_all_stops_asking() {
         std::fs::write(fx.root().join("d").join(f), "old").unwrap();
         std::fs::write(local.path().join("d").join(f), "new").unwrap();
     }
-    let (res, asked) = run_transfer(req(&Endpoint::Local, &p(&local.path().join("d")), &r, "/"), OverwritePolicy::Ask, |_| OverwriteDecision::OverwriteAll, |_| {}).await;
+    let (res, asked) = run_transfer(
+        req(&Endpoint::Local, &p(&local.path().join("d")), &r, "/"),
+        OverwritePolicy::Ask,
+        |_| OverwriteDecision::OverwriteAll,
+        |_| {},
+    )
+    .await;
     assert_eq!(res.unwrap().files, 3);
     assert_eq!(asked, 1);
     for f in ["a", "b", "c"] {
@@ -184,7 +204,9 @@ async fn copy_file_onto_directory_errors() {
     let local = tempfile::tempdir().unwrap();
     std::fs::write(local.path().join("same"), "file").unwrap();
 
-    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&local.path().join("same")), &r, "/"), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    let (res, _) =
+        run_transfer(req(&Endpoint::Local, &p(&local.path().join("same")), &r, "/"), OverwritePolicy::Overwrite, |_| panic!(), |_| {})
+            .await;
     assert!(res.is_err());
     assert_eq!(std::fs::read_to_string(fx.root().join("same").join("keep.txt")).unwrap(), "keep");
 }
@@ -198,10 +220,16 @@ async fn transfers_names_with_spaces_and_unicode() {
     let local_b = tempfile::tempdir().unwrap();
     std::fs::write(local_a.path().join(name), "ünïcode").unwrap();
 
-    run_transfer(req(&Endpoint::Local, &p(&local_a.path().join(name)), &r, "/"), OverwritePolicy::Ask, |_| panic!(), |_| {}).await.0.unwrap();
+    run_transfer(req(&Endpoint::Local, &p(&local_a.path().join(name)), &r, "/"), OverwritePolicy::Ask, |_| panic!(), |_| {})
+        .await
+        .0
+        .unwrap();
     let listed: Vec<String> = r.list("/").await.unwrap().into_iter().map(|e| e.name).collect();
     assert!(listed.contains(&name.to_string()), "{listed:?}");
-    run_transfer(req(&r, &format!("/{name}"), &Endpoint::Local, &p(local_b.path())), OverwritePolicy::Ask, |_| panic!(), |_| {}).await.0.unwrap();
+    run_transfer(req(&r, &format!("/{name}"), &Endpoint::Local, &p(local_b.path())), OverwritePolicy::Ask, |_| panic!(), |_| {})
+        .await
+        .0
+        .unwrap();
     assert_eq!(std::fs::read_to_string(local_b.path().join(name)).unwrap(), "ünïcode");
     r.remove(&format!("/{name}"), false).await.unwrap();
     assert!(!fx.root().join(name).exists());
@@ -249,11 +277,23 @@ async fn self_copy_is_rejected() {
     std::fs::create_dir(d.path().join("a")).unwrap();
     std::fs::write(d.path().join("a").join("x"), "x").unwrap();
 
-    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&d.path().join("f")), &Endpoint::Local, &p(d.path())), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    let (res, _) = run_transfer(
+        req(&Endpoint::Local, &p(&d.path().join("f")), &Endpoint::Local, &p(d.path())),
+        OverwritePolicy::Overwrite,
+        |_| panic!(),
+        |_| {},
+    )
+    .await;
     assert!(res.is_err(), "{res:?}");
     assert_eq!(std::fs::read_to_string(d.path().join("f")).unwrap(), "data");
 
-    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&d.path().join("a")), &Endpoint::Local, &p(&d.path().join("a"))), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    let (res, _) = run_transfer(
+        req(&Endpoint::Local, &p(&d.path().join("a")), &Endpoint::Local, &p(&d.path().join("a"))),
+        OverwritePolicy::Overwrite,
+        |_| panic!(),
+        |_| {},
+    )
+    .await;
     assert!(res.is_err(), "{res:?}");
     assert!(!d.path().join("a").join("a").exists());
 }
@@ -322,7 +362,9 @@ async fn copy_directory_onto_file_errors() {
     std::fs::write(fx.root().join("same"), "file").unwrap();
     let local = tempfile::tempdir().unwrap();
     std::fs::create_dir(local.path().join("same")).unwrap();
-    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&local.path().join("same")), &r, "/"), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    let (res, _) =
+        run_transfer(req(&Endpoint::Local, &p(&local.path().join("same")), &r, "/"), OverwritePolicy::Overwrite, |_| panic!(), |_| {})
+            .await;
     assert!(res.is_err());
     assert_eq!(std::fs::read_to_string(fx.root().join("same")).unwrap(), "file");
 }

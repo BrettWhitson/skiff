@@ -5,19 +5,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use termax_core::askpass::{AskKind, AskRequest};
 use termax_core::fs::endpoint::Endpoint;
-use termax_core::sshver::supports_askpass_require;
-use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
 use termax_core::fs::path::is_safe_name;
 use termax_core::fs::{FileEntry, human_size, parent};
+use termax_core::sshver::supports_askpass_require;
 use termax_ui::geom::{Point, Rect};
 use termax_ui::input::{Key, Modifiers};
 use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Sense, Ui};
-use termax_ui::widgets::{
-    Selection, TextInputOpts, button, checkbox, dropdown, elide, label, select_list_named, text_input,
-};
+use termax_ui::widgets::{Selection, TextInputOpts, button, checkbox, dropdown, elide, label, select_list_named, text_input};
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use super::ops::{self, Op};
 use super::transfers::FileDrag;
@@ -38,8 +36,13 @@ pub enum PaneState {
 pub enum Confirm {
     /// (path, is_dir, name)
     Delete(Vec<(String, bool, String)>),
-    Rename { from: String, input: String },
-    NewFolder { input: String },
+    Rename {
+        from: String,
+        input: String,
+    },
+    NewFolder {
+        input: String,
+    },
 }
 
 /// An ssh question shown inline in the pane that is connecting.
@@ -165,11 +168,7 @@ impl Pane {
     /// Full paths of the selected entries, with `is_dir`.
     pub fn selected(&self) -> Vec<(String, bool, String)> {
         let vis = self.visible();
-        self.sel
-            .iter()
-            .filter_map(|i| vis.get(i))
-            .map(|e| (self.join(&e.name), e.is_dir, e.name.clone()))
-            .collect()
+        self.sel.iter().filter_map(|i| vis.get(i)).map(|e| (self.join(&e.name), e.is_dir, e.name.clone())).collect()
     }
 
     pub fn join(&self, name: &str) -> String {
@@ -231,9 +230,10 @@ impl Pane {
                 if can_prompt && let Some(b) = ctx.askpass {
                     launch.env.extend(b.env(&super::tag(ctx.tab_id, side)));
                 }
-                let note = ctx.ssh_version.filter(|v| !supports_askpass_require(*v)).map(|(a, b)| {
-                    format!("termax needs OpenSSH 8.4 or newer for password prompts (found {a}.{b})")
-                });
+                let note = ctx
+                    .ssh_version
+                    .filter(|v| !supports_askpass_require(*v))
+                    .map(|(a, b)| format!("termax needs OpenSSH 8.4 or newer for password prompts (found {a}.{b})"));
                 self.seq += 1;
                 self.state = PaneState::Connecting;
                 self.connecting = Some(ops::connect(ctx.engine, ctx.tab_id, side, self.seq, launch, note));
@@ -283,7 +283,7 @@ impl Pane {
                 match result {
                     Ok(conn) => {
                         let home = conn.home.clone();
-                        self.ep = Some(Endpoint::Remote(Arc::new(conn)));
+                        self.ep = Some(Endpoint::Remote(Arc::new(*conn)));
                         self.navigate(home, ctx, side);
                     }
                     Err(e) => self.state = PaneState::Error(e),
@@ -341,11 +341,7 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
         PaneState::Error(e) => Some(e.clone()),
         _ => pane.banner.clone(),
     };
-    let rows = ui.split_v(
-        rect,
-        &[L::Px(30), L::Px(30), L::Px(if banner.is_some() { 30 } else { 0 }), L::Fill],
-        6,
-    );
+    let rows = ui.split_v(rect, &[L::Px(30), L::Px(30), L::Px(if banner.is_some() { 30 } else { 0 }), L::Fill], 6);
     let (top, actions, banner_r, list_r) = (rows[0], rows[1], rows[2], rows[3]);
 
     // Row 1: location picker + path.
@@ -357,7 +353,7 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
         Location::Host(h) => ctx.hosts.iter().position(|x| x.name == h.name).map_or(0, |i| i + 1),
     };
     if dropdown(ui, id.with("loc"), top_parts[0], &options, &mut sel_loc) {
-        let loc = if sel_loc == 0 { Location::Local } else { Location::Host(ctx.hosts[sel_loc - 1].clone()) };
+        let loc = if sel_loc == 0 { Location::Local } else { Location::Host(Box::new(ctx.hosts[sel_loc - 1].clone())) };
         pane.set_location(loc);
     }
     path_bar(ui, id, top_parts[1], pane, side, ctx);
@@ -462,7 +458,13 @@ fn prompt_card(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane) {
                 ui.request_focus(iid);
                 pr.focus = false;
             }
-            let r = text_input(ui, iid, parts[0], &mut pr.input, TextInputOpts { password: true, placeholder: "Password", ..Default::default() });
+            let r = text_input(
+                ui,
+                iid,
+                parts[0],
+                &mut pr.input,
+                TextInputOpts { password: true, placeholder: "Password", ..Default::default() },
+            );
             if button(ui, id.with("prompt-ok"), parts[1], "OK").clicked || r.submitted {
                 answer = Some(Some(pr.input.clone()));
             }
@@ -566,7 +568,8 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
                 ui.request_focus(iid);
                 pane.focus_input = false;
             }
-            let r = text_input(ui, iid, parts[0], &mut input, TextInputOpts { password: false, placeholder: "New name", ..Default::default() });
+            let r =
+                text_input(ui, iid, parts[0], &mut input, TextInputOpts { password: false, placeholder: "New name", ..Default::default() });
             let ok = button(ui, id.with("bar-ok"), parts[1], "Rename").clicked || r.submitted;
             if ok && is_safe_name(input.trim()) {
                 let to = pane.join(input.trim());
@@ -583,7 +586,13 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
                 ui.request_focus(iid);
                 pane.focus_input = false;
             }
-            let r = text_input(ui, iid, parts[0], &mut input, TextInputOpts { password: false, placeholder: "New folder name", ..Default::default() });
+            let r = text_input(
+                ui,
+                iid,
+                parts[0],
+                &mut input,
+                TextInputOpts { password: false, placeholder: "New folder name", ..Default::default() },
+            );
             let ok = button(ui, id.with("bar-ok"), parts[1], "Create").clicked || r.submitted;
             if ok && is_safe_name(input.trim()) {
                 let path = pane.join(input.trim());

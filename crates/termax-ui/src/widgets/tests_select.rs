@@ -15,12 +15,7 @@ fn row(i: i32) -> Point {
 }
 
 fn click_with(p: Point, mods: Modifiers) -> Vec<Event> {
-    vec![
-        Event::Modifiers(mods),
-        Event::MouseMove(p),
-        Event::MouseDown(MouseButton::Left, p),
-        Event::MouseUp(MouseButton::Left, p),
-    ]
+    vec![Event::Modifiers(mods), Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)]
 }
 
 fn keyd(k: Key, mods: Modifiers) -> Vec<Event> {
@@ -92,7 +87,12 @@ fn pressing_selected_row_keeps_multi_selection_until_release() {
     run_list(&mut h, &mut sel, 10, vec![]);
     run_list(&mut h, &mut sel, 10, click_with(row(1), Modifiers::NONE));
     run_list(&mut h, &mut sel, 10, click_with(row(3), CTRL));
-    run_list(&mut h, &mut sel, 10, vec![Event::Modifiers(Modifiers::NONE), Event::MouseMove(row(1)), Event::MouseDown(MouseButton::Left, row(1))]);
+    run_list(
+        &mut h,
+        &mut sel,
+        10,
+        vec![Event::Modifiers(Modifiers::NONE), Event::MouseMove(row(1)), Event::MouseDown(MouseButton::Left, row(1))],
+    );
     assert_eq!(set(&sel), vec![1, 3], "press alone keeps the selection (could be a drag)");
     run_list(&mut h, &mut sel, 10, vec![Event::MouseUp(MouseButton::Left, row(1))]);
     assert_eq!(set(&sel), vec![1], "plain click without a drag selects only that row");

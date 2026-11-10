@@ -5,9 +5,7 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, SeekFrom};
 use std::path::PathBuf;
 
-use russh_sftp::protocol::{
-    Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
-};
+use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 enum Open {

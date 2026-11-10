@@ -88,7 +88,11 @@ pub fn scan_all(dirs: &[PathBuf]) -> Vec<(String, PathBuf, bool)> {
                 if depth < SCAN_DEPTH {
                     walk(&p, depth + 1, out);
                 }
-            } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["ttf", "otf", "ttc"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
+            } else if p
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| ["ttf", "otf", "ttc"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+            {
                 out.push(p);
             }
         }

@@ -141,9 +141,7 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
     let px = ui.font_px();
     let pad = ui.px(6);
     let inner = Rect::new(rect.x + pad, rect.y, rect.w - 2 * pad, rect.h);
-    let display = |chars: &[char]| -> String {
-        if opts.password { "•".repeat(chars.len()) } else { chars.iter().collect() }
-    };
+    let display = |chars: &[char]| -> String { if opts.password { "•".repeat(chars.len()) } else { chars.iter().collect() } };
 
     let mut submitted = false;
     if let Some(A11yAction::SetValue(v)) = ui.take_a11y_action(id, |a| matches!(a, A11yAction::SetValue(_))) {
@@ -158,11 +156,7 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
             ed.move_to(n, false);
         }
         // Mouse: a press inside places the cursor; dragging extends.
-        let mouse_down_here = ui
-            .input()
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::MouseDown(MouseButton::Left, p) if rect.contains(*p)));
+        let mouse_down_here = ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(MouseButton::Left, p) if rect.contains(*p)));
         if r.pressed || mouse_down_here {
             let shown = display(&ed.chars);
             let x = (ui.input().mouse.x - inner.x) as f32 + ed.st.scroll;

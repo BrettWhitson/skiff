@@ -142,11 +142,8 @@ fn list_keyboard_navigation() {
 #[test]
 fn tabs_close_and_reorder() {
     let mut h = Harness::new(600, 100, 1.0);
-    let titles = [
-        TabTitle { text: "one", closable: true },
-        TabTitle { text: "two", closable: true },
-        TabTitle { text: "three", closable: false },
-    ];
+    let titles =
+        [TabTitle { text: "one", closable: true }, TabTitle { text: "two", closable: true }, TabTitle { text: "three", closable: false }];
     let active = Cell::new(0usize);
     let last = Cell::new(TabsResponse::default());
     let rects = Cell::new(Vec::<Rect>::new());
@@ -297,10 +294,7 @@ fn full_frame_render_time_1080p() {
 #[test]
 fn open_menu_captures_keys_from_focused_list() {
     let mut h = Harness::new(400, 400, 1.0);
-    let items = [
-        MenuItem { label: "Open", shortcut: None, enabled: true },
-        MenuItem { label: "Delete", shortcut: None, enabled: true },
-    ];
+    let items = [MenuItem { label: "Open", shortcut: None, enabled: true }, MenuItem { label: "Delete", shortcut: None, enabled: true }];
     let sel = Cell::new(None::<usize>);
     let act = Cell::new(None::<usize>);
     let chosen = Cell::new(None::<usize>);

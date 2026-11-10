@@ -23,7 +23,10 @@ pub struct ConfigSet {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Locate {
-    Editable { doc: usize, block: usize },
+    Editable {
+        doc: usize,
+        block: usize,
+    },
     /// Why the host can't be edited here.
     ReadOnly(String),
     NotFound,
@@ -36,10 +39,10 @@ pub fn backups_dir(config_path: &Path) -> PathBuf {
 
 /// `path` with the home directory shown as `~`.
 pub fn display_path(path: &Path) -> String {
-    if let Some(home) = super::home_dir() {
-        if let Ok(rest) = path.strip_prefix(&home) {
-            return format!("~/{}", rest.display().to_string().replace('\\', "/"));
-        }
+    if let Some(home) = super::home_dir()
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rest.display().to_string().replace('\\', "/"));
     }
     path.display().to_string()
 }
@@ -192,9 +195,10 @@ impl Doc {
     /// block (and the comments right above it), else at the end, with one
     /// blank line between blocks.
     fn insert_block(&mut self, block: Vec<String>) {
-        let at = self.blocks().into_iter().find(|b| {
-            b.kind == BlockKind::Match || (b.kind == BlockKind::Host && b.patterns.iter().any(|p| is_wildcard(p)))
-        });
+        let at = self
+            .blocks()
+            .into_iter()
+            .find(|b| b.kind == BlockKind::Match || (b.kind == BlockKind::Host && b.patterns.iter().any(|p| is_wildcard(p))));
         let mut new: Vec<(String, &'static str)> = block.into_iter().map(|l| (l, self.eol)).collect();
         match at {
             Some(b) => {
@@ -307,8 +311,7 @@ impl ConfigSet {
                 ))
             }
             many => {
-                let places: Vec<String> =
-                    many.iter().map(|(d, _, b)| format!("{}:{}", file_label(&self.docs[*d].path), b.line)).collect();
+                let places: Vec<String> = many.iter().map(|(d, _, b)| format!("{}:{}", file_label(&self.docs[*d].path), b.line)).collect();
                 Locate::ReadOnly(format!("Defined in more than one place ({}) — edit the file directly.", places.join(", ")))
             }
         }
@@ -698,9 +701,8 @@ mod tests {
 
     #[test]
     fn update_changes_only_touched_lines() {
-        let (_d, _p, mut s) = setup(
-            "# top comment\nHost a\n    HostName 10.0.0.1\n    User root\n    Port 2222\n\n# db\nHost b\n    HostName b.example\n",
-        );
+        let (_d, _p, mut s) =
+            setup("# top comment\nHost a\n    HostName 10.0.0.1\n    User root\n    Port 2222\n\n# db\nHost b\n    HostName b.example\n");
         let mut f = s.fields("a").unwrap();
         f.port = "2200".into();
         f.user.clear();
@@ -890,7 +892,10 @@ mod tests {
         }
         assert_eq!(check(host("web", "h")), "A host named web already exists");
         assert_eq!(check(HostFields { port: "0".into(), ..host("x", "h") }), "Invalid port: 0");
-        assert_eq!(check(HostFields { other: vec!["Host y".into()], ..host("x", "h") }), "Other options can't contain Host, Match or Include");
+        assert_eq!(
+            check(HostFields { other: vec!["Host y".into()], ..host("x", "h") }),
+            "Other options can't contain Host, Match or Include"
+        );
         assert!(validate(&host("web", "h"), &taken, Some("web")).is_ok());
     }
 }

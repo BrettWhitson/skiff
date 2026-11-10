@@ -24,12 +24,7 @@ pub struct BarOut {
     pub close: bool,
 }
 
-const SHIFT: Modifiers = Modifiers {
-    ctrl: false,
-    shift: true,
-    alt: false,
-    logo: false,
-};
+const SHIFT: Modifiers = Modifiers { ctrl: false, shift: true, alt: false, logo: false };
 
 impl SearchState {
     /// "3 of 12", "No matches", or "" before anything was typed.
@@ -96,11 +91,7 @@ pub fn bar(ui: &mut Ui, id: Id, rect: Rect, s: &mut SearchState) -> (bool, BarOu
         input,
         parts[0],
         &mut s.query,
-        TextInputOpts {
-            placeholder: "Find",
-            label: "Find in terminal",
-            ..Default::default()
-        },
+        TextInputOpts { placeholder: "Find", label: "Find in terminal", ..Default::default() },
     );
     if r.submitted {
         s.step(true);

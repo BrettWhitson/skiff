@@ -29,13 +29,7 @@ pub fn scroll_into_view(ui: &mut Ui, id: Id, top: i32, bottom: i32, view_h: i32)
 /// Lays out `content_height` pixels of content in `rect`. `f` receives the
 /// visible area (excluding the scrollbar) and the current offset; content
 /// at content-y `cy` belongs at screen-y `visible.y + cy - offset`.
-pub fn scroll_area<R>(
-    ui: &mut Ui,
-    id: Id,
-    rect: Rect,
-    content_height: i32,
-    f: impl FnOnce(&mut Ui, Rect, i32) -> R,
-) -> R {
+pub fn scroll_area<R>(ui: &mut Ui, id: Id, rect: Rect, content_height: i32, f: impl FnOnce(&mut Ui, Rect, i32) -> R) -> R {
     ui.interact(id, rect, Sense::hover());
     let max = (content_height - rect.h).max(0);
     let mut off = ui.memory::<ScrollState>(id).offset;

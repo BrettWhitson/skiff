@@ -9,10 +9,17 @@ use super::{MAX_INCLUDE_DEPTH, glob_match, resolve_include, split_kv, unquote};
 /// Where to probe a host.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Probe {
-    Direct { host: String, port: u16 },
+    Direct {
+        host: String,
+        port: u16,
+    },
     /// The host is reached through jump host `jump` (as written in
     /// `ProxyJump`); only the jump host, at `host:port`, is checked.
-    Via { jump: String, host: String, port: u16 },
+    Via {
+        jump: String,
+        host: String,
+        port: u16,
+    },
     /// Not probed; the reason is shown to the user.
     Unknown(String),
 }

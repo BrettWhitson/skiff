@@ -276,10 +276,7 @@ mod tests {
 
         let d = Doc::parse("x".into(), FIXTURE);
         let b = d.blocks();
-        assert_eq!(
-            b.iter().map(|b| b.kind).collect::<Vec<_>>(),
-            [BlockKind::Preamble, BlockKind::Host, BlockKind::Host, BlockKind::Match]
-        );
+        assert_eq!(b.iter().map(|b| b.kind).collect::<Vec<_>>(), [BlockKind::Preamble, BlockKind::Host, BlockKind::Host, BlockKind::Match]);
         let f = d.host_fields(&b[1]);
         assert_eq!(f.alias, "web");
         assert_eq!(f.identity_file, "C:/my keys/id");

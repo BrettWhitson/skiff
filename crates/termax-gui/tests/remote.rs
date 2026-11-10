@@ -15,12 +15,7 @@ use termax_ui::input::{Key, Modifiers};
 fn host_for(fx: &TestFixture, name: &str) -> HostEntry {
     let mut cfg = Config::default();
     cfg.settings.load_ssh_config = false;
-    cfg.connections.push(Connection {
-        name: name.into(),
-        host: fx.destination(),
-        extra_args: fx.ssh_options(),
-        ..Default::default()
-    });
+    cfg.connections.push(Connection { name: name.into(), host: fx.destination(), extra_args: fx.ssh_options(), ..Default::default() });
     collect(&cfg).0.remove(0)
 }
 
@@ -41,7 +36,7 @@ fn key_auth_pane_lists_remote_root() {
     std::fs::write(fx.root().join("on-server.txt"), b"hi").unwrap();
     let h = host_for(&fx, "fx");
     let d = local_dir();
-    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(h), helper());
+    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(Box::new(h)), helper());
     e.until("remote listing", |e| e.loaded(1));
     assert_eq!(e.names(1), vec!["on-server.txt"]);
     assert!(e.tab.panes[1].cwd.starts_with('/'));
@@ -53,7 +48,7 @@ fn password_prompt_inline_then_lists() {
     std::fs::write(fx.root().join("pw-file.txt"), b"hi").unwrap();
     let h = host_for(&fx, "fx");
     let d = local_dir();
-    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(h), helper());
+    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(Box::new(h)), helper());
     e.until("prompt", |e| e.tab.panes[1].prompt.is_some());
     assert!(e.texts().iter().any(|t| t.to_lowercase().contains("password")), "{:?}", e.texts());
     assert!(e.texts().iter().all(|t| !t.contains("s3cret")));
@@ -69,7 +64,7 @@ fn cancelled_prompt_leaves_pane_error() {
     let fx = TestFixture::new(FixtureAuth::Password("pw".into())).unwrap();
     let h = host_for(&fx, "fx");
     let d = local_dir();
-    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(h), helper());
+    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(Box::new(h)), helper());
     e.until("left listing", |e| e.loaded(0));
     e.until("prompt", |e| e.tab.panes[1].prompt.is_some());
     let cancel = e.find_right("Cancel");
@@ -91,7 +86,7 @@ fn old_ssh_version_message() {
     let d = local_dir();
     let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Local, helper());
     e.ssh_version = Some((8, 3));
-    e.tab.panes[1].set_location(Location::Host(h));
+    e.tab.panes[1].set_location(Location::Host(Box::new(h)));
     e.until("error", |e| matches!(e.tab.panes[1].state, PaneState::Error(_)));
     let PaneState::Error(msg) = &e.tab.panes[1].state else { unreachable!() };
     assert!(msg.contains("OpenSSH 8.4"), "{msg}");
@@ -105,7 +100,7 @@ fn remote_to_remote_relay_via_ui() {
     std::fs::write(fa.root().join("relay.bin"), vec![7u8; 300_000]).unwrap();
     let (ha, hb) = (host_for(&fa, "web-01"), host_for(&fb, "db-02"));
     let d = local_dir();
-    let mut e = Env::with(d.path(), vec![ha.clone(), hb.clone()], Location::Host(ha), Location::Host(hb), None);
+    let mut e = Env::with(d.path(), vec![ha.clone(), hb.clone()], Location::Host(Box::new(ha)), Location::Host(Box::new(hb)), None);
     e.until("both connected", |e| e.loaded(0) && e.loaded(1));
     let from = e.find("relay.bin");
     e.frame(vec![termax_ui::input::Event::MouseMove(from), termax_ui::input::Event::MouseDown(termax_ui::input::MouseButton::Left, from)]);
@@ -123,7 +118,7 @@ fn same_host_same_folder_copy_is_refused() {
     std::fs::write(fx.root().join("keep.txt"), b"precious").unwrap();
     let h = host_for(&fx, "fx");
     let d = local_dir();
-    let mut e = Env::with(d.path(), vec![h.clone()], Location::Host(h.clone()), Location::Host(h), None);
+    let mut e = Env::with(d.path(), vec![h.clone()], Location::Host(Box::new(h.clone())), Location::Host(Box::new(h)), None);
     e.until("both connected", |e| e.loaded(0) && e.loaded(1));
     e.click("keep.txt");
     e.click("Copy \u{2192}");
@@ -138,7 +133,7 @@ fn dropped_connection_offers_reconnect() {
     let mut fx = TestFixture::new(FixtureAuth::Key).unwrap();
     let h = host_for(&fx, "fx");
     let d = local_dir();
-    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(h), None);
+    let mut e = Env::with(d.path(), vec![h.clone()], Location::Local, Location::Host(Box::new(h)), None);
     e.until("remote listing", |e| e.loaded(1));
     fx.server_mut().kill();
     let refresh = e.find_right("Refresh");

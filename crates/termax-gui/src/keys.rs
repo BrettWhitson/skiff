@@ -151,11 +151,7 @@ pub fn altgr_text(mods: Modifiers, text: Option<&str>) -> bool {
 fn base_char(c: char) -> char {
     const SHIFTED: &str = "!@#$%^&*()_+{}|:\"<>?~";
     const BASE: &str = "1234567890-=[]\\;',./`";
-    SHIFTED
-        .chars()
-        .position(|s| s == c)
-        .and_then(|i| BASE.chars().nth(i))
-        .unwrap_or(c)
+    SHIFTED.chars().position(|s| s == c).and_then(|i| BASE.chars().nth(i)).unwrap_or(c)
 }
 
 fn normalize(k: &Key) -> Key {
@@ -174,10 +170,7 @@ pub struct Chord {
 impl Chord {
     pub fn parse(s: &str) -> Result<Chord, String> {
         let s = s.trim();
-        let mut parts: Vec<String> = s
-            .split('+')
-            .map(|p| p.trim().to_ascii_lowercase())
-            .collect();
+        let mut parts: Vec<String> = s.split('+').map(|p| p.trim().to_ascii_lowercase()).collect();
         // "ctrl++" splits into [.., "", ""]: the key is '+'.
         if s.ends_with("++") {
             parts.truncate(parts.len() - 2);
@@ -215,11 +208,7 @@ impl Chord {
             "plus" => Key::Char('='),
             "minus" => Key::Char('-'),
             k if k.chars().count() == 1 => normalize(&Key::Char(k.chars().next().unwrap())),
-            k if k.starts_with('f')
-                && k[1..].parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)) =>
-            {
-                Key::F(k[1..].parse().unwrap())
-            }
+            k if k.starts_with('f') && k[1..].parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)) => Key::F(k[1..].parse().unwrap()),
             other => return Err(format!("unknown key `{other}` in `{s}`")),
         };
         Ok(Chord { key, mods })
@@ -250,12 +239,7 @@ impl Chord {
             Key::Other(_) => return None,
         };
         let mut s = String::new();
-        for (on, name) in [
-            (mods.ctrl, "ctrl+"),
-            (mods.alt, "alt+"),
-            (mods.shift, "shift+"),
-            (mods.logo, "cmd+"),
-        ] {
+        for (on, name) in [(mods.ctrl, "ctrl+"), (mods.alt, "alt+"), (mods.shift, "shift+"), (mods.logo, "cmd+")] {
             if on {
                 s.push_str(name);
             }
@@ -279,12 +263,7 @@ impl Chord {
 impl fmt::Display for Chord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let m = self.mods;
-        for (on, name) in [
-            (m.ctrl, "Ctrl"),
-            (m.alt, "Alt"),
-            (m.shift, "Shift"),
-            (m.logo, "Cmd"),
-        ] {
+        for (on, name) in [(m.ctrl, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift"), (m.logo, "Cmd")] {
             if on {
                 write!(f, "{name}+")?;
             }
@@ -312,11 +291,7 @@ impl Keymap {
     pub fn new(overrides: &BTreeMap<String, String>, mac: bool) -> (Keymap, Vec<String>) {
         let mut binds = BTreeMap::new();
         for a in Action::ALL {
-            let chords = a
-                .defaults(mac)
-                .iter()
-                .map(|s| Chord::parse(s).expect("valid default"))
-                .collect();
+            let chords = a.defaults(mac).iter().map(|s| Chord::parse(s).expect("valid default")).collect();
             binds.insert(a, chords);
         }
         let mut warnings = vec![];
@@ -325,11 +300,7 @@ impl Keymap {
                 warnings.push(format!("[keys] {name}: unknown action"));
                 continue;
             };
-            let parsed: Result<Vec<Chord>, String> = value
-                .split(',')
-                .filter(|s| !s.trim().is_empty())
-                .map(Chord::parse)
-                .collect();
+            let parsed: Result<Vec<Chord>, String> = value.split(',').filter(|s| !s.trim().is_empty()).map(Chord::parse).collect();
             match parsed {
                 Ok(chords) => {
                     binds.insert(action, chords);
@@ -349,12 +320,9 @@ impl Keymap {
     }
 
     pub fn match_key(&self, key: &Key, mods: Modifiers, in_terminal: bool) -> Option<Action> {
-        self.binds.iter().find_map(|(a, chords)| {
-            chords
-                .iter()
-                .any(|c| c.matches(key, mods) && !(in_terminal && c.shell_owned()))
-                .then_some(*a)
-        })
+        self.binds
+            .iter()
+            .find_map(|(a, chords)| chords.iter().any(|c| c.matches(key, mods) && !(in_terminal && c.shell_owned())).then_some(*a))
     }
 
     pub fn match_event(&self, ev: &Event, in_terminal: bool) -> Option<Action> {

@@ -69,7 +69,12 @@ fn overwrite_prompt_skip_all() {
     let mut e = env(a.path(), b.path());
     e.click("x.txt");
     let y = e.find("y.txt");
-    e.frame(vec![Event::Modifiers(CTRL), Event::MouseMove(y), Event::MouseDown(MouseButton::Left, y), Event::MouseUp(MouseButton::Left, y)]);
+    e.frame(vec![
+        Event::Modifiers(CTRL),
+        Event::MouseMove(y),
+        Event::MouseDown(MouseButton::Left, y),
+        Event::MouseUp(MouseButton::Left, y),
+    ]);
     e.frame(vec![Event::Modifiers(Modifiers::NONE)]);
     e.click("Copy \u{2192}");
     e.until("overwrite question", |e| e.tab.transfers.rows.iter().any(|r| matches!(r.state, RowState::Waiting(_))));

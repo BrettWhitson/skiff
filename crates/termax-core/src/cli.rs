@@ -13,11 +13,23 @@ pub enum Shell {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cli {
     /// Start the TUI, optionally opening a host (`true` = file transfer).
-    Tui { open: Option<(String, bool)> },
+    Tui {
+        open: Option<(String, bool)>,
+    },
     /// Run a command on a host and exit with its status.
-    Exec { host: String, cmd: Vec<String>, tty: bool },
-    List { json: bool, all: bool },
-    Info { host: String, json: bool },
+    Exec {
+        host: String,
+        cmd: Vec<String>,
+        tty: bool,
+    },
+    List {
+        json: bool,
+        all: bool,
+    },
+    Info {
+        host: String,
+        json: bool,
+    },
     Completion(Shell),
     Help,
     Version,
@@ -156,8 +168,7 @@ pub fn resolve<'a>(hosts: &'a [HostEntry], name: &str) -> Result<&'a HostEntry, 
     if let Some(h) = hosts.iter().find(|h| h.name == name).or_else(|| hosts.iter().find(|h| h.name.eq_ignore_ascii_case(name))) {
         return Ok(h);
     }
-    let mut scored: Vec<(i64, &str)> =
-        hosts.iter().filter_map(|h| fuzzy_score(name, h).map(|s| (s, h.name.as_str()))).collect();
+    let mut scored: Vec<(i64, &str)> = hosts.iter().filter_map(|h| fuzzy_score(name, h).map(|s| (s, h.name.as_str()))).collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
     let names: Vec<&str> = scored.iter().take(3).map(|s| s.1).collect();
     let mut msg = format!("unknown host: {name}");
@@ -200,7 +211,8 @@ pub fn list_json(hosts: &[HostEntry], all: bool) -> String {
 
 pub fn info_text(h: &HostEntry) -> String {
     let o = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".into());
-    let mut s = format!("Name: {}\nHost: {}\nUser: {}\nPort: {}\n", h.name, h.hostname, o(&h.user), h.port.map_or("-".into(), |p| p.to_string()));
+    let mut s =
+        format!("Name: {}\nHost: {}\nUser: {}\nPort: {}\n", h.name, h.hostname, o(&h.user), h.port.map_or("-".into(), |p| p.to_string()));
     s += &format!("Identity file: {}\nProxyJump: {}\nProxyCommand: {}\n", o(&h.identity_file), o(&h.proxy_jump), o(&h.proxy_command));
     s += &format!("Remote dir: {}\nTags: {}\n", o(&h.remote_dir), if h.tags.is_empty() { "-".into() } else { h.tags.join(", ") });
     s += &format!("Source: {}\n", h.source_label);

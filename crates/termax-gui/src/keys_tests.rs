@@ -15,7 +15,7 @@ fn chord_parse_and_defaults() {
     assert_eq!(Chord::parse("ctrl+pgdn").unwrap().key, Key::PageDown);
     assert_eq!(Chord::parse("ctrl+shift+=").unwrap().key, Key::Char('='));
     assert_eq!(Chord::parse("ctrl++").unwrap().key, Key::Char('='), "'+' is shifted '='");
-    assert_eq!(Chord::parse("cmd+k").unwrap().mods.logo, true);
+    assert!(Chord::parse("cmd+k").unwrap().mods.logo);
 
     let (win, warn) = Keymap::new(&BTreeMap::new(), false);
     assert!(warn.is_empty());

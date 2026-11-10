@@ -27,9 +27,7 @@ fn main() -> anyhow::Result<()> {
     let ui_font = cfg.gui.ui_font_path.as_deref().map(Path::new);
     let mono = cfg.gui.font_path.as_deref().map(Path::new);
     let fonts = Fonts::load(ui_font, mono).or_else(|_| Fonts::load(None, None))?;
-    let size = termax_core::state::UiState::load(&termax_core::state::UiState::path_for(&cfg_path))
-        .window_size
-        .unwrap_or((1280, 800));
+    let size = termax_core::state::UiState::load(&termax_core::state::UiState::path_for(&cfg_path)).window_size.unwrap_or((1280, 800));
     run_with_waker(
         move |waker| {
             let mut app = GuiApp::new(cfg, cfg_path, Some(waker));

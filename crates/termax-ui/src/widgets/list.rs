@@ -99,55 +99,57 @@ pub fn list_named(
     }
 
     let content_h = (rows as i64 * rh as i64).min(i32::MAX as i64) as i32;
-    ui.a11y_group(id, Role::List, name, |ui| scroll_area(ui, sid, rect, content_h, |ui, vis, off| {
-        let first = (off / rh) as usize;
-        let last = (((off + vis.h + rh - 1) / rh) as usize).min(rows);
-        let p = ui.style().palette;
-        for i in first..last {
-            let row = Rect::new(vis.x, vis.y + i as i32 * rh - off, vis.w, rh);
-            let rid = id.with(i);
-            let rr = ui.interact(rid, row, Sense::click());
-            if ui.a11y_clicked(rid) {
-                *selected = Some(i);
-                ui.request_focus(id);
-                out.activated = Some(i);
-            }
-            if rr.pressed || rr.clicked {
-                *selected = Some(i);
-                ui.request_focus(id);
-            }
-            if rr.double_clicked {
-                out.activated = Some(i);
-            }
-            if rr.right_clicked {
-                *selected = Some(i);
-                out.context = Some((i, ui.input().mouse));
-            }
-            let is_sel = *selected == Some(i);
-            if ui.a11y_on() {
-                let nm = row_name(i);
-                if let Some(n) = ui.a11y_node(rid, Role::ListItem, &nm) {
-                    n.selected = Some(is_sel);
+    ui.a11y_group(id, Role::List, name, |ui| {
+        scroll_area(ui, sid, rect, content_h, |ui, vis, off| {
+            let first = (off / rh) as usize;
+            let last = (((off + vis.h + rh - 1) / rh) as usize).min(rows);
+            let p = ui.style().palette;
+            for i in first..last {
+                let row = Rect::new(vis.x, vis.y + i as i32 * rh - off, vis.w, rh);
+                let rid = id.with(i);
+                let rr = ui.interact(rid, row, Sense::click());
+                if ui.a11y_clicked(rid) {
+                    *selected = Some(i);
+                    ui.request_focus(id);
+                    out.activated = Some(i);
+                }
+                if rr.pressed || rr.clicked {
+                    *selected = Some(i);
+                    ui.request_focus(id);
+                }
+                if rr.double_clicked {
+                    out.activated = Some(i);
+                }
+                if rr.right_clicked {
+                    *selected = Some(i);
+                    out.context = Some((i, ui.input().mouse));
+                }
+                let is_sel = *selected == Some(i);
+                if ui.a11y_on() {
+                    let nm = row_name(i);
+                    if let Some(n) = ui.a11y_node(rid, Role::ListItem, &nm) {
+                        n.selected = Some(is_sel);
+                    }
+                    if is_sel {
+                        ui.a11y_focus_child(id, rid);
+                    }
+                }
+                if is_sel && menu_key {
+                    out.context = Some((i, Point::new(row.x + ui.px(8), row.bottom())));
                 }
                 if is_sel {
-                    ui.a11y_focus_child(id, rid);
+                    let c = if ui.has_focus(id) { p.selection } else { p.selection.mix(p.surface, 0.5) };
+                    ui.painter().rect(row, c, 0.0);
+                } else if rr.hovered {
+                    ui.painter().rect(row, p.surface_alt, 0.0);
+                }
+                f(ui, row, i, is_sel);
+                if is_sel && ui.has_focus(id) {
+                    focus_bar(ui, row);
                 }
             }
-            if is_sel && menu_key {
-                out.context = Some((i, Point::new(row.x + ui.px(8), row.bottom())));
-            }
-            if is_sel {
-                let c = if ui.has_focus(id) { p.selection } else { p.selection.mix(p.surface, 0.5) };
-                ui.painter().rect(row, c, 0.0);
-            } else if rr.hovered {
-                ui.painter().rect(row, p.surface_alt, 0.0);
-            }
-            f(ui, row, i, is_sel);
-            if is_sel && ui.has_focus(id) {
-                focus_bar(ui, row);
-            }
-        }
-    }));
+        })
+    });
     out
 }
 

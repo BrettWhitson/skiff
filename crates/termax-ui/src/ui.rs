@@ -119,8 +119,7 @@ impl Input {
 
     /// Like `key_pressed`, but removes the event so nobody else acts on it.
     pub fn take_key(&mut self, key: &Key, mods: Modifiers) -> bool {
-        let pos =
-            self.events.iter().position(|e| matches!(e, Event::KeyDown { key: k, mods: m, .. } if k == key && *m == mods));
+        let pos = self.events.iter().position(|e| matches!(e, Event::KeyDown { key: k, mods: m, .. } if k == key && *m == mods));
         pos.map(|i| self.events.remove(i)).is_some()
     }
 
@@ -295,18 +294,8 @@ impl<'a> Ui<'a> {
         let (size, scale) = (ctx.size, ctx.scale * style.zoom.clamp(0.25, 4.0));
         let a11y = ctx.a11y_active;
         let (repaint, cursor, tree) = {
-            let mut ui = Ui::begin(
-                state,
-                &mut *ctx.list,
-                ctx.fonts,
-                &mut *ctx.cache,
-                &mut *ctx.clipboard,
-                style.clone(),
-                size,
-                scale,
-                events,
-                a11y,
-            );
+            let mut ui =
+                Ui::begin(state, &mut *ctx.list, ctx.fonts, &mut *ctx.cache, &mut *ctx.clipboard, style.clone(), size, scale, events, a11y);
             f(&mut ui);
             ui.finish()
         };
@@ -364,10 +353,7 @@ impl<'a> Ui<'a> {
                                 frame.clicked.insert(id);
                                 let now = Instant::now();
                                 let double = st.last_click.is_some_and(|(lid, t, lp)| {
-                                    lid == id
-                                        && now.duration_since(t) <= DOUBLE_CLICK
-                                        && (lp.x - p.x).abs() <= 4
-                                        && (lp.y - p.y).abs() <= 4
+                                    lid == id && now.duration_since(t) <= DOUBLE_CLICK && (lp.x - p.x).abs() <= 4 && (lp.y - p.y).abs() <= 4
                                 });
                                 if double {
                                     frame.double_clicked.insert(id);
@@ -465,20 +451,23 @@ impl<'a> Ui<'a> {
         let captured = self.capture.is_some();
         let mut region_mv = self.region_move;
         for e in &self.input.events {
-            if let Event::KeyDown { key, mods, .. } = e {
-                if !captured && !mods.ctrl && !mods.alt && !mods.logo {
-                    match key {
-                        Key::Tab => mv = Some(!mods.shift),
-                        Key::F(6) => region_mv = Some(!mods.shift),
-                        _ => {}
-                    }
+            if let Event::KeyDown { key, mods, .. } = e
+                && !captured
+                && !mods.ctrl
+                && !mods.alt
+                && !mods.logo
+            {
+                match key {
+                    Key::Tab => mv = Some(!mods.shift),
+                    Key::F(6) => region_mv = Some(!mods.shift),
+                    _ => {}
                 }
             }
         }
-        if let Some(f) = self.st.focus {
-            if let Some((rid, _)) = self.regions.iter().find(|(_, ids)| ids.contains(&f)) {
-                self.st.region_focus.insert(*rid, f);
-            }
+        if let Some(f) = self.st.focus
+            && let Some((rid, _)) = self.regions.iter().find(|(_, ids)| ids.contains(&f))
+        {
+            self.st.region_focus.insert(*rid, f);
         }
         if let Some(forward) = region_mv {
             let regions: Vec<&(Id, Vec<Id>)> = self.regions.iter().filter(|(_, ids)| !ids.is_empty()).collect();
@@ -611,10 +600,10 @@ impl<'a> Ui<'a> {
     /// The screen reader moves with `child` while `id` has keyboard focus
     /// (a list announces its selected row).
     pub fn a11y_focus_child(&mut self, id: Id, child: Id) {
-        if self.st.focus == Some(id) {
-            if let Some(b) = self.a11y.as_mut() {
-                b.focus_override = Some(child);
-            }
+        if self.st.focus == Some(id)
+            && let Some(b) = self.a11y.as_mut()
+        {
+            b.focus_override = Some(child);
         }
     }
 

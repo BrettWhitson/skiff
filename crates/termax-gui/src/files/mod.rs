@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 
 use termax_core::askpass::{AskRequest, Broker};
-use termax_core::fs::endpoint::Endpoint;
-use termax_core::fs::transfer::TransferEvent;
 use termax_core::fs::FileEntry;
 use termax_core::fs::connect::RemoteConn;
+use termax_core::fs::endpoint::Endpoint;
+use termax_core::fs::transfer::TransferEvent;
 use termax_core::hosts::HostEntry;
 use termax_ui::geom::Rect;
 use termax_ui::layout::Size as L;
@@ -46,7 +46,7 @@ pub fn route_ask(tab: &mut FilesTab, tab_id: u64, req: AskRequest) {
 #[derive(Debug, Clone)]
 pub enum Location {
     Local,
-    Host(HostEntry),
+    Host(Box<HostEntry>),
 }
 
 impl Location {
@@ -62,7 +62,7 @@ impl Location {
 pub enum FilesEvent {
     Listed { seq: u64, cwd: String, result: Result<Vec<FileEntry>, String> },
     OpDone { result: Result<(), String> },
-    Connected { seq: u64, result: Result<RemoteConn, String> },
+    Connected { seq: u64, result: Result<Box<RemoteConn>, String> },
 }
 
 /// What the file views need from the app for one frame.
@@ -188,8 +188,8 @@ pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
         .iter()
         .filter_map(|e| if let termax_ui::input::Event::FileDropped(p) = e { Some(p.clone()) } else { None })
         .collect();
-    for side in 0..2 {
-        let out = pane::view(ui, cols[side], &mut tab.panes[side], side, ctx);
+    for (side, &col) in cols.iter().enumerate().take(2) {
+        let out = pane::view(ui, col, &mut tab.panes[side], side, ctx);
         if out.copy {
             let items = tab.panes[side].selected();
             tab.copy(side, items, ctx);

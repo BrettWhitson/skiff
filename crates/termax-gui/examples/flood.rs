@@ -17,7 +17,7 @@ fn main() -> std::io::Result<()> {
         let c = 31 + i % 7;
         let mut line =
             format!("\x1b[{c}m{i:>9}\x1b[0m \x1b[1mbold\x1b[0m plain \u{4e2d}\u{6587} \x1b[4munderline\x1b[0m \x1b[7minverse\x1b[0m");
-        if i % 5 == 0 {
+        if i.is_multiple_of(5) {
             line.push_str(&"\u{2500}".repeat(120));
         }
         line.push_str("\r\n");

@@ -25,17 +25,13 @@ impl T {
         let mut cfg = base.clone();
         cfg.settings.ssh_config_path = Some(ssh_path.display().to_string());
         cfg.save(&base, &cfg_path).unwrap();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let app = App::new(cfg, cfg_path, rt.handle().clone());
         T { dir, app, _rt: rt }
     }
 
     fn key(&mut self, code: KeyCode) {
-        self.app
-            .handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        self.app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
 
     fn keys(&mut self, code: KeyCode, n: usize) {
@@ -45,10 +41,7 @@ impl T {
     }
 
     fn ctrl(&mut self, c: char) {
-        self.app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Char(c),
-            KeyModifiers::CONTROL,
-        )));
+        self.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)));
     }
 
     fn typed(&mut self, s: &str) {
@@ -62,11 +55,7 @@ impl T {
     }
 
     fn listed(&self) -> Vec<String> {
-        self.app
-            .filtered
-            .iter()
-            .map(|&i| self.app.hosts[i].name.clone())
-            .collect()
+        self.app.filtered.iter().map(|&i| self.app.hosts[i].name.clone()).collect()
     }
 }
 
@@ -80,16 +69,8 @@ fn edit_ssh_host_saves_in_place() {
     t.typed("2200");
     t.ctrl('s');
     assert!(t.app.modal.is_none(), "{:?}", t.app.status);
-    assert_eq!(
-        t.ssh_text(),
-        "# my servers\nHost web\n    HostName 10.0.0.5\n    Port 2200\n"
-    );
-    assert_eq!(
-        std::fs::read_dir(t.dir.path().join("backups"))
-            .unwrap()
-            .count(),
-        1
-    );
+    assert_eq!(t.ssh_text(), "# my servers\nHost web\n    HostName 10.0.0.5\n    Port 2200\n");
+    assert_eq!(std::fs::read_dir(t.dir.path().join("backups")).unwrap().count(), 1);
     assert_eq!(t.app.hosts[0].port, Some(2200));
 }
 
@@ -103,10 +84,7 @@ fn add_to_ssh_config_lands_before_wildcard() {
     t.typed("10.0.0.9");
     t.ctrl('s');
     assert!(t.app.modal.is_none());
-    assert_eq!(
-        t.ssh_text(),
-        "Host web\n    HostName a\n\nHost db\n    HostName 10.0.0.9\n\nHost *\n    User me\n"
-    );
+    assert_eq!(t.ssh_text(), "Host web\n    HostName a\n\nHost db\n    HostName 10.0.0.9\n\nHost *\n    User me\n");
 }
 
 #[test]
@@ -185,10 +163,7 @@ fn failed_save_can_be_retried() {
     t.typed("10.0.0.9");
     set_readonly(&ssh, true);
     t.ctrl('s');
-    assert!(
-        t.app.modal.is_some(),
-        "the form stays open after a failed write"
-    );
+    assert!(t.app.modal.is_some(), "the form stays open after a failed write");
     set_readonly(&ssh, false);
     t.ctrl('s');
     assert!(t.app.modal.is_none(), "{:?}", t.app.status);
@@ -202,9 +177,7 @@ fn forwards_panel_shows_state_stop_and_edit() {
     use termax_core::config::Connection;
     use termax_core::forward::{Forward, ForwardKind};
     let mut t = T::new("");
-    let args = ["-F", "none", "-o", "BatchMode=yes"]
-        .map(String::from)
-        .to_vec();
+    let args = ["-F", "none", "-o", "BatchMode=yes"].map(String::from).to_vec();
     t.app.cfg.connections.push(Connection {
         name: "loop".into(),
         host: "127.0.0.1".into(),
@@ -237,11 +210,7 @@ fn forwards_panel_shows_state_stop_and_edit() {
     t.app.active = 0; // back to the host list
     t.key(KeyCode::Char('F'));
     t.key(KeyCode::Enter);
-    assert_eq!(
-        t.app.tabs.len(),
-        tabs,
-        "a restart replaces the forward's tab"
-    );
+    assert_eq!(t.app.tabs.len(), tabs, "a restart replaces the forward's tab");
     t.app.active = 0;
     t.key(KeyCode::Char('F'));
     t.key(KeyCode::Char('s'));
@@ -266,32 +235,19 @@ fn cursor_follows_selected_host() {
     t.key(KeyCode::Down);
     term.draw(|f| crate::ui::draw(f, &mut t.app)).unwrap();
     let pos = term.backend_mut().get_cursor_position().unwrap();
-    assert_eq!(
-        (pos.x, pos.y),
-        (first.x, first.y + 1),
-        "the cursor sits on the selected row"
-    );
+    assert_eq!((pos.x, pos.y), (first.x, first.y + 1), "the cursor sits on the selected row");
     let buf = term.backend().buffer();
-    let row: String = (pos.x..pos.x + 4)
-        .map(|x| buf[(x, pos.y)].symbol().to_string())
-        .collect();
-    assert!(
-        row.starts_with('›'),
-        "selection marked by a symbol, not only color: {row:?}"
-    );
+    let row: String = (pos.x..pos.x + 4).map(|x| buf[(x, pos.y)].symbol().to_string()).collect();
+    assert!(row.starts_with('›'), "selection marked by a symbol, not only color: {row:?}");
 }
 
 fn alt(t: &mut T, c: char) {
-    t.app.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Char(c),
-        KeyModifiers::ALT,
-    )));
+    t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)));
 }
 
 /// A terminal tab on the local test server (never a real host).
 fn fixture_terminal(t: &mut T) -> termax_testserver::TestFixture {
-    let fx =
-        termax_testserver::TestFixture::with_shell(termax_testserver::FixtureAuth::Key).unwrap();
+    let fx = termax_testserver::TestFixture::with_shell(termax_testserver::FixtureAuth::Key).unwrap();
     let mut args = fx.ssh_options();
     args.push("-tt".into());
     args.push(fx.destination());
@@ -317,14 +273,7 @@ fn wait_screen(t: &T, s: &str) {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(15),
             "waiting for {s:?}: ...{}",
-            screen(t)
-                .chars()
-                .rev()
-                .take(300)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>()
+            screen(t).chars().rev().take(300).collect::<String>().chars().rev().collect::<String>()
         );
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
@@ -346,14 +295,10 @@ fn tui_search_scrolls_and_counts() {
     t.typed("needle");
     t.key(KeyCode::Enter);
     assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"));
-    let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else {
-        panic!()
-    };
+    let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else { panic!() };
     assert!(s.scroll_offset() > 0, "scrolled back to the match");
     t.key(KeyCode::Esc);
-    let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else {
-        panic!()
-    };
+    let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else { panic!() };
     assert_eq!(s.scroll_offset(), 0, "Esc returns to live output");
 }
 
@@ -362,13 +307,7 @@ fn tui_multiline_paste_confirms() {
     let mut t = T::new("");
     let _fx = fixture_terminal(&mut t);
     t.app.handle_event(Event::Paste("a\nb".into()));
-    assert!(matches!(
-        t.app.modal,
-        Some(Modal::Confirm {
-            action: ConfirmAction::Paste { .. },
-            ..
-        })
-    ));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste { .. }, .. })));
 }
 
 #[test]
@@ -391,11 +330,7 @@ fn tui_snippet_picker_sends() {
 fn press_keys(text: &str) -> Vec<Event> {
     text.chars()
         .map(|c| {
-            let code = if c == '\r' {
-                KeyCode::Enter
-            } else {
-                KeyCode::Char(c)
-            };
+            let code = if c == '\r' { KeyCode::Enter } else { KeyCode::Char(c) };
             Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
         })
         .collect()
@@ -408,18 +343,9 @@ fn tui_key_burst_is_a_paste() {
     let _fx = fixture_terminal(&mut t);
     t.app.paste_bursts = true;
     t.app.handle_batch(press_keys("ls\r"));
-    assert!(
-        t.app.modal.is_none(),
-        "a few keys typed quickly are just typing"
-    );
+    assert!(t.app.modal.is_none(), "a few keys typed quickly are just typing");
     t.app.handle_batch(press_keys("echo one\recho two\r"));
-    assert!(matches!(
-        t.app.modal,
-        Some(Modal::Confirm {
-            action: ConfirmAction::Paste { .. },
-            ..
-        })
-    ));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste { .. }, .. })));
 }
 
 fn draw(t: &mut T) -> ratatui::Terminal<ratatui::backend::TestBackend> {
@@ -429,15 +355,10 @@ fn draw(t: &mut T) -> ratatui::Terminal<ratatui::backend::TestBackend> {
 }
 
 /// Where `s` is drawn: (x, y) of its first cell.
-fn find_text(
-    term: &ratatui::Terminal<ratatui::backend::TestBackend>,
-    s: &str,
-) -> Option<(u16, u16)> {
+fn find_text(term: &ratatui::Terminal<ratatui::backend::TestBackend>, s: &str) -> Option<(u16, u16)> {
     let buf = term.backend().buffer();
     (0..buf.area.height).find_map(|y| {
-        let row: String = (0..buf.area.width)
-            .map(|x| buf[(x, y)].symbol().to_string())
-            .collect();
+        let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
         row.find(s).map(|i| (row[..i].chars().count() as u16, y))
     })
 }
@@ -449,31 +370,16 @@ fn write(t: &mut T, bytes: &[u8]) {
 }
 
 fn mouse(t: &mut T, kind: crossterm::event::MouseEventKind, column: u16, row: u16) {
-    t.app
-        .handle_event(Event::Mouse(crossterm::event::MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        }));
+    t.app.handle_event(Event::Mouse(crossterm::event::MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }));
 }
 
 #[test]
 fn alt_shortcuts_ignore_case_but_leave_alt_shift_to_the_shell() {
     let mut t = T::new("");
-    t.app.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Char('H'),
-        KeyModifiers::ALT | KeyModifiers::SHIFT,
-    )));
+    t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT | KeyModifiers::SHIFT)));
     assert!(t.app.modal.is_none(), "Alt+Shift+H isn't a shortcut");
-    t.app.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Char('H'),
-        KeyModifiers::ALT,
-    )));
-    assert!(
-        matches!(t.app.modal, Some(Modal::Help)),
-        "Alt+H with Caps Lock on"
-    );
+    t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT)));
+    assert!(matches!(t.app.modal, Some(Modal::Help)), "Alt+H with Caps Lock on");
 }
 
 #[test]
@@ -482,24 +388,16 @@ fn tui_search_highlights_and_follows_new_output() {
     let _fx = fixture_terminal(&mut t);
     write(&mut t, b"needle\r");
     wait_screen(&t, "needle\n");
-    t.app.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Char('F'),
-        KeyModifiers::ALT | KeyModifiers::SHIFT,
-    )));
+    t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT | KeyModifiers::SHIFT)));
     assert!(t.app.modal.is_none(), "Alt+Shift+F goes to the shell");
     alt(&mut t, 'f');
     t.app.handle_event(Event::Paste("needle".into()));
-    assert_eq!(
-        t.app.search_status().as_deref(),
-        Some("match 1/1"),
-        "a paste goes into the query"
-    );
+    assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"), "a paste goes into the query");
     let term = draw(&mut t);
     let (x, y) = find_text(&term, "needle").expect("on screen");
     let cell = &term.backend().buffer()[(x, y)];
     assert!(
-        cell.modifier
-            .contains(ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD),
+        cell.modifier.contains(ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD),
         "the current match is highlighted"
     );
     // New output: the current match stays, the new one is found.
@@ -517,10 +415,7 @@ fn tui_mouse_release_outside_reaches_the_program() {
     write(&mut t, b"\x1b[?1002h\x1b[?1006h"); // echoed back: the "program" asks for the mouse
     let start = std::time::Instant::now();
     while !t.app.wants_mouse() {
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(15),
-            "mouse mode never turned on"
-        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(15), "mouse mode never turned on");
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
     draw(&mut t);
@@ -528,10 +423,7 @@ fn tui_mouse_release_outside_reaches_the_program() {
     assert_eq!(t.app.mouse_held, Some(0));
     mouse(&mut t, K::Drag(B::Left), 5, 25); // over the status line
     mouse(&mut t, K::Up(B::Left), 5, 25);
-    assert_eq!(
-        t.app.mouse_held, None,
-        "the release is reported at the terminal's edge"
-    );
+    assert_eq!(t.app.mouse_held, None, "the release is reported at the terminal's edge");
 }
 
 #[test]
@@ -552,9 +444,7 @@ fn tui_mouse_always_clicks_tabs_scrolls_and_copies() {
     mouse(&mut t, K::Down(B::Left), x + 1, 0);
     assert_eq!(t.app.active, 1);
     mouse(&mut t, K::ScrollUp, 10, 10);
-    let TabKind::Terminal(s) = &t.app.tabs[1].kind else {
-        panic!()
-    };
+    let TabKind::Terminal(s) = &t.app.tabs[1].kind else { panic!() };
     assert_eq!(s.scroll_offset(), 3, "the wheel scrolls the scrollback");
     for _ in 0..10 {
         mouse(&mut t, K::ScrollUp, 10, 10);
@@ -564,17 +454,9 @@ fn tui_mouse_always_clicks_tabs_scrolls_and_copies() {
     mouse(&mut t, K::Down(B::Left), x, y);
     mouse(&mut t, K::Drag(B::Left), x + 4, y);
     let term = draw(&mut t);
-    assert_eq!(
-        term.backend().buffer()[(x + 2, y)].bg,
-        t.app.theme.selection_bg,
-        "the selection is drawn"
-    );
+    assert_eq!(term.backend().buffer()[(x + 2, y)].bg, t.app.theme.selection_bg, "the selection is drawn");
     mouse(&mut t, K::Up(B::Left), x + 4, y);
-    assert_eq!(
-        t.app.clipboard_out.as_deref(),
-        Some("alpha"),
-        "a drag copies"
-    );
+    assert_eq!(t.app.clipboard_out.as_deref(), Some("alpha"), "a drag copies");
 }
 
 #[test]

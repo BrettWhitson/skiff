@@ -21,8 +21,8 @@ pub struct GuiTheme {
 /// The standard xterm 256-colour palette.
 pub fn xterm_256(n: u8) -> Color {
     const BASE: [u32; 16] = [
-        0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f, 0xff0000, 0x00ff00,
-        0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+        0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff,
+        0xff00ff, 0x00ffff, 0xffffff,
     ];
     match n {
         0..=15 => Color::hex(BASE[n as usize]),
@@ -106,8 +106,7 @@ fn make_readable(p: &mut Palette, min: f32) {
     let rest = [p.bg, p.surface, p.surface_alt];
     let muted = nudge(p.muted, fg, |c| rest.iter().all(|&r| ratio(c, r) >= min));
     // The brightest `muted` may get while still looking dimmer than `fg`.
-    let brightest =
-        (0..=20).map(|i| muted.mix(fg, i as f32 / 20.0)).take_while(|&c| ratio(c, fg) >= MUTED_STEP).last().unwrap_or(muted);
+    let brightest = (0..=20).map(|i| muted.mix(fg, i as f32 / 20.0)).take_while(|&c| ratio(c, fg) >= MUTED_STEP).last().unwrap_or(muted);
     let reads = |s: Color| [fg, brightest].iter().all(|&t| ratio(t, s) >= min && ratio(t, unfocused(s)) >= min);
     p.selection = nudge(p.selection, p.bg, |s| reads(s) && ratio(accent, s) >= 3.0);
     let rows = [p.bg, p.surface, p.surface_alt, p.selection, unfocused(p.selection)];

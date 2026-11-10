@@ -26,7 +26,8 @@ fn renders_first_frame_offscreen() {
     let mut app = GuiApp::new(cfg, path, None);
     let mut h = Harness::new(1280, 800, 1.0);
     h.frame(vec![], &mut |ui| app.ui(ui));
-    let sidebar_text = h.list().prims.iter().any(|p| matches!(p, Prim::Text { text, origin, .. } if text.contains("smoke-host") && origin.x < 400));
+    let sidebar_text =
+        h.list().prims.iter().any(|p| matches!(p, Prim::Text { text, origin, .. } if text.contains("smoke-host") && origin.x < 400));
     assert!(sidebar_text, "connection listed in the sidebar");
     let c = h.render();
     assert_eq!(c.pixel(640, 400) & 0xffffff, 0x0f1117, "midnight background");

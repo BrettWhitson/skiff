@@ -2,8 +2,8 @@ use crate::a11y::Role;
 use crate::color::Color;
 use crate::geom::{Point, Rect};
 use crate::input::{CursorIcon, Key, Modifiers};
-use crate::text::FontKind;
 use crate::style::Palette;
+use crate::text::FontKind;
 use crate::ui::{Id, Response, Sense, Ui};
 
 use super::label::elide;

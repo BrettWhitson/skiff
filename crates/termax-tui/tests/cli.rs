@@ -68,12 +68,7 @@ fn completion_bash_mentions_list() {
 #[test]
 fn exec_passes_exit_code_and_records_history() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
-    let e = env(vec![Connection {
-        name: "fx".into(),
-        host: fx.destination(),
-        extra_args: fx.ssh_options(),
-        ..Default::default()
-    }]);
+    let e = env(vec![Connection { name: "fx".into(), host: fx.destination(), extra_args: fx.ssh_options(), ..Default::default() }]);
     let o = termax(&e, &["--host", "fx", "exit", "3"]);
     assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
     let o = termax(&e, &["fx", "echo", "hi"]);

@@ -118,12 +118,7 @@ fn text_input_click_places_cursor() {
     let field = Field::new("abcdef");
     let mut f = field_ui(&field, false);
     h.frame(vec![], &mut f);
-    let x0 = h
-        .list()
-        .prims
-        .iter()
-        .find_map(|p| if let Prim::Text { origin, .. } = p { Some(origin.x) } else { None })
-        .unwrap();
+    let x0 = h.list().prims.iter().find_map(|p| if let Prim::Text { origin, .. } = p { Some(origin.x) } else { None }).unwrap();
     // Between 'c' and 'd' (8px glyphs).
     h.frame(click(Point::new(x0 + 3 * 8 + 1, 20)), &mut f);
     h.frame(text("_"), &mut f);

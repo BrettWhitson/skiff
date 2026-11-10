@@ -169,13 +169,7 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
                 painter.rect(close, p.surface_alt.mix(p.fg, 0.1), radius);
             }
             if cr.hovered || is_active || hovered {
-                painter.text(
-                    Point::new(close.x + (close.w - xw) / 2, close.y + (close.h - lh) / 2),
-                    "×",
-                    FontKind::Ui,
-                    px,
-                    p.muted,
-                );
+                painter.text(Point::new(close.x + (close.w - xw) / 2, close.y + (close.h - lh) / 2), "×", FontKind::Ui, px, p.muted);
             }
         }
     }

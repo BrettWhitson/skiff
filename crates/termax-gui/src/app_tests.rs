@@ -226,19 +226,47 @@ fn waiting_transfer(f: &mut Fixture) -> (u64, tempfile::TempDir, tempfile::TempD
     let bdir = b.path().display().to_string();
     {
         let app = &mut f.app;
-        let ctx = crate::files::FilesCtx { tab_id: id, engine: &app.engine, start_dir: &app.start_dir, hosts: &app.hosts, askpass: None, ssh_binary: "ssh", ssh_version: None };
-        let ft = match &mut app.tabs.iter_mut().find(|t| t.id == id).unwrap().kind { TabKind::Files(ft) => ft, _ => unreachable!() };
+        let ctx = crate::files::FilesCtx {
+            tab_id: id,
+            engine: &app.engine,
+            start_dir: &app.start_dir,
+            hosts: &app.hosts,
+            askpass: None,
+            ssh_binary: "ssh",
+            ssh_version: None,
+        };
+        let ft = match &mut app.tabs.iter_mut().find(|t| t.id == id).unwrap().kind {
+            TabKind::Files(ft) => ft,
+            _ => unreachable!(),
+        };
         ft.panes[1].navigate(bdir.clone(), &ctx, 1);
     }
-    pump(f, "right in b", move |app| app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if ft.panes[1].cwd == bdir && ft.panes[1].state == crate::files::PaneState::Idle)));
+    pump(f, "right in b", move |app| {
+        app.tabs
+            .iter()
+            .any(|t| matches!(&t.kind, TabKind::Files(ft) if ft.panes[1].cwd == bdir && ft.panes[1].state == crate::files::PaneState::Idle))
+    });
     {
         let app = &mut f.app;
-        let ctx = crate::files::FilesCtx { tab_id: id, engine: &app.engine, start_dir: &app.start_dir, hosts: &app.hosts, askpass: None, ssh_binary: "ssh", ssh_version: None };
-        let ft = match &mut app.tabs.iter_mut().find(|t| t.id == id).unwrap().kind { TabKind::Files(ft) => ft, _ => unreachable!() };
+        let ctx = crate::files::FilesCtx {
+            tab_id: id,
+            engine: &app.engine,
+            start_dir: &app.start_dir,
+            hosts: &app.hosts,
+            askpass: None,
+            ssh_binary: "ssh",
+            ssh_version: None,
+        };
+        let ft = match &mut app.tabs.iter_mut().find(|t| t.id == id).unwrap().kind {
+            TabKind::Files(ft) => ft,
+            _ => unreachable!(),
+        };
         let path = a.path().join("x.txt").display().to_string();
         ft.copy(0, vec![(path, false, "x.txt".into())], &ctx);
     }
-    pump(f, "question", move |app| app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if ft.transfers.running() == 1 && ft.transfers.rows.iter().any(|r| matches!(r.state, crate::files::transfers::RowState::Waiting(_))))));
+    pump(f, "question", move |app| {
+        app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if ft.transfers.running() == 1 && ft.transfers.rows.iter().any(|r| matches!(r.state, crate::files::transfers::RowState::Waiting(_)))))
+    });
     (id, a, b)
 }
 
@@ -266,7 +294,9 @@ fn shutdown_cancels_transfers() {
     let (id, _a, _b) = waiting_transfer(&mut f);
     files_tab(&mut f.app, id).shutdown(None);
     pump(&mut f, "cancelled", move |app| {
-        app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if matches!(ft.transfers.rows[0].state, crate::files::transfers::RowState::Cancelled)))
+        app.tabs.iter().any(
+            |t| matches!(&t.kind, TabKind::Files(ft) if matches!(ft.transfers.rows[0].state, crate::files::transfers::RowState::Cancelled)),
+        )
     });
 }
 
@@ -278,7 +308,10 @@ fn close_tab_cancels_and_ignores_late_events() {
     f.app.close_tab(id);
     let tx = f.app.engine.sender();
     tx.send(Msg::Files { tab: id, side: 0, ev: crate::files::FilesEvent::Listed { seq: 1, cwd: "x".into(), result: Ok(vec![]) } });
-    tx.send(Msg::Transfer { tab: id, ev: termax_core::fs::transfer::TransferEvent::Progress { id: 1, done: 1, total: None, current: "x".into() } });
+    tx.send(Msg::Transfer {
+        tab: id,
+        ev: termax_core::fs::transfer::TransferEvent::Progress { id: 1, done: 1, total: None, current: "x".into() },
+    });
     f.frame(vec![]);
     f.frame(vec![]);
     assert!(f.app.tabs.is_empty());

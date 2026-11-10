@@ -22,10 +22,8 @@ pub struct Theme {
 
 impl Theme {
     pub fn from_def(def: &ThemeDef) -> Result<Self, String> {
-        let c = |field: &str, v: &str| {
-            Color::from_str(v.trim())
-                .map_err(|_| format!("theme '{}': invalid color for {field}: '{v}'", def.name))
-        };
+        let c =
+            |field: &str, v: &str| Color::from_str(v.trim()).map_err(|_| format!("theme '{}': invalid color for {field}: '{v}'", def.name));
         Ok(Self {
             name: def.name.clone(),
             bg: c("bg", &def.bg)?,

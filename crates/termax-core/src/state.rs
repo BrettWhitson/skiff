@@ -80,7 +80,13 @@ mod tests {
         assert_eq!(UiState::load(&path), UiState::default());
         assert_eq!(UiState::default().sidebar_width, 240.0);
 
-        let s = UiState { window_size: Some((1200, 800)), sidebar_width: 300.0, sidebar_collapsed: true, sort: SortMode::Recent, show_hidden: true };
+        let s = UiState {
+            window_size: Some((1200, 800)),
+            sidebar_width: 300.0,
+            sidebar_collapsed: true,
+            sort: SortMode::Recent,
+            show_hidden: true,
+        };
         s.save(&path).unwrap();
         assert_eq!(UiState::load(&path), s);
 

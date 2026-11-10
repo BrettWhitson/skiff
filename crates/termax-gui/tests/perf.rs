@@ -47,7 +47,7 @@ fn mixed_output(bytes: usize) -> String {
     while s.len() < bytes {
         let c = 31 + i % 7;
         s.push_str(&format!("\x1b[{c}m{i:>8}\x1b[0m \x1b[1mbold\x1b[0m plain text \u{4e2d}\u{6587} \x1b[4munder\x1b[0m"));
-        if i % 5 == 0 {
+        if i.is_multiple_of(5) {
             s.push_str(&"-".repeat(150));
         }
         s.push_str("\r\n");

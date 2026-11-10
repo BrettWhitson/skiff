@@ -127,7 +127,12 @@ mod tests {
         let mut c = Cached::new(Duration::from_secs(3));
         let t0 = Instant::now();
         let reads = std::cell::Cell::new(0);
-        let get = |c: &mut Cached<bool>, at| c.get(at, || reads.set(reads.get() + 1) == ());
+        let get = |c: &mut Cached<bool>, at| {
+            c.get(at, || {
+                reads.set(reads.get() + 1);
+                true
+            })
+        };
         get(&mut c, t0);
         get(&mut c, t0 + Duration::from_secs(1));
         assert_eq!(reads.get(), 1, "a frame within the period does not ask the OS");

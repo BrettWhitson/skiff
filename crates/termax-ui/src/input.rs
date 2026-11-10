@@ -75,15 +75,25 @@ pub enum CursorIcon {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    KeyDown { key: Key, mods: Modifiers, text: Option<String> },
-    KeyUp { key: Key, mods: Modifiers },
+    KeyDown {
+        key: Key,
+        mods: Modifiers,
+        text: Option<String>,
+    },
+    KeyUp {
+        key: Key,
+        mods: Modifiers,
+    },
     /// Text to insert (typed characters, IME commits).
     Text(String),
     MouseMove(Point),
     MouseDown(MouseButton, Point),
     MouseUp(MouseButton, Point),
     /// Scroll in physical pixels; positive `dy` = content moves down (scroll up).
-    Wheel { dx: f32, dy: f32 },
+    Wheel {
+        dx: f32,
+        dy: f32,
+    },
     Paste(String),
     FileDropped(PathBuf),
     FocusLost,
@@ -91,7 +101,10 @@ pub enum Event {
     /// The held modifier keys changed (needed for Ctrl/Shift-click).
     Modifiers(Modifiers),
     /// A screen reader asked widget `target` to do something.
-    A11y { target: Id, action: A11yAction },
+    A11y {
+        target: Id,
+        action: A11yAction,
+    },
 }
 
 pub fn map_named_key(k: &NamedKey) -> Option<Key> {

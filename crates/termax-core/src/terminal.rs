@@ -30,23 +30,8 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
-    pub fn spawn(
-        program: &str,
-        args: &[String],
-        rows: u16,
-        cols: u16,
-        scrollback: usize,
-    ) -> Result<Self> {
-        Self::spawn_with(
-            program,
-            args,
-            rows,
-            cols,
-            scrollback,
-            Arc::default(),
-            Arc::default(),
-            Arc::default(),
-        )
+    pub fn spawn(program: &str, args: &[String], rows: u16, cols: u16, scrollback: usize) -> Result<Self> {
+        Self::spawn_with(program, args, rows, cols, scrollback, Arc::default(), Arc::default(), Arc::default())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -62,24 +47,15 @@ impl TerminalSession {
     ) -> Result<Self> {
         let rows = rows.max(2);
         let cols = cols.max(10);
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("opening pseudo-terminal")?;
+        let pair =
+            native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).context("opening pseudo-terminal")?;
 
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         if std::env::var_os("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
         }
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .with_context(|| format!("starting `{program}`"))?;
+        let child = pair.slave.spawn_command(cmd).with_context(|| format!("starting `{program}`"))?;
         // The slave handle must be closed here or the reader never sees EOF.
         drop(pair.slave);
 
@@ -117,11 +93,11 @@ impl TerminalSession {
                                 reply.extend(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes());
                             }
                         }
-                        if !reply.is_empty() {
-                            if let Ok(mut w) = w.lock() {
-                                let _ = w.write_all(&reply);
-                                let _ = w.flush();
-                            }
+                        if !reply.is_empty()
+                            && let Ok(mut w) = w.lock()
+                        {
+                            let _ = w.write_all(&reply);
+                            let _ = w.flush();
                         }
                         gen_.fetch_add(1, Ordering::SeqCst);
                         ping();
@@ -196,11 +172,7 @@ impl TerminalSession {
     }
 
     pub fn paste(&mut self, text: &str) {
-        let bracketed = self
-            .parser
-            .lock()
-            .map(|p| p.screen().bracketed_paste())
-            .unwrap_or(false);
+        let bracketed = self.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
         let text = sanitize_paste(text);
         if bracketed {
             self.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
@@ -215,12 +187,7 @@ impl TerminalSession {
             return;
         }
         self.size = (rows, cols);
-        let _ = self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         if let Ok(mut p) = self.parser.lock() {
             p.screen_mut().set_size(rows, cols);
         }
@@ -239,10 +206,7 @@ impl TerminalSession {
     }
 
     pub fn scroll_offset(&self) -> usize {
-        self.parser
-            .lock()
-            .map(|p| p.screen().scrollback())
-            .unwrap_or(0)
+        self.parser.lock().map(|p| p.screen().scrollback()).unwrap_or(0)
     }
 
     pub fn rows(&self) -> u16 {
@@ -257,10 +221,7 @@ impl TerminalSession {
     }
 
     pub fn application_cursor(&self) -> bool {
-        self.parser
-            .lock()
-            .map(|p| p.screen().application_cursor())
-            .unwrap_or(false)
+        self.parser.lock().map(|p| p.screen().application_cursor()).unwrap_or(false)
     }
 }
 
@@ -275,10 +236,7 @@ impl Drop for TerminalSession {
 /// markers are removed so the text cannot end the paste early and have the
 /// rest run as typed commands.
 pub fn sanitize_paste(text: &str) -> String {
-    text.replace("\x1b[200~", "")
-        .replace("\x1b[201~", "")
-        .replace("\r\n", "\r")
-        .replace('\n', "\r")
+    text.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("\r\n", "\r").replace('\n', "\r")
 }
 
 pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
@@ -298,13 +256,8 @@ pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
             format!("\x1b[{letter}").into_bytes()
         }
     };
-    let csi_tilde = |n: u8| -> Vec<u8> {
-        if modp > 1 {
-            format!("\x1b[{n};{modp}~").into_bytes()
-        } else {
-            format!("\x1b[{n}~").into_bytes()
-        }
-    };
+    let csi_tilde =
+        |n: u8| -> Vec<u8> { if modp > 1 { format!("\x1b[{n};{modp}~").into_bytes() } else { format!("\x1b[{n}~").into_bytes() } };
 
     let mut out = match key.code {
         KeyCode::Char(c) if ctrl => {
@@ -351,11 +304,7 @@ pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         KeyCode::PageDown => return csi_tilde(6),
         KeyCode::F(n @ 1..=4) => {
             let letter = (b'P' + n - 1) as char;
-            return if modp > 1 {
-                format!("\x1b[1;{modp}{letter}").into_bytes()
-            } else {
-                format!("\x1bO{letter}").into_bytes()
-            };
+            return if modp > 1 { format!("\x1b[1;{modp}{letter}").into_bytes() } else { format!("\x1bO{letter}").into_bytes() };
         }
         KeyCode::F(n @ 5..=12) => {
             let code = [15, 17, 18, 19, 20, 21, 23, 24][(n - 5) as usize];
@@ -394,22 +343,13 @@ mod tests {
     #[test]
     fn pty_session_captures_output() {
         #[cfg(windows)]
-        let (prog, args) = (
-            "cmd.exe",
-            vec!["/c".to_string(), "echo termax-ok".to_string()],
-        );
+        let (prog, args) = ("cmd.exe", vec!["/c".to_string(), "echo termax-ok".to_string()]);
         #[cfg(not(windows))]
         let (prog, args) = ("sh", vec!["-c".to_string(), "echo termax-ok".to_string()]);
         let mut s = TerminalSession::spawn(prog, &args, 10, 40, 100).unwrap();
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(10) {
-            if s.parser
-                .lock()
-                .unwrap()
-                .screen()
-                .contents()
-                .contains("termax-ok")
-            {
+            if s.parser.lock().unwrap().screen().contents().contains("termax-ok") {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -424,31 +364,18 @@ mod tests {
     fn encodes_keys() {
         let n = KeyModifiers::NONE;
         assert_eq!(encode_key(k(KeyCode::Char('a'), n), false), b"a");
-        assert_eq!(
-            encode_key(k(KeyCode::Char('c'), KeyModifiers::CONTROL), false),
-            [3]
-        );
-        assert_eq!(
-            encode_key(k(KeyCode::Char('b'), KeyModifiers::ALT), false),
-            b"\x1bb"
-        );
+        assert_eq!(encode_key(k(KeyCode::Char('c'), KeyModifiers::CONTROL), false), [3]);
+        assert_eq!(encode_key(k(KeyCode::Char('b'), KeyModifiers::ALT), false), b"\x1bb");
         assert_eq!(encode_key(k(KeyCode::Up, n), false), b"\x1b[A");
         assert_eq!(encode_key(k(KeyCode::Up, n), true), b"\x1bOA");
-        assert_eq!(
-            encode_key(k(KeyCode::Right, KeyModifiers::CONTROL), false),
-            b"\x1b[1;5C"
-        );
+        assert_eq!(encode_key(k(KeyCode::Right, KeyModifiers::CONTROL), false), b"\x1b[1;5C");
         assert_eq!(encode_key(k(KeyCode::Delete, n), false), b"\x1b[3~");
         assert_eq!(encode_key(k(KeyCode::F(1), n), false), b"\x1bOP");
         assert_eq!(encode_key(k(KeyCode::F(12), n), false), b"\x1b[24~");
         assert_eq!(encode_key(k(KeyCode::Enter, n), false), b"\r");
         assert_eq!(encode_key(k(KeyCode::Char('é'), n), false), "é".as_bytes());
         // Modified function and navigation keys (xterm: 1 + shift + 2*alt + 4*ctrl).
-        let (c, s, a) = (
-            KeyModifiers::CONTROL,
-            KeyModifiers::SHIFT,
-            KeyModifiers::ALT,
-        );
+        let (c, s, a) = (KeyModifiers::CONTROL, KeyModifiers::SHIFT, KeyModifiers::ALT);
         assert_eq!(encode_key(k(KeyCode::F(6), c), false), b"\x1b[17;5~");
         assert_eq!(encode_key(k(KeyCode::F(1), s), false), b"\x1b[1;2P");
         assert_eq!(encode_key(k(KeyCode::F(5), a), false), b"\x1b[15;3~");

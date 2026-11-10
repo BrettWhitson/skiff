@@ -94,10 +94,7 @@ fn piece_end(d: &[u8], i: usize) -> usize {
         }
         return (j + 1).min(d.len());
     }
-    d[i + 1..]
-        .iter()
-        .position(|&b| b == 0x1b)
-        .map_or(d.len(), |p| i + 1 + p)
+    d[i + 1..].iter().position(|&b| b == 0x1b).map_or(d.len(), |p| i + 1 + p)
 }
 
 /// Processes one piece. vt100 moves a scrolled-back view up a line for each
@@ -118,11 +115,7 @@ fn piece(parser: &mut vt100::Parser, mut seg: &[u8]) -> u64 {
         let len0 = history_len(screen);
         screen.set_scrollback(1);
         let probe = screen.scrollback() == 1;
-        let limit = if probe {
-            len0.saturating_sub(1).max(1)
-        } else {
-            1
-        };
+        let limit = if probe { len0.saturating_sub(1).max(1) } else { 1 };
         let (now, rest) = seg.split_at(after_line_breaks(seg, limit));
         seg = rest;
         parser.process(now);
@@ -142,11 +135,7 @@ fn piece(parser: &mut vt100::Parser, mut seg: &[u8]) -> u64 {
 /// The length of `seg` up to and including its `n`th line break (all of it
 /// if it has no more).
 fn after_line_breaks(seg: &[u8], n: usize) -> usize {
-    seg.iter()
-        .enumerate()
-        .filter(|(_, b)| matches!(b, b'\n' | 0x0b | 0x0c))
-        .nth(n - 1)
-        .map_or(seg.len(), |(i, _)| i + 1)
+    seg.iter().enumerate().filter(|(_, b)| matches!(b, b'\n' | 0x0b | 0x0c)).nth(n - 1).map_or(seg.len(), |(i, _)| i + 1)
 }
 
 /// One search hit: `line` is a line number (see [`ScrollTracker`]; for
@@ -170,31 +159,16 @@ impl Query {
             return None;
         }
         let exact = q.chars().any(char::is_uppercase);
-        Some(Query {
-            exact,
-            chars: if exact {
-                q.chars().collect()
-            } else {
-                q.to_lowercase().chars().collect()
-            },
-        })
+        Some(Query { exact, chars: if exact { q.chars().collect() } else { q.to_lowercase().chars().collect() } })
     }
 
     fn find_in(&self, line: &str, at: u64, out: &mut Vec<Match>) {
         let q = &self.chars;
-        let chars: Vec<char> = if self.exact {
-            line.chars().collect()
-        } else {
-            line.to_lowercase().chars().collect()
-        };
+        let chars: Vec<char> = if self.exact { line.chars().collect() } else { line.to_lowercase().chars().collect() };
         let mut i = 0;
         while i + q.len() <= chars.len() {
             if chars[i..i + q.len()] == q[..] {
-                out.push(Match {
-                    line: at,
-                    col: i,
-                    len: q.len(),
-                });
+                out.push(Match { line: at, col: i, len: q.len() });
                 i += q.len();
             } else {
                 i += 1;
@@ -217,38 +191,20 @@ pub fn find(lines: &[String], query: &str) -> Vec<Match> {
 
 /// Columns `start..start + width` of the row `idx` rows from the oldest
 /// (scrollback, then screen). Moves the view; callers put it back.
-fn row_text(
-    screen: &mut vt100::Screen,
-    history: usize,
-    idx: usize,
-    start: u16,
-    width: u16,
-) -> Option<String> {
+fn row_text(screen: &mut vt100::Screen, history: usize, idx: usize, start: u16, width: u16) -> Option<String> {
     let rows = screen.size().0 as usize;
-    let (off, row) = if idx < history {
-        (history - idx, 0)
-    } else {
-        (0, idx - history)
-    };
+    let (off, row) = if idx < history { (history - idx, 0) } else { (0, idx - history) };
     if row >= rows {
         return None;
     }
     screen.set_scrollback(off);
-    screen
-        .rows(start, width)
-        .nth(row)
-        .map(|r| r.trim_end().to_string())
+    screen.rows(start, width).nth(row).map(|r| r.trim_end().to_string())
 }
 
 /// The text from `a` to `b`, each `(line, col)` with line numbers as from
 /// [`ScrollTracker`] (`scrolled` is its count) and `b`'s column included;
 /// one line per row. The view stays.
-pub fn text_between(
-    parser: &mut vt100::Parser,
-    scrolled: u64,
-    a: (u64, u16),
-    b: (u64, u16),
-) -> String {
+pub fn text_between(parser: &mut vt100::Parser, scrolled: u64, a: (u64, u16), b: (u64, u16)) -> String {
     let (a, b) = if a <= b { (a, b) } else { (b, a) };
     let screen = parser.screen_mut();
     let prev = screen.scrollback();
@@ -258,18 +214,8 @@ pub fn text_between(
     let mut out = vec![];
     for line in a.0.max(base)..=b.0 {
         let from = if line == a.0 { a.1.min(cols) } else { 0 };
-        let to = if line == b.0 {
-            b.1.saturating_add(1).min(cols)
-        } else {
-            cols
-        };
-        match row_text(
-            screen,
-            history,
-            (line - base) as usize,
-            from,
-            to.saturating_sub(from),
-        ) {
+        let to = if line == b.0 { b.1.saturating_add(1).min(cols) } else { cols };
+        match row_text(screen, history, (line - base) as usize, from, to.saturating_sub(from)) {
             Some(t) => out.push(t),
             None => break,
         }
@@ -349,8 +295,7 @@ impl TermSearch {
             // Check the count: the newest cached line is still where expected.
             let at = self.base + self.hist.len() as u64 - 1;
             if at >= base {
-                full = row_text(screen, history, (at - base) as usize, 0, size.1).as_deref()
-                    != Some(last.as_str());
+                full = row_text(screen, history, (at - base) as usize, 0, size.1).as_deref() != Some(last.as_str());
             }
         }
         let old_end = self.base + self.hist.len() as u64;
@@ -373,19 +318,11 @@ impl TermSearch {
         while next < history {
             screen.set_scrollback(history - next);
             let take = rows.min(history - next);
-            self.hist.extend(
-                screen
-                    .rows(0, size.1)
-                    .take(take)
-                    .map(|r| r.trim_end().to_string()),
-            );
+            self.hist.extend(screen.rows(0, size.1).take(take).map(|r| r.trim_end().to_string()));
             next += take;
         }
         screen.set_scrollback(0);
-        self.screen = screen
-            .rows(0, size.1)
-            .map(|r| r.trim_end().to_string())
-            .collect();
+        self.screen = screen.rows(0, size.1).map(|r| r.trim_end().to_string()).collect();
         screen.set_scrollback(prev);
         self.alt = alt;
         self.stamp = Some(stamp);
@@ -416,10 +353,7 @@ impl TermSearch {
         let last = self.matches.len().saturating_sub(1);
         self.current = match was {
             None => last,
-            Some(w) => self
-                .matches
-                .partition_point(|m| (m.line, m.col) < (w.line, w.col))
-                .min(last),
+            Some(w) => self.matches.partition_point(|m| (m.line, m.col) < (w.line, w.col)).min(last),
         };
     }
 
@@ -442,11 +376,7 @@ impl TermSearch {
         if n == 0 {
             return false;
         }
-        self.current = if older {
-            (self.current + n - 1) % n
-        } else {
-            (self.current + 1) % n
-        };
+        self.current = if older { (self.current + n - 1) % n } else { (self.current + 1) % n };
         true
     }
 
@@ -454,11 +384,7 @@ impl TermSearch {
     /// way down a view of `rows` rows (0 when it is on the live screen).
     pub fn offset(&self, scrolled: u64, rows: usize) -> Option<usize> {
         let m = self.matches.get(self.current)?;
-        Some(if m.line >= scrolled {
-            0
-        } else {
-            (scrolled - m.line) as usize + rows / 3
-        })
+        Some(if m.line >= scrolled { 0 } else { (scrolled - m.line) as usize + rows / 3 })
     }
 
     /// Visible matches as (row, col, len, is_current) for a view whose top
@@ -469,14 +395,7 @@ impl TermSearch {
             .iter()
             .enumerate()
             .take_while(|(_, m)| m.line < top + rows as u64)
-            .map(|(i, m)| {
-                (
-                    (m.line - top) as usize,
-                    m.col,
-                    m.len,
-                    lo + i == self.current,
-                )
-            })
+            .map(|(i, m)| ((m.line - top) as usize, m.col, m.len, lo + i == self.current))
             .collect()
     }
 }
@@ -487,15 +406,9 @@ pub fn osc52(text: &str) -> String {
     const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::from("\x1b]52;c;");
     for chunk in text.as_bytes().chunks(3) {
-        let n = (chunk[0] as u32) << 16
-            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
-            | *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
         for k in 0..4 {
-            out.push(if k <= chunk.len() {
-                ABC[(n >> (18 - 6 * k) & 63) as usize] as char
-            } else {
-                '='
-            });
+            out.push(if k <= chunk.len() { ABC[(n >> (18 - 6 * k) & 63) as usize] as char } else { '=' });
         }
     }
     out.push('\x07');
@@ -574,25 +487,14 @@ pub fn encode_mouse(
     let (x, y) = (col as u32 + 1, row as u32 + 1);
     match enc {
         MouseProtocolEncoding::Sgr => {
-            let end = if matches!(ev, MouseEv::Release(_)) {
-                'm'
-            } else {
-                'M'
-            };
+            let end = if matches!(ev, MouseEv::Release(_)) { 'm' } else { 'M' };
             Some(format!("\x1b[<{code};{x};{y}{end}").into_bytes())
         }
         MouseProtocolEncoding::Default => {
             if x > 223 || y > 223 {
                 return None;
             }
-            Some(vec![
-                0x1b,
-                b'[',
-                b'M',
-                (32 + code) as u8,
-                (32 + x) as u8,
-                (32 + y) as u8,
-            ])
+            Some(vec![0x1b, b'[', b'M', (32 + code) as u8, (32 + x) as u8, (32 + y) as u8])
         }
         MouseProtocolEncoding::Utf8 => {
             let mut s = String::from("\x1b[M");
@@ -641,10 +543,7 @@ pub enum SnippetSend {
 impl Snippet {
     pub fn send(&self) -> SnippetSend {
         if self.command.contains(['\n', '\r']) {
-            SnippetSend::Paste {
-                body: self.command.clone(),
-                enter: self.run,
-            }
+            SnippetSend::Paste { body: self.command.clone(), enter: self.run }
         } else {
             SnippetSend::Type(self.text())
         }
@@ -653,9 +552,7 @@ impl Snippet {
 
 /// The snippets usable in a tab connected to `host`.
 pub fn snippets_for<'a>(all: &'a [Snippet], host: &str) -> Vec<&'a Snippet> {
-    all.iter()
-        .filter(|s| s.host.as_deref().is_none_or(|h| h == host))
-        .collect()
+    all.iter().filter(|s| s.host.as_deref().is_none_or(|h| h == host)).collect()
 }
 
 #[cfg(test)]
@@ -668,11 +565,7 @@ mod tests {
 
     #[test]
     fn search_finds_in_scrollback() {
-        let (mut p, mut t, mut n) = (
-            vt100::Parser::new(24, 80, 10_000),
-            ScrollTracker::default(),
-            0,
-        );
+        let (mut p, mut t, mut n) = (vt100::Parser::new(24, 80, 10_000), ScrollTracker::default(), 0);
         let lines: String = (0..5000).map(|i| format!("line {i}\r\n")).collect();
         feed(&mut p, &mut t, &mut n, &lines);
         let mut s = TermSearch::default();
@@ -680,11 +573,7 @@ mod tests {
         assert!(!s.refresh(&mut p, n, 1), "nothing new, nothing read");
         assert_eq!(p.screen().scrollback(), 0, "the view stays where it was");
         s.set_query("line 42");
-        assert_eq!(
-            s.matches().len(),
-            1 + 10 + 100,
-            "line 42, 420-429 and 4200-4299"
-        );
+        assert_eq!(s.matches().len(), 1 + 10 + 100, "line 42, 420-429 and 4200-4299");
         s.set_query("LINE 42");
         assert!(s.matches().is_empty(), "uppercase makes it case-sensitive");
         s.set_query("line 42");
@@ -693,15 +582,8 @@ mod tests {
         }
         p.screen_mut().set_scrollback(s.offset(n, 24).unwrap());
         let shown = p.screen().contents();
-        assert_eq!(
-            shown.lines().nth(8),
-            Some("line 42"),
-            "the match shows a third of the way down: {shown:?}"
-        );
-        assert_eq!(
-            s.marks(n - p.screen().scrollback() as u64, 24),
-            vec![(8, 0, 7, true)]
-        );
+        assert_eq!(shown.lines().nth(8), Some("line 42"), "the match shows a third of the way down: {shown:?}");
+        assert_eq!(s.marks(n - p.screen().scrollback() as u64, 24), vec![(8, 0, 7, true)]);
     }
 
     #[test]
@@ -713,20 +595,11 @@ mod tests {
         assert_eq!(p.screen().scrollback(), 0);
         p.screen_mut().set_scrollback(3);
         feed(&mut p, &mut t, &mut n, &lines(30, 32));
-        assert_eq!(
-            (n, p.screen().scrollback()),
-            (28, 5),
-            "a scrolled-back view moves with its text, as in vt100"
-        );
+        assert_eq!((n, p.screen().scrollback()), (28, 5), "a scrolled-back view moves with its text, as in vt100");
         p.screen_mut().set_scrollback(0);
         // The alternate screen keeps nothing; the switch may be split across reads.
         feed(&mut p, &mut t, &mut n, "\x1b[?10");
-        feed(
-            &mut p,
-            &mut t,
-            &mut n,
-            &format!("49h{}\x1b[?104", lines(0, 9)),
-        );
+        feed(&mut p, &mut t, &mut n, &format!("49h{}\x1b[?104", lines(0, 9)));
         assert_eq!(n, 28);
         feed(&mut p, &mut t, &mut n, &format!("9l{}", lines(32, 35)));
         assert_eq!((n, p.screen().scrollback()), (31, 0));
@@ -737,12 +610,7 @@ mod tests {
         let (mut p, mut t, mut n) = (vt100::Parser::new(3, 20, 10), ScrollTracker::default(), 0);
         let mut s = TermSearch::default();
         let lines = |a: usize, b: usize| (a..b).map(|i| format!("f{i}\r\n")).collect::<String>();
-        feed(
-            &mut p,
-            &mut t,
-            &mut n,
-            &format!("x0\r\nx1\r\nx2\r\nneedle\r\n{}", lines(0, 4)),
-        );
+        feed(&mut p, &mut t, &mut n, &format!("x0\r\nx1\r\nx2\r\nneedle\r\n{}", lines(0, 4)));
         s.refresh(&mut p, n, 1);
         s.set_query("needle");
         let m = s.matches()[0];
@@ -751,24 +619,14 @@ mod tests {
         s.refresh(&mut p, n, 2);
         assert_eq!(s.matches(), [m]);
         p.screen_mut().set_scrollback(s.offset(n, 3).unwrap());
-        assert_eq!(
-            p.screen().contents().lines().nth(1),
-            Some("needle"),
-            "{}",
-            p.screen().contents()
-        );
+        assert_eq!(p.screen().contents().lines().nth(1), Some("needle"), "{}", p.screen().contents());
         // New output that matches is found without losing the current match.
         p.screen_mut().set_scrollback(0);
         feed(&mut p, &mut t, &mut n, "needle 2\r\n");
         s.refresh(&mut p, n, 3);
         assert_eq!((s.matches().len(), s.current()), (2, 0));
         // Once its line is dropped, so is the match.
-        feed(
-            &mut p,
-            &mut t,
-            &mut n,
-            &(0..12).map(|i| format!("g{i}\r\n")).collect::<String>(),
-        );
+        feed(&mut p, &mut t, &mut n, &(0..12).map(|i| format!("g{i}\r\n")).collect::<String>());
         s.refresh(&mut p, n, 4);
         assert!(s.matches().is_empty(), "{:?}", s.matches());
     }
@@ -776,17 +634,9 @@ mod tests {
     #[test]
     fn text_between_spans_scrollback_and_screen() {
         let (mut p, mut t, mut n) = (vt100::Parser::new(3, 20, 10), ScrollTracker::default(), 0);
-        feed(
-            &mut p,
-            &mut t,
-            &mut n,
-            "alpha one\r\nbeta two\r\ngamma three\r\ndelta",
-        );
+        feed(&mut p, &mut t, &mut n, "alpha one\r\nbeta two\r\ngamma three\r\ndelta");
         assert_eq!(n, 1);
-        assert_eq!(
-            text_between(&mut p, n, (2, 6), (0, 4)),
-            "a one\nbeta two\ngamma t"
-        );
+        assert_eq!(text_between(&mut p, n, (2, 6), (0, 4)), "a one\nbeta two\ngamma t");
         assert_eq!(text_between(&mut p, n, (3, 1), (3, 2)), "el");
         assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
         assert_eq!(osc52("abc"), "\x1b]52;c;YWJj\x07");
@@ -796,17 +646,9 @@ mod tests {
     fn paste_prompt_rules() {
         assert_eq!(paste_lines("a\nb", false, true), Some(2));
         assert_eq!(paste_lines("a", false, true), None);
-        assert_eq!(
-            paste_lines("a\nb", true, true),
-            None,
-            "bracketed paste is safe"
-        );
+        assert_eq!(paste_lines("a\nb", true, true), None, "bracketed paste is safe");
         assert_eq!(paste_lines("a\nb", false, false), None, "turned off");
-        assert_eq!(
-            paste_lines("a\n", false, true),
-            Some(1),
-            "a trailing newline would run it"
-        );
+        assert_eq!(paste_lines("a\n", false, true), Some(1), "a trailing newline would run it");
         assert_eq!(paste_lines("a\r\nb\r\n", false, true), Some(2));
     }
 
@@ -815,103 +657,36 @@ mod tests {
         use MouseProtocolEncoding as E;
         use MouseProtocolMode as M;
         let e = |mode, enc, ev, col| encode_mouse(mode, enc, ev, col, 0, false, false, false);
-        assert_eq!(
-            e(M::PressRelease, E::Sgr, MouseEv::Press(0), 0),
-            Some(b"\x1b[<0;1;1M".to_vec())
-        );
-        assert_eq!(
-            e(M::PressRelease, E::Sgr, MouseEv::Release(0), 0),
-            Some(b"\x1b[<0;1;1m".to_vec())
-        );
-        assert_eq!(
-            e(M::PressRelease, E::Default, MouseEv::Press(0), 0),
-            Some(vec![0x1b, b'[', b'M', 32, 33, 33])
-        );
-        assert_eq!(
-            e(M::PressRelease, E::Default, MouseEv::Release(0), 0),
-            Some(vec![0x1b, b'[', b'M', 35, 33, 33])
-        );
+        assert_eq!(e(M::PressRelease, E::Sgr, MouseEv::Press(0), 0), Some(b"\x1b[<0;1;1M".to_vec()));
+        assert_eq!(e(M::PressRelease, E::Sgr, MouseEv::Release(0), 0), Some(b"\x1b[<0;1;1m".to_vec()));
+        assert_eq!(e(M::PressRelease, E::Default, MouseEv::Press(0), 0), Some(vec![0x1b, b'[', b'M', 32, 33, 33]));
+        assert_eq!(e(M::PressRelease, E::Default, MouseEv::Release(0), 0), Some(vec![0x1b, b'[', b'M', 35, 33, 33]));
         assert_eq!(e(M::PressRelease, E::Sgr, MouseEv::Move, 0), None);
-        assert_eq!(
-            e(M::AnyMotion, E::Sgr, MouseEv::Move, 0),
-            Some(b"\x1b[<35;1;1M".to_vec())
-        );
-        assert_eq!(
-            e(M::ButtonMotion, E::Sgr, MouseEv::Drag(0), 4),
-            Some(b"\x1b[<32;5;1M".to_vec())
-        );
-        assert_eq!(
-            e(M::PressRelease, E::Sgr, MouseEv::WheelUp, 0),
-            Some(b"\x1b[<64;1;1M".to_vec())
-        );
-        assert_eq!(
-            e(M::PressRelease, E::Default, MouseEv::Press(0), 300),
-            None,
-            "too far right for the default encoding"
-        );
+        assert_eq!(e(M::AnyMotion, E::Sgr, MouseEv::Move, 0), Some(b"\x1b[<35;1;1M".to_vec()));
+        assert_eq!(e(M::ButtonMotion, E::Sgr, MouseEv::Drag(0), 4), Some(b"\x1b[<32;5;1M".to_vec()));
+        assert_eq!(e(M::PressRelease, E::Sgr, MouseEv::WheelUp, 0), Some(b"\x1b[<64;1;1M".to_vec()));
+        assert_eq!(e(M::PressRelease, E::Default, MouseEv::Press(0), 300), None, "too far right for the default encoding");
         assert_eq!(e(M::None, E::Sgr, MouseEv::Press(0), 0), None);
-        let ctrl = encode_mouse(
-            M::PressRelease,
-            E::Sgr,
-            MouseEv::Press(2),
-            0,
-            0,
-            false,
-            false,
-            true,
-        );
+        let ctrl = encode_mouse(M::PressRelease, E::Sgr, MouseEv::Press(2), 0, 0, false, false, true);
         assert_eq!(ctrl, Some(b"\x1b[<18;1;1M".to_vec()));
     }
 
     #[test]
     fn multi_line_run_snippet_enters_after_the_paste() {
-        let s = |command: &str, run| Snippet {
-            name: "x".into(),
-            command: command.into(),
-            host: None,
-            run,
-        };
+        let s = |command: &str, run| Snippet { name: "x".into(), command: command.into(), host: None, run };
         assert_eq!(s("ls", true).send(), SnippetSend::Type("ls\r".into()));
-        assert_eq!(
-            s("a\nb", true).send(),
-            SnippetSend::Paste {
-                body: "a\nb".into(),
-                enter: true
-            }
-        );
-        assert_eq!(
-            s("a\nb", false).send(),
-            SnippetSend::Paste {
-                body: "a\nb".into(),
-                enter: false
-            }
-        );
+        assert_eq!(s("a\nb", true).send(), SnippetSend::Paste { body: "a\nb".into(), enter: true });
+        assert_eq!(s("a\nb", false).send(), SnippetSend::Paste { body: "a\nb".into(), enter: false });
     }
 
     #[test]
     fn snippets_for_host() {
         let all = vec![
-            Snippet {
-                name: "logs".into(),
-                command: "journalctl -f".into(),
-                host: Some("web".into()),
-                run: true,
-            },
-            Snippet {
-                name: "df".into(),
-                command: "df -h".into(),
-                host: None,
-                run: false,
-            },
+            Snippet { name: "logs".into(), command: "journalctl -f".into(), host: Some("web".into()), run: true },
+            Snippet { name: "df".into(), command: "df -h".into(), host: None, run: false },
         ];
         assert_eq!(snippets_for(&all, "web").len(), 2);
-        assert_eq!(
-            snippets_for(&all, "db")
-                .iter()
-                .map(|s| s.name.as_str())
-                .collect::<Vec<_>>(),
-            ["df"]
-        );
+        assert_eq!(snippets_for(&all, "db").iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["df"]);
         assert_eq!(all[0].text(), "journalctl -f\r");
         assert_eq!(all[1].text(), "df -h");
     }

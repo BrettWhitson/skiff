@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use termax_core::fs::connect::RemoteConn;
 use termax_core::termx::{self, MouseEv, TermSearch};
 use tokio::runtime::Handle;
@@ -29,33 +27,12 @@ use termax_core::theme::{self, ThemeDef};
 
 /// Results from background tasks, delivered to the UI thread.
 pub enum Msg {
-    SftpConnected {
-        tab: u64,
-        result: Result<Arc<RemoteConn>, String>,
-    },
-    RemoteListing {
-        tab: u64,
-        result: Result<(String, Vec<FileEntry>, Option<String>), String>,
-    },
-    TransferProgress {
-        tab: u64,
-        id: u64,
-        done: u64,
-    },
-    TransferDone {
-        tab: u64,
-        id: u64,
-        result: Result<(), String>,
-    },
-    RemoteOpDone {
-        tab: u64,
-        result: Result<(), String>,
-        keep: Option<String>,
-    },
-    Status {
-        host: String,
-        status: HostStatus,
-    },
+    SftpConnected { tab: u64, result: Result<Arc<RemoteConn>, String> },
+    RemoteListing { tab: u64, result: Result<(String, Vec<FileEntry>, Option<String>), String> },
+    TransferProgress { tab: u64, id: u64, done: u64 },
+    TransferDone { tab: u64, id: u64, result: Result<(), String> },
+    RemoteOpDone { tab: u64, result: Result<(), String>, keep: Option<String> },
+    Status { host: String, status: HostStatus },
 }
 
 pub enum TabKind {
@@ -110,7 +87,7 @@ pub enum Modal {
         selected: usize,
         original: String,
     },
-    Editor(Editor),
+    Editor(Box<Editor>),
     Forward(ForwardForm),
     Forwards {
         selected: usize,
@@ -144,11 +121,7 @@ pub struct Selection {
 impl Selection {
     /// The ends in order.
     pub fn span(&self) -> ((u64, u16), (u64, u16)) {
-        if self.anchor <= self.head {
-            (self.anchor, self.head)
-        } else {
-            (self.head, self.anchor)
-        }
+        if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) }
     }
 }
 
@@ -218,14 +191,7 @@ impl App {
             host_offset: 0,
             filter: TextInput::default(),
             filtering: false,
-            tabs: vec![Tab {
-                id: 0,
-                title: "Hosts".into(),
-                kind: TabKind::Hosts,
-                record: None,
-                forward: None,
-                host: None,
-            }],
+            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts, record: None, forward: None, host: None }],
             active: 0,
             modal: None,
             status: None,
@@ -294,22 +260,16 @@ impl App {
             history::order(&self.hosts, &mut shown, self.ui_state.sort, &self.history);
             self.filtered = shown;
         } else {
-            let mut scored: Vec<(i64, usize)> = shown
-                .into_iter()
-                .filter_map(|i| hosts::fuzzy_score(&q, &self.hosts[i]).map(|s| (s, i)))
-                .collect();
+            let mut scored: Vec<(i64, usize)> =
+                shown.into_iter().filter_map(|i| hosts::fuzzy_score(&q, &self.hosts[i]).map(|s| (s, i))).collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             self.filtered = scored.into_iter().map(|(_, i)| i).collect();
         }
-        self.host_selected = self
-            .host_selected
-            .min(self.filtered.len().saturating_sub(1));
+        self.host_selected = self.host_selected.min(self.filtered.len().saturating_sub(1));
     }
 
     pub fn selected_host(&self) -> Option<&HostEntry> {
-        self.filtered
-            .get(self.host_selected)
-            .map(|&i| &self.hosts[i])
+        self.filtered.get(self.host_selected).map(|&i| &self.hosts[i])
     }
 
     fn move_host(&mut self, delta: i64) {
@@ -353,14 +313,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let title = self.unique_title(title);
-        self.tabs.push(Tab {
-            id,
-            title,
-            kind,
-            record: None,
-            forward: None,
-            host: None,
-        });
+        self.tabs.push(Tab { id, title, kind, record: None, forward: None, host: None });
         self.active = self.tabs.len() - 1;
     }
 
@@ -370,11 +323,7 @@ impl App {
             self.set_error(format!("unknown host: {name}"));
             return;
         };
-        if files {
-            self.open_sftp_with(host)
-        } else {
-            self.open_terminal_with(host)
-        }
+        if files { self.open_sftp_with(host) } else { self.open_terminal_with(host) }
     }
 
     fn open_terminal(&mut self) {
@@ -386,13 +335,7 @@ impl App {
 
     fn open_terminal_with(&mut self, host: HostEntry) {
         let (rows, cols) = self.term_area;
-        match TerminalSession::spawn(
-            &self.cfg.settings.ssh_binary,
-            &host.shell_args(),
-            rows,
-            cols,
-            self.cfg.settings.scrollback,
-        ) {
+        match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &host.shell_args(), rows, cols, self.cfg.settings.scrollback) {
             Ok(s) => {
                 self.push_tab(host.name.clone(), TabKind::Terminal(Box::new(s)));
                 let tab = self.tabs.last_mut().expect("pushed");
@@ -419,16 +362,8 @@ impl App {
     /// Checks every listed host (opt-in: never runs unless asked or `on_start`).
     pub fn check_status(&mut self) {
         let sets = hosts::probe_sets(&self.cfg);
-        let items: Vec<(String, hosts::Probe)> = self
-            .filtered
-            .iter()
-            .map(|&i| {
-                (
-                    self.hosts[i].name.clone(),
-                    self.hosts[i].probe(sets.as_deref()),
-                )
-            })
-            .collect();
+        let items: Vec<(String, hosts::Probe)> =
+            self.filtered.iter().map(|&i| (self.hosts[i].name.clone(), self.hosts[i].probe(sets.as_deref()))).collect();
         for (n, _) in &items {
             self.statuses.insert(n.clone(), HostStatus::Checking);
         }
@@ -500,11 +435,7 @@ impl App {
         self.ui_state.show_hidden = !self.ui_state.show_hidden;
         self.save_ui_state();
         self.refilter();
-        self.set_info(if self.ui_state.show_hidden {
-            "Showing hidden hosts"
-        } else {
-            "Hiding hidden hosts"
-        });
+        self.set_info(if self.ui_state.show_hidden { "Showing hidden hosts" } else { "Hiding hidden hosts" });
     }
 
     // ----- forwards -----
@@ -518,23 +449,17 @@ impl App {
         };
         let title = f.title();
         if let Some(i) = self.forward_tab(&title) {
-            if let TabKind::Terminal(s) = &mut self.tabs[i].kind {
-                if s.is_alive() {
-                    self.active = i;
-                    return;
-                }
+            if let TabKind::Terminal(s) = &mut self.tabs[i].kind
+                && s.is_alive()
+            {
+                self.active = i;
+                return;
             }
             self.tabs.remove(i);
             self.active = self.active.min(self.tabs.len() - 1);
         }
         let (rows, cols) = self.term_area;
-        match TerminalSession::spawn(
-            &self.cfg.settings.ssh_binary,
-            &f.ssh_args(&host),
-            rows,
-            cols,
-            self.cfg.settings.scrollback,
-        ) {
+        match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &f.ssh_args(&host), rows, cols, self.cfg.settings.scrollback) {
             Ok(s) => {
                 self.push_tab(title.clone(), TabKind::Terminal(Box::new(s)));
                 if let Some(t) = self.tabs.last_mut() {
@@ -548,9 +473,7 @@ impl App {
     }
 
     fn forward_tab(&self, title: &str) -> Option<usize> {
-        self.tabs
-            .iter()
-            .position(|t| t.forward.as_deref() == Some(title))
+        self.tabs.iter().position(|t| t.forward.as_deref() == Some(title))
     }
 
     /// "running", "stopped" or "failed: <ssh's reason>" for saved forward `i`.
@@ -567,11 +490,7 @@ impl App {
         if s.is_alive() {
             return "running".into();
         }
-        let text = s
-            .parser
-            .lock()
-            .map(|p| p.screen().contents())
-            .unwrap_or_default();
+        let text = s.parser.lock().map(|p| p.screen().contents()).unwrap_or_default();
         let lines: Vec<String> = text.lines().map(String::from).collect();
         match termax_core::forward::error_line(&lines) {
             Some(l) => format!("failed: {l}"),
@@ -625,22 +544,9 @@ impl App {
             .or_else(sshconfig::home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
         let id = self.next_id;
-        let mut tab = SftpTab::new(
-            id,
-            host.name.clone(),
-            local,
-            self.cfg.settings.show_hidden_files,
-            self.rt.clone(),
-            self.tx.clone(),
-        );
-        tab.connect(host.sftp_launch(
-            &self.cfg.settings.ssh_binary,
-            self.cfg.settings.sftp_batch_mode,
-        ));
-        self.push_tab(
-            format!("{} [sftp]", host.name),
-            TabKind::Sftp(Box::new(tab)),
-        );
+        let mut tab = SftpTab::new(id, host.name.clone(), local, self.cfg.settings.show_hidden_files, self.rt.clone(), self.tx.clone());
+        tab.connect(host.sftp_launch(&self.cfg.settings.ssh_binary, self.cfg.settings.sftp_batch_mode));
+        self.push_tab(format!("{} [sftp]", host.name), TabKind::Sftp(Box::new(tab)));
     }
 
     fn close_active_tab(&mut self) {
@@ -655,10 +561,7 @@ impl App {
         if self.tabs.len() > 1 {
             let n = self.tabs.len() - 1;
             self.modal = Some(Modal::Confirm {
-                text: format!(
-                    "Quit and close {n} open session{}?",
-                    if n == 1 { "" } else { "s" }
-                ),
+                text: format!("Quit and close {n} open session{}?", if n == 1 { "" } else { "s" }),
                 action: ConfirmAction::Quit,
             });
         } else {
@@ -668,14 +571,8 @@ impl App {
 
     fn open_theme_picker(&mut self) {
         let themes = self.all_themes();
-        let selected = themes
-            .iter()
-            .position(|t| t.name == self.theme.name)
-            .unwrap_or(0);
-        self.modal = Some(Modal::ThemePicker {
-            selected,
-            original: self.theme.name.clone(),
-        });
+        let selected = themes.iter().position(|t| t.name == self.theme.name).unwrap_or(0);
+        self.modal = Some(Modal::ThemePicker { selected, original: self.theme.name.clone() });
     }
 
     // ----- background messages -----
@@ -696,12 +593,7 @@ impl App {
                 Msg::Status { .. } => unreachable!("handled above"),
             };
             // Messages for tabs that have since been closed are dropped.
-            let Some(TabKind::Sftp(s)) = self
-                .tabs
-                .iter_mut()
-                .find(|t| t.id == tab_id)
-                .map(|t| &mut t.kind)
-            else {
+            let Some(TabKind::Sftp(s)) = self.tabs.iter_mut().find(|t| t.id == tab_id).map(|t| &mut t.kind) else {
                 continue;
             };
             if matches!(&msg, Msg::SftpConnected { result: Ok(_), .. }) {
@@ -720,9 +612,7 @@ impl App {
             self.record(&name, ConnKind::Files);
         }
         // An open search keeps up with new output.
-        if let (Some(Modal::Search { search, .. }), TabKind::Terminal(s)) =
-            (&mut self.modal, &self.tabs[self.active].kind)
-        {
+        if let (Some(Modal::Search { search, .. }), TabKind::Terminal(s)) = (&mut self.modal, &self.tabs[self.active].kind) {
             search.sync(s);
         }
         // A terminal counts as connected once it has shown output and is
@@ -747,10 +637,10 @@ impl App {
         for (name, kind) in done {
             self.record(&name, kind);
         }
-        if let Some((_, _, at)) = &self.status {
-            if at.elapsed() > Duration::from_secs(6) {
-                self.status = None;
-            }
+        if let Some((_, _, at)) = &self.status
+            && at.elapsed() > Duration::from_secs(6)
+        {
+            self.status = None;
         }
     }
 
@@ -810,10 +700,7 @@ impl App {
         }
         if m.kind == MouseEventKind::Down(MouseButton::Left)
             && m.row == 0
-            && let Some(i) = self
-                .tab_cols
-                .iter()
-                .position(|&(a, b)| (a..b).contains(&m.column))
+            && let Some(i) = self.tab_cols.iter().position(|&(a, b)| (a..b).contains(&m.column))
         {
             self.active = i;
             return;
@@ -825,22 +712,15 @@ impl App {
         let (rows, cols) = self.term_area;
         let inside = (ox..ox + cols).contains(&m.column) && (oy..oy + rows).contains(&m.row);
         // The cell under the pointer, clamped to the terminal.
-        let cell = (
-            m.column.clamp(ox, (ox + cols).saturating_sub(1).max(ox)) - ox,
-            m.row.clamp(oy, (oy + rows).saturating_sub(1).max(oy)) - oy,
-        );
+        let cell =
+            (m.column.clamp(ox, (ox + cols).saturating_sub(1).max(ox)) - ox, m.row.clamp(oy, (oy + rows).saturating_sub(1).max(oy)) - oy);
         let program = self.wants_mouse() && (self.mouse_held.is_some() || !shift);
         let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else {
             return;
         };
         let Ok((mode, enc, offset, alt)) = s.parser.lock().map(|p| {
             let sc = p.screen();
-            (
-                sc.mouse_protocol_mode(),
-                sc.mouse_protocol_encoding(),
-                sc.scrollback(),
-                sc.alternate_screen(),
-            )
+            (sc.mouse_protocol_mode(), sc.mouse_protocol_encoding(), sc.scrollback(), sc.alternate_screen())
         }) else {
             return;
         };
@@ -866,13 +746,8 @@ impl App {
                 MouseEventKind::ScrollDown if inside => MouseEv::WheelDown,
                 _ => return,
             };
-            let (alt_key, ctrl) = (
-                m.modifiers.contains(KeyModifiers::ALT),
-                m.modifiers.contains(KeyModifiers::CONTROL),
-            );
-            if let Some(bytes) =
-                termx::encode_mouse(mode, enc, ev, cell.0, cell.1, false, alt_key, ctrl)
-            {
+            let (alt_key, ctrl) = (m.modifiers.contains(KeyModifiers::ALT), m.modifiers.contains(KeyModifiers::CONTROL));
+            if let Some(bytes) = termx::encode_mouse(mode, enc, ev, cell.0, cell.1, false, alt_key, ctrl) {
                 s.write(&bytes);
             }
             return;
@@ -887,22 +762,13 @@ impl App {
                 let up = m.kind == MouseEventKind::ScrollUp;
                 if alt {
                     // Full-screen programs scroll with the arrow keys.
-                    s.write(if up {
-                        b"\x1b[A\x1b[A\x1b[A"
-                    } else {
-                        b"\x1b[B\x1b[B\x1b[B"
-                    });
+                    s.write(if up { b"\x1b[A\x1b[A\x1b[A" } else { b"\x1b[B\x1b[B\x1b[B" });
                 } else {
                     s.scroll(if up { WHEEL_LINES } else { -WHEEL_LINES });
                 }
             }
             MouseEventKind::Down(MouseButton::Left) if inside => {
-                self.selection = Some(Selection {
-                    tab: tab_id,
-                    anchor: at,
-                    head: at,
-                    dragged: false,
-                });
+                self.selection = Some(Selection { tab: tab_id, anchor: at, head: at, dragged: false });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(sel) = self.selection.as_mut().filter(|s| s.tab == tab_id) {
@@ -913,11 +779,7 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => match self.selection {
                 Some(sel) if sel.tab == tab_id && sel.dragged => {
                     let (a, b) = sel.span();
-                    let text = s
-                        .parser
-                        .lock()
-                        .map(|mut p| termx::text_between(&mut p, s.scrolled(), a, b))
-                        .unwrap_or_default();
+                    let text = s.parser.lock().map(|mut p| termx::text_between(&mut p, s.scrolled(), a, b)).unwrap_or_default();
                     if !text.is_empty() {
                         self.set_info(format!("Copied {} characters", text.chars().count()));
                         self.clipboard_out = Some(text);
@@ -954,25 +816,14 @@ impl App {
         let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else {
             return;
         };
-        let bracketed = s
-            .parser
-            .lock()
-            .map(|p| p.screen().bracketed_paste())
-            .unwrap_or(false);
+        let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
         match termx::paste_lines(text, bracketed, self.cfg.settings.confirm_multiline_paste) {
             Some(n) => {
-                let what = if n == 1 {
-                    "1 line".to_string()
-                } else {
-                    format!("{n} lines")
-                };
+                let what = if n == 1 { "1 line".to_string() } else { format!("{n} lines") };
                 let text_owned = text.to_string();
                 self.modal = Some(Modal::Confirm {
                     text: format!("Paste {what} into {title}?"),
-                    action: ConfirmAction::Paste {
-                        text: text_owned,
-                        enter,
-                    },
+                    action: ConfirmAction::Paste { text: text_owned, enter },
                 });
             }
             None => paste_then_enter(s, text, enter),
@@ -1015,11 +866,7 @@ impl App {
                 return;
             }
             Some(Modal::Search { .. }) => {
-                let Some(Modal::Search {
-                    mut query,
-                    mut search,
-                }) = self.modal.take()
-                else {
+                let Some(Modal::Search { mut query, mut search }) = self.modal.take() else {
                     return;
                 };
                 query.insert_str(line);
@@ -1060,9 +907,7 @@ impl App {
     /// left for the shell (readline and editors use them).
     fn handle_global_key(&mut self, key: KeyEvent) -> bool {
         let m = key.modifiers;
-        if !m.contains(KeyModifiers::ALT)
-            || m.intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
-        {
+        if !m.contains(KeyModifiers::ALT) || m.intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT) {
             return false;
         }
         let code = match key.code {
@@ -1076,21 +921,14 @@ impl App {
                     self.active = i;
                 }
             }
-            KeyCode::Right | KeyCode::Char(']') => {
-                self.active = (self.active + 1) % self.tabs.len()
-            }
-            KeyCode::Left | KeyCode::Char('[') => {
-                self.active = (self.active + self.tabs.len() - 1) % self.tabs.len()
-            }
+            KeyCode::Right | KeyCode::Char(']') => self.active = (self.active + 1) % self.tabs.len(),
+            KeyCode::Left | KeyCode::Char('[') => self.active = (self.active + self.tabs.len() - 1) % self.tabs.len(),
             KeyCode::Char('w') => self.close_active_tab(),
             KeyCode::Char('t') => self.open_theme_picker(),
             KeyCode::Char('h') => self.modal = Some(Modal::Help),
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('f') if matches!(self.tabs[self.active].kind, TabKind::Terminal(_)) => {
-                self.modal = Some(Modal::Search {
-                    query: TextInput::default(),
-                    search: TermSearch::default(),
-                });
+                self.modal = Some(Modal::Search { query: TextInput::default(), search: TermSearch::default() });
             }
             KeyCode::Char('s') if matches!(self.tabs[self.active].kind, TabKind::Terminal(_)) => {
                 self.modal = Some(Modal::Snippets { selected: 0 });
@@ -1162,12 +1000,8 @@ impl App {
 
     fn new_host(&mut self) {
         let set = self.load_set();
-        let dest = if set.docs.is_empty() {
-            Dest::Termax
-        } else {
-            Dest::SshConfig(0)
-        };
-        self.modal = Some(Modal::Editor(Editor::new(HostForm::new_host(dest), set)));
+        let dest = if set.docs.is_empty() { Dest::Termax } else { Dest::SshConfig(0) };
+        self.modal = Some(Modal::Editor(Box::new(Editor::new(HostForm::new_host(dest), set))));
     }
 
     fn reload_config(&mut self) {
@@ -1189,7 +1023,7 @@ impl App {
         };
         let set = self.load_set();
         match HostForm::for_entry(&h, &self.cfg, &set) {
-            Ok(form) => self.modal = Some(Modal::Editor(Editor::new(form, set))),
+            Ok(form) => self.modal = Some(Modal::Editor(Box::new(Editor::new(form, set)))),
             Err(why) => self.set_error(why),
         }
     }
@@ -1200,31 +1034,21 @@ impl App {
         };
         let text = match (&h.source, &h.source_file) {
             (Source::SshConfig, Some(file)) => {
-                if let termax_core::sshconfig::edit::Locate::ReadOnly(why) =
-                    self.load_set().locate(&h.name)
-                {
+                if let termax_core::sshconfig::edit::Locate::ReadOnly(why) = self.load_set().locate(&h.name) {
                     self.set_error(why);
                     return;
                 }
-                format!(
-                    "Delete '{}' from {}? A backup is kept.",
-                    h.name,
-                    display_path(file)
-                )
+                format!("Delete '{}' from {}? A backup is kept.", h.name, display_path(file))
             }
             _ => format!("Delete connection '{}'?", h.name),
         };
-        self.modal = Some(Modal::Confirm {
-            text,
-            action: ConfirmAction::DeleteHost(h.name),
-        });
+        self.modal = Some(Modal::Confirm { text, action: ConfirmAction::DeleteHost(h.name) });
     }
 
     /// Writes what a host change touched, then refreshes the list.
     fn after_host_change(&mut self, saved: Saved, set: &mut ConfigSet) -> Result<(), String> {
         if let Saved::Ssh(_) = saved {
-            set.save(&backups_dir(&self.cfg_path))
-                .map_err(|e| format!("{e:#}"))?;
+            set.save(&backups_dir(&self.cfg_path)).map_err(|e| format!("{e:#}"))?;
         } else {
             self.save_config();
         }
@@ -1238,10 +1062,10 @@ impl App {
             return;
         };
         if !s.is_alive() {
-            if key.code == KeyCode::Enter {
-                if let Err(e) = s.respawn() {
-                    self.set_error(format!("{e:#}"));
-                }
+            if key.code == KeyCode::Enter
+                && let Err(e) = s.respawn()
+            {
+                self.set_error(format!("{e:#}"));
             }
             return;
         }
@@ -1272,9 +1096,7 @@ impl App {
         let mut modal = None;
         let mut err = None;
         match key.code {
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
-                s.focus = side.other()
-            }
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => s.focus = side.other(),
             KeyCode::Down | KeyCode::Char('j') => s.pane_mut(side).move_by(1),
             KeyCode::Up | KeyCode::Char('k') => s.pane_mut(side).move_by(-1),
             KeyCode::PageDown => s.pane_mut(side).move_by(15),
@@ -1289,11 +1111,8 @@ impl App {
                 }
             }
             KeyCode::Char('m') | KeyCode::F(7) => {
-                modal = Some(Modal::Prompt(Prompt {
-                    title: "New directory".into(),
-                    input: TextInput::default(),
-                    action: PromptAction::Mkdir,
-                }))
+                modal =
+                    Some(Modal::Prompt(Prompt { title: "New directory".into(), input: TextInput::default(), action: PromptAction::Mkdir }))
             }
             KeyCode::Char('R') | KeyCode::F(2) => {
                 if let Some((_, e)) = s.selected_path() {
@@ -1306,25 +1125,10 @@ impl App {
             }
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::F(8) => {
                 if let Some((_, e)) = s.selected_path() {
-                    let what = if e.is_dir {
-                        "directory (recursively)"
-                    } else {
-                        "file"
-                    };
+                    let what = if e.is_dir { "directory (recursively)" } else { "file" };
                     modal = Some(Modal::Confirm {
-                        text: format!(
-                            "Delete {what} '{}' on the {} side?",
-                            e.name,
-                            if side == Side::Local {
-                                "local"
-                            } else {
-                                "remote"
-                            }
-                        ),
-                        action: ConfirmAction::DeleteFile {
-                            name: e.name,
-                            is_dir: e.is_dir,
-                        },
+                        text: format!("Delete {what} '{}' on the {} side?", e.name, if side == Side::Local { "local" } else { "remote" }),
+                        action: ConfirmAction::DeleteFile { name: e.name, is_dir: e.is_dir },
                     })
                 }
             }
@@ -1357,10 +1161,7 @@ impl App {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => None,
                 _ => Some(modal),
             },
-            Modal::ThemePicker {
-                mut selected,
-                original,
-            } => {
+            Modal::ThemePicker { mut selected, original } => {
                 let names: Vec<String> = self.all_themes().into_iter().map(|t| t.name).collect();
                 match key.code {
                     KeyCode::Esc => {
@@ -1375,12 +1176,8 @@ impl App {
                     }
                     code => {
                         match code {
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                selected = (selected + 1) % names.len()
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                selected = (selected + names.len() - 1) % names.len()
-                            }
+                            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1) % names.len(),
+                            KeyCode::Up | KeyCode::Char('k') => selected = (selected + names.len() - 1) % names.len(),
                             _ => {}
                         }
                         self.apply_theme_name(&names[selected]);
@@ -1396,10 +1193,7 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => None,
                 _ => Some(Modal::Confirm { text, action }),
             },
-            Modal::Search {
-                mut query,
-                mut search,
-            } => match key.code {
+            Modal::Search { mut query, mut search } => match key.code {
                 KeyCode::Esc => {
                     if let TabKind::Terminal(s) = &mut self.tabs[self.active].kind
                         && let Ok(mut p) = s.parser.lock()
@@ -1426,12 +1220,8 @@ impl App {
                 let n = self.tab_snippets().len();
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => None,
-                    KeyCode::Down | KeyCode::Char('j') if n > 0 => Some(Modal::Snippets {
-                        selected: (selected + 1) % n,
-                    }),
-                    KeyCode::Up | KeyCode::Char('k') if n > 0 => Some(Modal::Snippets {
-                        selected: (selected + n - 1) % n,
-                    }),
+                    KeyCode::Down | KeyCode::Char('j') if n > 0 => Some(Modal::Snippets { selected: (selected + 1) % n }),
+                    KeyCode::Up | KeyCode::Char('k') if n > 0 => Some(Modal::Snippets { selected: (selected + n - 1) % n }),
                     KeyCode::Enter if selected < n => {
                         let send = self.tab_snippets()[selected].send();
                         match send {
@@ -1441,9 +1231,7 @@ impl App {
                                 }
                             }
                             // May open the paste confirmation.
-                            termx::SnippetSend::Paste { body, enter } => {
-                                self.send_to_terminal(&body, enter)
-                            }
+                            termx::SnippetSend::Paste { body, enter } => self.send_to_terminal(&body, enter),
                         }
                         self.modal.take()
                     }
@@ -1475,12 +1263,8 @@ impl App {
                 let n = self.cfg.forwards.len();
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => None,
-                    KeyCode::Down | KeyCode::Char('j') if n > 0 => Some(Modal::Forwards {
-                        selected: (selected + 1) % n,
-                    }),
-                    KeyCode::Up | KeyCode::Char('k') if n > 0 => Some(Modal::Forwards {
-                        selected: (selected + n - 1) % n,
-                    }),
+                    KeyCode::Down | KeyCode::Char('j') if n > 0 => Some(Modal::Forwards { selected: (selected + 1) % n }),
+                    KeyCode::Up | KeyCode::Char('k') if n > 0 => Some(Modal::Forwards { selected: (selected + n - 1) % n }),
                     KeyCode::Enter if selected < n => {
                         let f = self.cfg.forwards[selected].clone();
                         self.start_forward(&f);
@@ -1490,10 +1274,7 @@ impl App {
                         self.stop_forward(selected);
                         Some(Modal::Forwards { selected })
                     }
-                    KeyCode::Char('e') if selected < n => Some(Modal::Forward(ForwardForm::edit(
-                        &self.cfg.forwards[selected],
-                        selected,
-                    ))),
+                    KeyCode::Char('e') if selected < n => Some(Modal::Forward(ForwardForm::edit(&self.cfg.forwards[selected], selected))),
                     KeyCode::Char('d') | KeyCode::Delete if selected < n => Some(Modal::Confirm {
                         text: format!("Delete forward '{}'?", self.cfg.forwards[selected].title()),
                         action: ConfirmAction::DeleteForward(selected),
@@ -1508,7 +1289,7 @@ impl App {
     }
 
     /// Returns the modal to keep showing (with an error) or `None` on success.
-    fn save_editor(&mut self, mut ed: Editor) -> Option<Modal> {
+    fn save_editor(&mut self, mut ed: Box<Editor>) -> Option<Modal> {
         let taken = hostform::taken_names(&self.hosts);
         let old = ed.form.original_name(&self.cfg);
         // Edit a copy: if the write fails, the form can be saved again as is.
@@ -1548,8 +1329,7 @@ impl App {
                     return;
                 };
                 let mut set = self.load_set();
-                let res = hostform::delete(&h, &mut self.cfg, &mut set)
-                    .and_then(|s| self.after_host_change(s, &mut set));
+                let res = hostform::delete(&h, &mut self.cfg, &mut set).and_then(|s| self.after_host_change(s, &mut set));
                 match res {
                     Ok(()) => self.set_info(format!("Deleted '{name}'")),
                     Err(e) => self.set_error(e),
@@ -1560,9 +1340,7 @@ impl App {
                     self.cfg.forwards.remove(i);
                     self.save_config();
                 }
-                self.modal = Some(Modal::Forwards {
-                    selected: i.saturating_sub(1),
-                });
+                self.modal = Some(Modal::Forwards { selected: i.saturating_sub(1) });
             }
             ConfirmAction::DeleteFile { name, is_dir } => {
                 if let TabKind::Sftp(s) = &mut self.tabs[self.active].kind {
@@ -1582,17 +1360,11 @@ impl App {
         };
         match p.action {
             PromptAction::Mkdir => s.file_op(FileOp::Mkdir(value)),
-            PromptAction::Rename { from } if from != value => {
-                s.file_op(FileOp::Rename { from, to: value })
-            }
+            PromptAction::Rename { from } if from != value => s.file_op(FileOp::Rename { from, to: value }),
             PromptAction::Rename { .. } => {}
             PromptAction::Goto => {
                 let side = s.focus;
-                let path = if side == Side::Local {
-                    sshconfig::expand_tilde(&value).display().to_string()
-                } else {
-                    value
-                };
+                let path = if side == Side::Local { sshconfig::expand_tilde(&value).display().to_string() } else { value };
                 s.navigate(side, path, None);
             }
         }
@@ -1615,9 +1387,7 @@ fn key_burst_text(events: &[Event]) -> Option<String> {
         if k.kind == KeyEventKind::Release {
             continue;
         }
-        if k.modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
+        if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
             return None;
         }
         match k.code {

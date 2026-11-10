@@ -30,8 +30,5 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn shell_join(args: &[String]) -> String {
-    args.iter()
-        .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })
-        .collect::<Vec<_>>()
-        .join(" ")
+    args.iter().map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() }).collect::<Vec<_>>().join(" ")
 }

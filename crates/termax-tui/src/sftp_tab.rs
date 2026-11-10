@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::app::Msg;
-use termax_core::fs::connect::{connect_sftp, RemoteConn, SshLaunch};
+use termax_core::fs::connect::{RemoteConn, SshLaunch, connect_sftp};
 use termax_core::fs::endpoint::Endpoint;
 use termax_core::fs::transfer::{self, OverwritePolicy, TransferEvent, TransferRequest};
-pub use termax_core::fs::{self, human_size, FileEntry};
+pub use termax_core::fs::{self, FileEntry, human_size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -106,14 +106,7 @@ pub struct SftpTab {
 }
 
 impl SftpTab {
-    pub fn new(
-        tab_id: u64,
-        host_name: String,
-        local_dir: PathBuf,
-        show_hidden: bool,
-        rt: Handle,
-        tx: UnboundedSender<Msg>,
-    ) -> Self {
+    pub fn new(tab_id: u64, host_name: String, local_dir: PathBuf, show_hidden: bool, rt: Handle, tx: UnboundedSender<Msg>) -> Self {
         let mut tab = Self {
             tab_id,
             host_name,

@@ -127,7 +127,7 @@ pub fn rank(query: &str, hosts: &[HostEntry], tabs: &[(u64, String)], themes: &[
         }
     }
     // Stable: equal scores keep the order above (tabs, hosts, commands, themes).
-    out.sort_by(|a, b| b.2.cmp(&a.2));
+    out.sort_by_key(|o| std::cmp::Reverse(o.2));
     out
 }
 
@@ -175,51 +175,59 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
     let pad = ui.px(8);
     let h = input_h + 3 * pad + row_h * shown.max(1) as i32;
     let panel = Rect::new(win.x + (win.w - w) / 2, win.y + ui.px(80), w, h);
-    ui.overlay(|ui| ui.a11y_group(Id::new("switcher-dialog"), termax_ui::a11y::Role::Dialog, "Quick switcher", |ui| {
-        let backdrop = ui.interact(Id::new("switcher-backdrop"), win, Sense::click());
-        if backdrop.clicked {
-            out.close = true;
-        }
-        let radius = ui.px(8) as f32;
-        let bw = ui.px(1).max(1);
-        {
-            let mut painter = ui.painter();
-            painter.rect(win, p.bg.with_alpha(110), 0.0);
-            painter.rect(panel, p.surface_alt, radius);
-            painter.border(panel, p.border, bw, radius);
-        }
-        ui.interact(Id::new("switcher-panel"), panel, Sense::hover());
-        let input = Rect::new(panel.x + pad, panel.y + pad, panel.w - 2 * pad, input_h);
-        let r = text_input(ui, input_id, input, &mut st.query, TextInputOpts { password: false, placeholder: "Search hosts, tabs, themes, commands", ..Default::default() });
-        if r.changed {
-            st.sel = 0;
-        }
-        ui.capture_keyboard(input_id);
-        let px = ui.font_px();
-        let lh = ui.line_height(FontKind::Ui, px);
-        if items.is_empty() {
-            let at = Point::new(input.x + pad, input.bottom() + pad + (row_h - lh) / 2);
-            ui.painter().text(at, "No matches", FontKind::Ui, px, p.muted);
-        }
-        for (i, (item, label, _)) in items.iter().take(MAX_ROWS).enumerate() {
-            let row = Rect::new(panel.x + pad, input.bottom() + pad + i as i32 * row_h, panel.w - 2 * pad, row_h);
-            let rr = ui.interact(Id::new(("switcher-row", i)), row, Sense::click());
-            if rr.hovered && ui.input().events.iter().any(|e| matches!(e, termax_ui::input::Event::MouseMove(_))) {
-                st.sel = i;
+    ui.overlay(|ui| {
+        ui.a11y_group(Id::new("switcher-dialog"), termax_ui::a11y::Role::Dialog, "Quick switcher", |ui| {
+            let backdrop = ui.interact(Id::new("switcher-backdrop"), win, Sense::click());
+            if backdrop.clicked {
+                out.close = true;
             }
-            if rr.clicked {
-                out.chosen = Some(item.clone());
+            let radius = ui.px(8) as f32;
+            let bw = ui.px(1).max(1);
+            {
+                let mut painter = ui.painter();
+                painter.rect(win, p.bg.with_alpha(110), 0.0);
+                painter.rect(panel, p.surface_alt, radius);
+                painter.border(panel, p.border, bw, radius);
             }
-            if i == st.sel {
-                ui.painter().rect(row, p.selection, radius / 2.0);
+            ui.interact(Id::new("switcher-panel"), panel, Sense::hover());
+            let input = Rect::new(panel.x + pad, panel.y + pad, panel.w - 2 * pad, input_h);
+            let r = text_input(
+                ui,
+                input_id,
+                input,
+                &mut st.query,
+                TextInputOpts { password: false, placeholder: "Search hosts, tabs, themes, commands", ..Default::default() },
+            );
+            if r.changed {
+                st.sel = 0;
             }
-            let at = Point::new(row.x + pad, row.y + (row_h - lh) / 2);
-            ui.painter().text(at, label, FontKind::Ui, px, p.fg);
-            if let Some(n) = ui.a11y_node(Id::new(("switcher-row", i)), termax_ui::a11y::Role::ListItem, label) {
-                n.selected = Some(i == st.sel);
+            ui.capture_keyboard(input_id);
+            let px = ui.font_px();
+            let lh = ui.line_height(FontKind::Ui, px);
+            if items.is_empty() {
+                let at = Point::new(input.x + pad, input.bottom() + pad + (row_h - lh) / 2);
+                ui.painter().text(at, "No matches", FontKind::Ui, px, p.muted);
             }
-        }
-    }));
+            for (i, (item, label, _)) in items.iter().take(MAX_ROWS).enumerate() {
+                let row = Rect::new(panel.x + pad, input.bottom() + pad + i as i32 * row_h, panel.w - 2 * pad, row_h);
+                let rr = ui.interact(Id::new(("switcher-row", i)), row, Sense::click());
+                if rr.hovered && ui.input().events.iter().any(|e| matches!(e, termax_ui::input::Event::MouseMove(_))) {
+                    st.sel = i;
+                }
+                if rr.clicked {
+                    out.chosen = Some(item.clone());
+                }
+                if i == st.sel {
+                    ui.painter().rect(row, p.selection, radius / 2.0);
+                }
+                let at = Point::new(row.x + pad, row.y + (row_h - lh) / 2);
+                ui.painter().text(at, label, FontKind::Ui, px, p.fg);
+                if let Some(n) = ui.a11y_node(Id::new(("switcher-row", i)), termax_ui::a11y::Role::ListItem, label) {
+                    n.selected = Some(i == st.sel);
+                }
+            }
+        })
+    });
     if out.chosen.is_some() {
         out.close = true;
     }

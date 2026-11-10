@@ -5,6 +5,18 @@ use termax_ui::geom::{Point, Rect, Size};
 use termax_ui::input::{Event, Modifiers, MouseButton};
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
+/// Where and how the terminal's mouse is being reported.
+#[derive(Clone, Copy)]
+pub struct MouseView {
+    pub inner: Rect,
+    pub cell: Size,
+    pub mode: MouseProtocolMode,
+    pub enc: MouseProtocolEncoding,
+    pub mods: Modifiers,
+    /// The terminal is the topmost widget under the pointer.
+    pub on_top: bool,
+}
+
 /// The button held down and the last cell reported (motion is sent once per cell).
 #[derive(Debug, Default)]
 pub struct MouseState {
@@ -19,13 +31,7 @@ impl MouseState {
     /// (the program can't see that text, so its cells would be wrong); a
     /// button it was told about is followed until released. Turning mouse
     /// mode off forgets the held button.
-    pub fn reporting(
-        &mut self,
-        mode: MouseProtocolMode,
-        shift: bool,
-        selecting: bool,
-        scrolled_back: bool,
-    ) -> bool {
+    pub fn reporting(&mut self, mode: MouseProtocolMode, shift: bool, selecting: bool, scrolled_back: bool) -> bool {
         if mode == MouseProtocolMode::None {
             *self = MouseState::default();
             return false;
@@ -56,16 +62,8 @@ pub fn cell_of(p: Point, inner: Rect, cell: Size) -> (u16, u16) {
 /// count only inside `inner` and when the terminal is the topmost widget
 /// under the pointer (`on_top`: not under the find bar or a popup); a held
 /// button is followed outside it.
-pub fn reports(
-    events: &[Event],
-    inner: Rect,
-    cell: Size,
-    mode: MouseProtocolMode,
-    enc: MouseProtocolEncoding,
-    mods: Modifiers,
-    on_top: bool,
-    st: &mut MouseState,
-) -> Vec<Vec<u8>> {
+pub fn reports(events: &[Event], view: &MouseView, st: &mut MouseState) -> Vec<Vec<u8>> {
+    let MouseView { inner, cell, mode, enc, mods, on_top } = *view;
     let mut out = vec![];
     let mut send = |ev, (c, r): (u16, u16)| {
         if let Some(b) = encode_mouse(mode, enc, ev, c, r, mods.shift, mods.alt, mods.ctrl) {
@@ -113,44 +111,18 @@ mod tests {
         let cell = Size::new(8, 16);
         let mut st = MouseState::default();
         let ev = [
-            Event::MouseDown(
-                MouseButton::Left,
-                Point::new(10 + 8 * 4 + 1, 10 + 16 * 2 + 1),
-            ),
+            Event::MouseDown(MouseButton::Left, Point::new(10 + 8 * 4 + 1, 10 + 16 * 2 + 1)),
             Event::MouseMove(Point::new(10 + 8 * 5 + 1, 10 + 16 * 2 + 1)),
-            Event::MouseUp(
-                MouseButton::Left,
-                Point::new(10 + 8 * 5 + 1, 10 + 16 * 2 + 1),
-            ),
+            Event::MouseUp(MouseButton::Left, Point::new(10 + 8 * 5 + 1, 10 + 16 * 2 + 1)),
         ];
-        let out = reports(
-            &ev,
-            inner,
-            cell,
-            M::ButtonMotion,
-            E::Sgr,
-            Default::default(),
-            true,
-            &mut st,
-        );
-        assert_eq!(
-            out,
-            vec![
-                b"\x1b[<0;5;3M".to_vec(),
-                b"\x1b[<32;6;3M".to_vec(),
-                b"\x1b[<0;6;3m".to_vec()
-            ]
-        );
+        let out =
+            reports(&ev, &MouseView { inner, cell, mode: M::ButtonMotion, enc: E::Sgr, mods: Default::default(), on_top: true }, &mut st);
+        assert_eq!(out, vec![b"\x1b[<0;5;3M".to_vec(), b"\x1b[<32;6;3M".to_vec(), b"\x1b[<0;6;3m".to_vec()]);
         let outside = [Event::MouseDown(MouseButton::Left, Point::new(0, 0))];
         assert!(
             reports(
                 &outside,
-                inner,
-                cell,
-                M::ButtonMotion,
-                E::Sgr,
-                Default::default(),
-                true,
+                &MouseView { inner, cell, mode: M::ButtonMotion, enc: E::Sgr, mods: Default::default(), on_top: true },
                 &mut st
             )
             .is_empty()
@@ -163,39 +135,15 @@ mod tests {
         let cell = Size::new(8, 16);
         let mut st = MouseState::default();
         assert!(st.reporting(M::ButtonMotion, false, false, false));
-        assert!(
-            !st.reporting(M::ButtonMotion, false, false, true),
-            "scrolled back: the view isn't the program's screen"
-        );
+        assert!(!st.reporting(M::ButtonMotion, false, false, true), "scrolled back: the view isn't the program's screen");
         let down = [Event::MouseDown(MouseButton::Left, Point::new(20, 20))];
-        reports(
-            &down,
-            inner,
-            cell,
-            M::ButtonMotion,
-            E::Sgr,
-            Default::default(),
-            true,
-            &mut st,
-        );
-        assert!(
-            st.reporting(M::ButtonMotion, true, false, true),
-            "a drag the program saw starting is followed to its release"
-        );
+        reports(&down, &MouseView { inner, cell, mode: M::ButtonMotion, enc: E::Sgr, mods: Default::default(), on_top: true }, &mut st);
+        assert!(st.reporting(M::ButtonMotion, true, false, true), "a drag the program saw starting is followed to its release");
         assert!(!st.reporting(M::None, false, false, false));
         let up = [Event::MouseUp(MouseButton::Left, Point::new(20, 20))];
         assert!(
-            reports(
-                &up,
-                inner,
-                cell,
-                M::ButtonMotion,
-                E::Sgr,
-                Default::default(),
-                true,
-                &mut st
-            )
-            .is_empty(),
+            reports(&up, &MouseView { inner, cell, mode: M::ButtonMotion, enc: E::Sgr, mods: Default::default(), on_top: true }, &mut st)
+                .is_empty(),
             "mode off mid-drag: no stale button"
         );
     }
@@ -206,20 +154,12 @@ mod tests {
         let cell = Size::new(8, 16);
         let mut st = MouseState::default();
         let at = Point::new(20, 20);
-        let press = [
-            Event::MouseDown(MouseButton::Left, at),
-            Event::MouseUp(MouseButton::Left, at),
-        ];
+        let press = [Event::MouseDown(MouseButton::Left, at), Event::MouseUp(MouseButton::Left, at)];
         // `false`: something (the find bar, a popup) is on top of the terminal there.
         assert!(
             reports(
                 &press,
-                inner,
-                cell,
-                M::PressRelease,
-                E::Sgr,
-                Default::default(),
-                false,
+                &MouseView { inner, cell, mode: M::PressRelease, enc: E::Sgr, mods: Default::default(), on_top: false },
                 &mut st
             )
             .is_empty()

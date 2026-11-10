@@ -50,12 +50,7 @@ const LABELS: [&str; 4] = ["Interface font file", "Terminal font file", "Termina
 
 fn from_cfg(app: &GuiApp) -> [String; 4] {
     let g = &app.cfg.gui;
-    [
-        g.ui_font_path.clone().unwrap_or_default(),
-        g.font_path.clone().unwrap_or_default(),
-        g.font_size.to_string(),
-        g.ui_scale.to_string(),
-    ]
+    [g.ui_font_path.clone().unwrap_or_default(), g.font_path.clone().unwrap_or_default(), g.font_size.to_string(), g.ui_scale.to_string()]
 }
 
 pub fn view(ui: &mut Ui, rect: Rect, st: &mut AppearanceState, app: &mut GuiApp) {
@@ -81,7 +76,12 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut AppearanceState, app: &mut GuiApp)
     }
     let muted = ui.style().palette.muted;
     let hint = rows.next(ui);
-    label(ui, Rect::new(hint.x + ui.px(LABEL_W), hint.y, hint.w - ui.px(LABEL_W), hint.h), "Leave a font file empty for the system default.", Some(muted));
+    label(
+        ui,
+        Rect::new(hint.x + ui.px(LABEL_W), hint.y, hint.w - ui.px(LABEL_W), hint.h),
+        "Leave a font file empty for the system default.",
+        Some(muted),
+    );
     let r = rows.next(ui);
     let x = r.x + ui.px(LABEL_W);
     let mut do_apply = button(ui, Id::new("settings-look-apply"), Rect::new(x, r.y, ui.px(130), r.h), "Apply fonts").clicked;
@@ -167,9 +167,19 @@ fn picker(ui: &mut Ui, rows: &mut Rows, st: &mut AppearanceState, i: usize) -> O
         submit = ui.input_mut().take_key(&Key::Enter, Modifiers::NONE);
     }
     let names: Vec<&str> = shown.iter().map(|(n, _)| n.as_str()).collect();
-    let out = list_named(ui, Id::new("settings-font-list"), list, "Fonts", names.len(), 24, &mut st.picked, |r| names[r].to_string(), |ui, rr, r, _| {
-        label(ui, rr.inset(ui.px(4)), names[r], None);
-    });
+    let out = list_named(
+        ui,
+        Id::new("settings-font-list"),
+        list,
+        "Fonts",
+        names.len(),
+        24,
+        &mut st.picked,
+        |r| names[r].to_string(),
+        |ui, rr, r, _| {
+            label(ui, rr.inset(ui.px(4)), names[r], None);
+        },
+    );
     let pick = out.activated.or(st.picked.filter(|_| submit))?;
     shown.get(pick).map(|(_, p)| Some(p.clone()))
 }
@@ -177,7 +187,8 @@ fn picker(ui: &mut Ui, rows: &mut Rows, st: &mut AppearanceState, i: usize) -> O
 fn apply(st: &AppearanceState, app: &mut GuiApp) -> Result<(), String> {
     let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
     let (ui_font, mono) = (opt(&st.fields[0]), opt(&st.fields[1]));
-    let size: f32 = st.fields[2].trim().parse().ok().filter(|v| (6.0..=72.0).contains(v)).ok_or("Font size must be a number from 6 to 72")?;
+    let size: f32 =
+        st.fields[2].trim().parse().ok().filter(|v| (6.0..=72.0).contains(v)).ok_or("Font size must be a number from 6 to 72")?;
     let scale: f32 =
         st.fields[3].trim().parse().ok().filter(|v| (0.5..=3.0).contains(v)).ok_or("Interface scale must be a number from 0.5 to 3")?;
     let g = &app.cfg.gui;

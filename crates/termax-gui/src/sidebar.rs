@@ -102,7 +102,7 @@ impl Sidebar {
             history::order(ctx.hosts, &mut shown, ctx.sort, ctx.history);
         } else {
             let mut scored: Vec<(usize, i64)> = shown.into_iter().filter_map(|i| fuzzy_score(q, &ctx.hosts[i]).map(|s| (i, s))).collect();
-            scored.sort_by(|a, b| b.1.cmp(&a.1));
+            scored.sort_by_key(|s| std::cmp::Reverse(s.1));
             shown = scored.into_iter().map(|(i, _)| i).collect();
         }
         // Groups in the order their first host appears in the host list.
@@ -166,7 +166,13 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let mut action = None;
 
     let head = ui.split_h(head_r, &[L::Fill, L::Px(84), L::Px(30)], 4);
-    let fr = text_input(ui, Id::new("sidebar-filter"), head[0], &mut sb.filter, TextInputOpts { password: false, placeholder: "Filter hosts", ..Default::default() });
+    let fr = text_input(
+        ui,
+        Id::new("sidebar-filter"),
+        head[0],
+        &mut sb.filter,
+        TextInputOpts { password: false, placeholder: "Filter hosts", ..Default::default() },
+    );
     if fr.changed {
         sb.selected = None;
         sb.selected_name = None;
@@ -216,48 +222,49 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
             format!("{}, {st}, {}", h.name, h.target())
         }
     };
-    let lr = list_named(ui, Id::new("sidebar-list"), list_r, "Host list", rows.len(), ROW_H, &mut sb.selected, row_name, |ui, r, i, _sel| {
-        let lh = ui.line_height(FontKind::Ui, px);
-        let y = r.y + (r.h - lh) / 2;
-        match &rows[i] {
-            Row::Header(g) => {
-                let arrow = if collapsed.contains(g) && !filtering { "\u{25B8}" } else { "\u{25BE}" };
-                let t = format!("{arrow} {g}");
-                let at = Point::new(r.x + ui.px(4), y);
-                ui.painter().text(at, &t, FontKind::Ui, px, p.muted);
-            }
-            Row::Host(hi) => {
-                let h = &hosts[*hi];
-                if r.contains(mouse) {
-                    hovered = Some(h.name.clone());
+    let lr =
+        list_named(ui, Id::new("sidebar-list"), list_r, "Host list", rows.len(), ROW_H, &mut sb.selected, row_name, |ui, r, i, _sel| {
+            let lh = ui.line_height(FontKind::Ui, px);
+            let y = r.y + (r.h - lh) / 2;
+            match &rows[i] {
+                Row::Header(g) => {
+                    let arrow = if collapsed.contains(g) && !filtering { "\u{25B8}" } else { "\u{25BE}" };
+                    let t = format!("{arrow} {g}");
+                    let at = Point::new(r.x + ui.px(4), y);
+                    ui.painter().text(at, &t, FontKind::Ui, px, p.muted);
                 }
-                status_dot(ui, Rect::new(r.x + ui.px(6), r.y, ui.px(8), r.h), ctx.statuses.get(&h.name));
-                let x = r.x + ui.px(20);
-                let name_w = ui.measure(&h.name, FontKind::Ui, px).ceil() as i32;
-                let color = if h.hidden { p.muted } else { p.fg };
-                ui.painter().text(Point::new(x, y), &h.name, FontKind::Ui, px, color);
-                let mut right = r.right() - ui.px(6);
-                if let Some(tag) = h.tags.first() {
-                    let tw = ui.measure(tag, FontKind::Ui, small).ceil() as i32 + ui.px(10);
-                    if right - tw > x + name_w + ui.px(40) {
-                        let chip = Rect::new(right - tw, r.y + ui.px(5), tw, r.h - ui.px(10));
-                        let radius = ui.px(4) as f32;
-                        ui.painter().rect(chip, p.surface_alt, radius);
-                        let sh = ui.line_height(FontKind::Ui, small);
-                        let at = Point::new(chip.x + ui.px(5), chip.y + (chip.h - sh) / 2);
-                        ui.painter().text(at, tag, FontKind::Ui, small, p.muted);
-                        right = chip.x - ui.px(6);
+                Row::Host(hi) => {
+                    let h = &hosts[*hi];
+                    if r.contains(mouse) {
+                        hovered = Some(h.name.clone());
+                    }
+                    status_dot(ui, Rect::new(r.x + ui.px(6), r.y, ui.px(8), r.h), ctx.statuses.get(&h.name));
+                    let x = r.x + ui.px(20);
+                    let name_w = ui.measure(&h.name, FontKind::Ui, px).ceil() as i32;
+                    let color = if h.hidden { p.muted } else { p.fg };
+                    ui.painter().text(Point::new(x, y), &h.name, FontKind::Ui, px, color);
+                    let mut right = r.right() - ui.px(6);
+                    if let Some(tag) = h.tags.first() {
+                        let tw = ui.measure(tag, FontKind::Ui, small).ceil() as i32 + ui.px(10);
+                        if right - tw > x + name_w + ui.px(40) {
+                            let chip = Rect::new(right - tw, r.y + ui.px(5), tw, r.h - ui.px(10));
+                            let radius = ui.px(4) as f32;
+                            ui.painter().rect(chip, p.surface_alt, radius);
+                            let sh = ui.line_height(FontKind::Ui, small);
+                            let at = Point::new(chip.x + ui.px(5), chip.y + (chip.h - sh) / 2);
+                            ui.painter().text(at, tag, FontKind::Ui, small, p.muted);
+                            right = chip.x - ui.px(6);
+                        }
+                    }
+                    let dx = x + name_w + ui.px(10);
+                    let room = right - dx;
+                    if room > ui.px(30) && h.hostname != h.name {
+                        let shown = elide(ui, &h.hostname, FontKind::Ui, px, room);
+                        ui.painter().text(Point::new(dx, y), &shown, FontKind::Ui, px, p.muted);
                     }
                 }
-                let dx = x + name_w + ui.px(10);
-                let room = right - dx;
-                if room > ui.px(30) && h.hostname != h.name {
-                    let shown = elide(ui, &h.hostname, FontKind::Ui, px, room);
-                    ui.painter().text(Point::new(dx, y), &shown, FontKind::Ui, px, p.muted);
-                }
             }
-        }
-    });
+        });
     sb.hovered = hovered;
 
     // A clicked header toggles its group instead of staying selected; with
@@ -334,11 +341,8 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     }
     let current = host.and_then(|h| h.source_file.clone());
     let names: Vec<String> = ctx.files.iter().map(|f| display_path(f)).collect();
-    let move_items: Vec<MenuItem> = names
-        .iter()
-        .zip(ctx.files)
-        .map(|(n, f)| MenuItem { label: n, shortcut: None, enabled: current.as_ref() != Some(f) })
-        .collect();
+    let move_items: Vec<MenuItem> =
+        names.iter().zip(ctx.files).map(|(n, f)| MenuItem { label: n, shortcut: None, enabled: current.as_ref() != Some(f) }).collect();
     if let (Some(doc), Some(h)) = (context_menu(ui, move_menu, &move_items), host.map(|h| h.name.clone())) {
         action = Some(SidebarAction::MoveTo(h, ctx.files[doc].clone()));
     }

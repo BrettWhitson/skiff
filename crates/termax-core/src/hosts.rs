@@ -200,14 +200,7 @@ impl HostEntry {
     }
 
     fn haystack(&self) -> String {
-        format!(
-            "{} {} {} {}",
-            self.name,
-            self.hostname,
-            self.user.as_deref().unwrap_or(""),
-            self.tags.join(" ")
-        )
-        .to_lowercase()
+        format!("{} {} {} {}", self.name, self.hostname, self.user.as_deref().unwrap_or(""), self.tags.join(" ")).to_lowercase()
     }
 }
 
@@ -250,8 +243,7 @@ pub fn probe_sets(cfg: &Config) -> Option<Vec<ConfigSet>> {
 /// Builds the combined list: custom connections first, then OpenSSH hosts.
 /// Returns the list plus a warning if the OpenSSH config couldn't be read.
 pub fn collect(cfg: &Config) -> (Vec<HostEntry>, Option<String>) {
-    let mut hosts: Vec<HostEntry> =
-        cfg.connections.iter().enumerate().map(|(i, c)| HostEntry::from_custom(i, c)).collect();
+    let mut hosts: Vec<HostEntry> = cfg.connections.iter().enumerate().map(|(i, c)| HostEntry::from_custom(i, c)).collect();
     let mut warning = None;
     if let Some(path) = ssh_config_path(cfg) {
         match sshconfig::parse_file(&path) {
@@ -311,10 +303,7 @@ mod tests {
     fn custom_args() {
         let h = custom();
         assert_eq!(h.shell_args(), ["-p", "2222", "-l", "root", "-J", "bastion", "-A", "10.1.1.1"]);
-        assert_eq!(
-            h.sftp_args(true),
-            ["-o", "BatchMode=yes", "-p", "2222", "-l", "root", "-J", "bastion", "-A", "-s", "10.1.1.1", "sftp"]
-        );
+        assert_eq!(h.sftp_args(true), ["-o", "BatchMode=yes", "-p", "2222", "-l", "root", "-J", "bastion", "-A", "-s", "10.1.1.1", "sftp"]);
         assert_eq!(h.target(), "root@10.1.1.1:2222");
     }
 

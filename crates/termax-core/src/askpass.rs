@@ -12,17 +12,17 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use interprocess::local_socket::tokio::{prelude::*, Stream as TokioStream};
+use interprocess::local_socket::tokio::{Stream as TokioStream, prelude::*};
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::{GenericFilePath, GenericNamespaced, ListenerOptions, Name, Stream};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -127,11 +127,7 @@ impl Broker {
             format!("fs:{}", std::env::temp_dir().join(&unique).display())
         };
         let (tx, rx) = unbounded_channel();
-        let shared = Arc::new(Shared {
-            token: random_token(),
-            retired: Mutex::new(HashSet::new()),
-            pending: Mutex::new(HashMap::new()),
-        });
+        let shared = Arc::new(Shared { token: random_token(), retired: Mutex::new(HashSet::new()), pending: Mutex::new(HashMap::new()) });
         let listener = {
             let _guard = rt.enter();
             ListenerOptions::new().name(endpoint_name(&endpoint)?).create_tokio()?

@@ -1,10 +1,10 @@
 use super::cache::GlyphCache;
 use super::layout::{char_index_at_x, draw_text, line_height, measure};
 use super::{BlockFont, FontKind, FontStack, Fonts, GlyphBitmap, GlyphRasterizer, LazyFont, LineMetrics, TOFU};
-use std::sync::Arc;
 use crate::canvas::Canvas;
 use crate::color::Color;
 use crate::geom::Point;
+use std::sync::Arc;
 
 fn fonts() -> Option<Fonts> {
     match Fonts::load(None, None) {

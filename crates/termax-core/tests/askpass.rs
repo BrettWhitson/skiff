@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use termax_core::askpass::{AskKind, Broker};
-use termax_core::fs::connect::{connect_sftp, SshLaunch};
+use termax_core::fs::connect::{SshLaunch, connect_sftp};
 use termax_testserver::{FixtureAuth, TestFixture};
 
 fn helper() -> PathBuf {
@@ -15,7 +15,9 @@ fn helper() -> PathBuf {
 
 /// Starts a broker whose requests are answered by `answer(kind, prompt)`.
 /// Returns the broker and a log of (kind, prompt) seen.
-fn broker(answer: impl Fn(AskKind, &str) -> Option<String> + Send + 'static) -> (Broker, Arc<Mutex<Vec<(AskKind, String)>>>) {
+type AskLog = Arc<Mutex<Vec<(AskKind, String)>>>;
+
+fn broker(answer: impl Fn(AskKind, &str) -> Option<String> + Send + 'static) -> (Broker, AskLog) {
     let (broker, mut rx) = Broker::start(&tokio::runtime::Handle::current(), helper()).unwrap();
     let log = Arc::new(Mutex::new(vec![]));
     let log2 = log.clone();
@@ -75,12 +77,7 @@ async fn host_key_confirm() {
     let kh = empty.path().join("known_hosts");
     std::fs::write(&kh, "").unwrap();
     // First occurrence of an option wins in ssh, so these override the fixture's.
-    let pre = vec![
-        "-o".into(),
-        "StrictHostKeyChecking=ask".into(),
-        "-o".into(),
-        format!("UserKnownHostsFile={}", kh.display()),
-    ];
+    let pre = vec!["-o".into(), "StrictHostKeyChecking=ask".into(), "-o".into(), format!("UserKnownHostsFile={}", kh.display())];
     let (b, log) = broker(|kind, _| {
         assert_eq!(kind, AskKind::Confirm);
         Some("yes".into())

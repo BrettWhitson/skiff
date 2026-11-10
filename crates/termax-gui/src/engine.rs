@@ -14,14 +14,27 @@ pub type WakeFn = Arc<dyn Fn() + Send + Sync>;
 /// to, so results for a closed tab can be dropped.
 pub enum Msg {
     /// A status-bar notice (`tab: None` = app-wide).
-    Notice { tab: Option<u64>, text: String },
+    Notice {
+        tab: Option<u64>,
+        text: String,
+    },
     /// Background file work for pane `side` of a file tab.
-    Files { tab: u64, side: usize, ev: crate::files::FilesEvent },
+    Files {
+        tab: u64,
+        side: usize,
+        ev: crate::files::FilesEvent,
+    },
     /// Progress of a transfer in a file tab.
-    Transfer { tab: u64, ev: termax_core::fs::transfer::TransferEvent },
+    Transfer {
+        tab: u64,
+        ev: termax_core::fs::transfer::TransferEvent,
+    },
     /// ssh asks for a password / host-key answer (tag = "tab:side").
     Ask(termax_core::askpass::AskRequest),
-    HostStatus { host: String, status: termax_core::status::Status },
+    HostStatus {
+        host: String,
+        status: termax_core::status::Status,
+    },
 }
 
 impl Msg {

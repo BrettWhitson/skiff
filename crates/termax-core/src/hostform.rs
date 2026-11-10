@@ -380,8 +380,10 @@ mod tests {
         f.other = "ForwardAgent yes\n\n".into();
         f.hidden = true;
         assert_eq!(f.save(&mut cfg, &mut set, &taken), Ok(Saved::Ssh("b".into())));
-        assert_eq!(set.docs[0].render(), "Host a\n    HostName 1.1.1.1\n\nHost b\n    # termax: hidden\n    HostName h\n    ForwardAgent yes\n");
+        assert_eq!(
+            set.docs[0].render(),
+            "Host a\n    HostName 1.1.1.1\n\nHost b\n    # termax: hidden\n    HostName h\n    ForwardAgent yes\n"
+        );
         assert!(!f.fields().contains(&Field::ExtraArgs));
     }
 }
-

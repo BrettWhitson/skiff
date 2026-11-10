@@ -42,8 +42,7 @@ impl TestServer {
         let port = listener.local_addr()?.port();
         let host_pub = opts.host_key.public_key().to_openssh()?;
 
-        let methods: &[MethodKind] =
-            if opts.password.is_some() { &[MethodKind::Password] } else { &[MethodKind::PublicKey] };
+        let methods: &[MethodKind] = if opts.password.is_some() { &[MethodKind::Password] } else { &[MethodKind::PublicKey] };
         let config = Arc::new(russh::server::Config {
             keys: vec![opts.host_key.clone()],
             methods: MethodSet::from(methods),
@@ -118,8 +117,7 @@ fn reject() -> Auth {
 
 impl Conn {
     fn key_ok(&self, user: &str, key: &PublicKey) -> Auth {
-        let ok = user == self.opts.user
-            && self.opts.authorized_key.as_ref().is_some_and(|k| k.key_data() == key.key_data());
+        let ok = user == self.opts.user && self.opts.authorized_key.as_ref().is_some_and(|k| k.key_data() == key.key_data());
         if ok { Auth::Accept } else { reject() }
     }
 }
@@ -140,12 +138,7 @@ impl russh::server::Handler for Conn {
         Ok(self.key_ok(user, key.public_key))
     }
 
-    async fn channel_open_session(
-        &mut self,
-        channel: Channel<Msg>,
-        reply: ChannelOpenHandle,
-        _session: &mut Session,
-    ) -> Result<()> {
+    async fn channel_open_session(&mut self, channel: Channel<Msg>, reply: ChannelOpenHandle, _session: &mut Session) -> Result<()> {
         self.channels.insert(channel.id(), channel);
         reply.accept().await;
         Ok(())

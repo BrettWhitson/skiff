@@ -177,72 +177,74 @@ pub fn select_list_named(
     let mouse = ui.input().mouse;
     let left_down = ui.input().left_down;
     let content_h = (rows as i64 * rh as i64).min(i32::MAX as i64) as i32;
-    ui.a11y_group(id, Role::List, name, |ui| scroll_area(ui, sid, rect, content_h, |ui, vis, off| {
-        let first = (off / rh) as usize;
-        let last = (((off + vis.h + rh - 1) / rh) as usize).min(rows);
-        let p = ui.style().palette;
-        for i in first..last {
-            let row = Rect::new(vis.x, vis.y + i as i32 * rh - off, vis.w, rh);
-            let rid = id.with(i);
-            let rr = ui.interact(rid, row, Sense::click());
-            if ui.a11y_clicked(rid) {
-                if sel.contains(i) && sel.len() == 1 {
-                    out.activated = Some(i);
-                } else {
-                    sel.select_only(i);
+    ui.a11y_group(id, Role::List, name, |ui| {
+        scroll_area(ui, sid, rect, content_h, |ui, vis, off| {
+            let first = (off / rh) as usize;
+            let last = (((off + vis.h + rh - 1) / rh) as usize).min(rows);
+            let p = ui.style().palette;
+            for i in first..last {
+                let row = Rect::new(vis.x, vis.y + i as i32 * rh - off, vis.w, rh);
+                let rid = id.with(i);
+                let rr = ui.interact(rid, row, Sense::click());
+                if ui.a11y_clicked(rid) {
+                    if sel.contains(i) && sel.len() == 1 {
+                        out.activated = Some(i);
+                    } else {
+                        sel.select_only(i);
+                        ui.request_focus(id);
+                    }
+                }
+                if ui.a11y_on() {
+                    let nm = row_name(i);
+                    let on = sel.contains(i);
+                    if let Some(n) = ui.a11y_node(rid, Role::ListItem, &nm) {
+                        n.selected = Some(on);
+                    }
+                    if sel.cursor == Some(i) {
+                        ui.a11y_focus_child(id, rid);
+                    }
+                }
+                // A press arrives as `pressed`, or as `clicked` when the button
+                // went down and up within one frame.
+                if down_now && (rr.pressed || rr.clicked) {
                     ui.request_focus(id);
+                    press = PressState { at: Some((i, mouse)), collapse: false, dragging: false };
+                    if mods.ctrl || mods.logo {
+                        sel.toggle(i);
+                    } else if mods.shift {
+                        sel.extend_to(i);
+                    } else if sel.contains(i) {
+                        press.collapse = true;
+                    } else {
+                        sel.select_only(i);
+                    }
                 }
-            }
-            if ui.a11y_on() {
-                let nm = row_name(i);
-                let on = sel.contains(i);
-                if let Some(n) = ui.a11y_node(rid, Role::ListItem, &nm) {
-                    n.selected = Some(on);
-                }
-                if sel.cursor == Some(i) {
-                    ui.a11y_focus_child(id, rid);
-                }
-            }
-            // A press arrives as `pressed`, or as `clicked` when the button
-            // went down and up within one frame.
-            if down_now && (rr.pressed || rr.clicked) {
-                ui.request_focus(id);
-                press = PressState { at: Some((i, mouse)), collapse: false, dragging: false };
-                if mods.ctrl || mods.logo {
-                    sel.toggle(i);
-                } else if mods.shift {
-                    sel.extend_to(i);
-                } else if sel.contains(i) {
-                    press.collapse = true;
-                } else {
+                if rr.clicked && press.collapse && !press.dragging {
                     sel.select_only(i);
                 }
-            }
-            if rr.clicked && press.collapse && !press.dragging {
-                sel.select_only(i);
-            }
-            if rr.double_clicked {
-                out.activated = Some(i);
-            }
-            if rr.right_clicked {
-                if !sel.contains(i) {
-                    sel.select_only(i);
+                if rr.double_clicked {
+                    out.activated = Some(i);
                 }
-                out.context = Some((i, ui.input().mouse));
+                if rr.right_clicked {
+                    if !sel.contains(i) {
+                        sel.select_only(i);
+                    }
+                    out.context = Some((i, ui.input().mouse));
+                }
+                let is_sel = sel.contains(i);
+                if is_sel {
+                    let c = if ui.has_focus(id) { p.selection } else { p.selection.mix(p.surface, 0.5) };
+                    ui.painter().rect(row, c, 0.0);
+                } else if rr.hovered {
+                    ui.painter().rect(row, p.surface_alt, 0.0);
+                }
+                f(ui, row, i, is_sel);
+                if sel.cursor == Some(i) && ui.has_focus(id) {
+                    super::list::focus_bar(ui, row);
+                }
             }
-            let is_sel = sel.contains(i);
-            if is_sel {
-                let c = if ui.has_focus(id) { p.selection } else { p.selection.mix(p.surface, 0.5) };
-                ui.painter().rect(row, c, 0.0);
-            } else if rr.hovered {
-                ui.painter().rect(row, p.surface_alt, 0.0);
-            }
-            f(ui, row, i, is_sel);
-            if sel.cursor == Some(i) && ui.has_focus(id) {
-                super::list::focus_bar(ui, row);
-            }
-        }
-    }));
+        })
+    });
 
     if let Some((i, at)) = press.at {
         if !left_down {

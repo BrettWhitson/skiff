@@ -12,8 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 fn host(fx: &TestFixture) -> HostEntry {
     let mut cfg = Config::default();
     cfg.settings.load_ssh_config = false;
-    cfg.connections =
-        vec![Connection { name: "fx".into(), host: fx.destination(), extra_args: fx.ssh_options(), ..Default::default() }];
+    cfg.connections = vec![Connection { name: "fx".into(), host: fx.destination(), extra_args: fx.ssh_options(), ..Default::default() }];
     collect(&cfg).0.remove(0)
 }
 

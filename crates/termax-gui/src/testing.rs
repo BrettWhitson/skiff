@@ -74,7 +74,12 @@ impl Env {
         let start = Instant::now();
         loop {
             if std::env::var_os("TERMAX_TEST_TRACE").is_some() {
-                eprintln!("until {what}: {:?} state={:?} prompt={}", start.elapsed(), self.tab.panes.iter().map(|p| p.state.clone()).collect::<Vec<_>>(), self.tab.panes[1].prompt.is_some());
+                eprintln!(
+                    "until {what}: {:?} state={:?} prompt={}",
+                    start.elapsed(),
+                    self.tab.panes.iter().map(|p| p.state.clone()).collect::<Vec<_>>(),
+                    self.tab.panes[1].prompt.is_some()
+                );
             }
             self.frame(vec![]);
             if cond(self) {

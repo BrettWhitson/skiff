@@ -12,11 +12,7 @@ fn sftp_command(fx: &TestFixture, batch: bool) -> Command {
     if batch {
         cmd.args(["-o", "BatchMode=yes"]);
     }
-    cmd.args(["-s", &fx.destination(), "sftp"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    cmd.args(["-s", &fx.destination(), "sftp"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     cmd
 }
 

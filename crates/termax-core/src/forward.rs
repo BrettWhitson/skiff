@@ -35,16 +35,12 @@ impl ForwardKind {
     /// What the forward does, in plain words, for the form.
     pub fn explain(self) -> &'static str {
         match self {
-            ForwardKind::Local => {
-                "Opens a port on this computer. Connections to it go through the host to the target."
-            }
+            ForwardKind::Local => "Opens a port on this computer. Connections to it go through the host to the target.",
             ForwardKind::Remote => {
                 "Opens a port on the host. Connections to it come back through this computer to the target. \
                  Other machines can reach it only if the server allows GatewayPorts."
             }
-            ForwardKind::Dynamic => {
-                "Opens a SOCKS proxy on this computer. Apps set to use it connect out through the host."
-            }
+            ForwardKind::Dynamic => "Opens a SOCKS proxy on this computer. Apps set to use it connect out through the host.",
         }
     }
 }

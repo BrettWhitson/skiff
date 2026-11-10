@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use super::*;
 use crate::text::{FontStack, GlyphBitmap, GlyphRasterizer, LineMetrics};
-use crate::ui::testing::Harness;
 use crate::ui::Ui;
+use crate::ui::testing::Harness;
 
 /// Glyphs that overhang their advance box on every side, like Segoe 'j'
 /// (left) or box-drawing chars (above/below the line box).

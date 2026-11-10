@@ -51,7 +51,15 @@ fn stale_listing_dropped() {
     e.until("listing", |e| e.loaded(0));
     let stale_seq = e.tab.panes[0].seq;
     let adir = format!("{}{}adir", e.start, std::path::MAIN_SEPARATOR);
-    let ctx = FilesCtx { tab_id: 1, engine: &e.engine, start_dir: &e.start, hosts: &e.hosts, askpass: None, ssh_binary: "ssh", ssh_version: None };
+    let ctx = FilesCtx {
+        tab_id: 1,
+        engine: &e.engine,
+        start_dir: &e.start,
+        hosts: &e.hosts,
+        askpass: None,
+        ssh_binary: "ssh",
+        ssh_version: None,
+    };
     e.tab.panes[0].navigate(adir.clone(), &ctx, 0);
     // a listing that answers an older request arrives late
     let stale = FilesEvent::Listed { seq: stale_seq, cwd: e.start.clone(), result: Ok(vec![]) };
@@ -96,7 +104,12 @@ fn delete_key_confirms_multi_selection() {
     e.until("listing", |e| e.loaded(0));
     e.click("A.txt");
     let b = e.find("b.txt");
-    e.frame(vec![Event::Modifiers(CTRL), Event::MouseMove(b), Event::MouseDown(MouseButton::Left, b), Event::MouseUp(MouseButton::Left, b)]);
+    e.frame(vec![
+        Event::Modifiers(CTRL),
+        Event::MouseMove(b),
+        Event::MouseDown(MouseButton::Left, b),
+        Event::MouseUp(MouseButton::Left, b),
+    ]);
     e.frame(vec![Event::Modifiers(Modifiers::NONE)]);
     e.key(Key::Delete, Modifiers::NONE);
     assert!(e.texts().iter().any(|t| t == "Delete 2 items?"), "{:?}", e.texts());
@@ -137,7 +150,12 @@ fn selection_follows_names_across_refresh() {
     e.until("listing", |e| e.loaded(0));
     e.click("c.log");
     let p = e.find("e.log");
-    e.frame(vec![Event::Modifiers(CTRL), Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)]);
+    e.frame(vec![
+        Event::Modifiers(CTRL),
+        Event::MouseMove(p),
+        Event::MouseDown(MouseButton::Left, p),
+        Event::MouseUp(MouseButton::Left, p),
+    ]);
     e.frame(vec![Event::Modifiers(Modifiers::NONE)]);
     std::fs::write(d.path().join("b.log"), b"x").unwrap();
     e.click("Refresh");

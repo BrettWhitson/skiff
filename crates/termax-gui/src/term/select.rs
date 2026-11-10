@@ -94,11 +94,7 @@ pub fn handle_mouse(ui: &mut Ui, _id: Id, inner: Rect, cell: Size, st: &mut Sele
                     st.moved |= pos != a;
                     st.raw = Some((a, pos));
                     let mode = st.mode.unwrap_or(SelMode::Char);
-                    st.sel = if mode == SelMode::Char && a == pos {
-                        None
-                    } else {
-                        Some(TermSelection { start: a, end: pos, mode })
-                    };
+                    st.sel = if mode == SelMode::Char && a == pos { None } else { Some(TermSelection { start: a, end: pos, mode }) };
                     changed = true;
                 }
             }

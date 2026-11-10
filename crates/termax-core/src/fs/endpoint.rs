@@ -57,13 +57,7 @@ impl Endpoint {
                             is_dir = m.file_type().is_dir();
                         }
                     }
-                    out.push(FileEntry {
-                        name,
-                        is_dir,
-                        is_symlink: ft.is_symlink(),
-                        size: meta.len(),
-                        modified: meta.modified().ok(),
-                    });
+                    out.push(FileEntry { name, is_dir, is_symlink: ft.is_symlink(), size: meta.len(), modified: meta.modified().ok() });
                 }
                 Ok(out)
             }
@@ -75,13 +69,7 @@ impl Endpoint {
         let name = path::parent(self.is_remote(), p).map(|(_, n)| n).unwrap_or_else(|| p.to_string());
         match self {
             Endpoint::Local => match std::fs::metadata(p) {
-                Ok(m) => Ok(Some(FileEntry {
-                    name,
-                    is_dir: m.is_dir(),
-                    is_symlink: false,
-                    size: m.len(),
-                    modified: m.modified().ok(),
-                })),
+                Ok(m) => Ok(Some(FileEntry { name, is_dir: m.is_dir(), is_symlink: false, size: m.len(), modified: m.modified().ok() })),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(e) => Err(e.into()),
             },
@@ -90,13 +78,7 @@ impl Endpoint {
                     return Ok(None);
                 }
                 let m = c.sftp.metadata(p).await?;
-                Ok(Some(FileEntry {
-                    name,
-                    is_dir: m.file_type().is_dir(),
-                    is_symlink: false,
-                    size: m.len(),
-                    modified: m.modified().ok(),
-                }))
+                Ok(Some(FileEntry { name, is_dir: m.file_type().is_dir(), is_symlink: false, size: m.len(), modified: m.modified().ok() }))
             }
         }
     }

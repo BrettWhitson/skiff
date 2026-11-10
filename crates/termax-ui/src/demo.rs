@@ -9,8 +9,8 @@ use crate::layout::Size as L;
 use crate::text::FontKind;
 use crate::ui::{Id, Ui};
 use crate::widgets::{
-    MenuItem, TabTitle, TextInputOpts, button, checkbox, context_menu, label, label_with, list, open_context_menu,
-    splitter_h, tabs, text_input,
+    MenuItem, TabTitle, TextInputOpts, button, checkbox, context_menu, label, label_with, list, open_context_menu, splitter_h, tabs,
+    text_input,
 };
 
 pub struct Demo {
@@ -124,23 +124,17 @@ impl Demo {
         // Status bar.
         let sb = rows[1];
         ui.painter().rect(sb, p.bg, 0.0);
-        let text = format!(
-            "{} · {} of {} hosts · frame build {:.2} ms",
-            self.status,
-            self.filtered.len(),
-            self.items.len(),
-            self.build_ms
-        );
+        let text = format!("{} · {} of {} hosts · frame build {:.2} ms", self.status, self.filtered.len(), self.items.len(), self.build_ms);
         let pad = ui.px(8);
         label_with(ui, Rect::new(sb.x + pad, sb.y, sb.w - 2 * pad, sb.h), &text, FontKind::Ui, p.muted);
 
         if let Some(i) = context_menu(ui, Id::new("menu"), &MENU) {
             let name = self.menu_row.and_then(|r| self.filtered.get(r)).map(|&k| self.items[k].clone());
             self.status = format!("{} → {}", MENU[i].label, name.unwrap_or_default());
-            if i == 3 {
-                if let Some(n) = self.menu_row.and_then(|r| self.filtered.get(r)).map(|&k| self.items[k].clone()) {
-                    ui.clipboard().set(&n);
-                }
+            if i == 3
+                && let Some(n) = self.menu_row.and_then(|r| self.filtered.get(r)).map(|&k| self.items[k].clone())
+            {
+                ui.clipboard().set(&n);
             }
         }
         self.build_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -150,18 +144,7 @@ impl Demo {
         let w = area.w.min(ui.px(420));
         let col = Rect::new(area.x, area.y, w, area.h);
         // title, (label, input) x3, checkbox, buttons, rest
-        let sizes = [
-            L::Px(24),
-            L::Px(22),
-            L::Px(30),
-            L::Px(22),
-            L::Px(30),
-            L::Px(22),
-            L::Px(30),
-            L::Px(28),
-            L::Px(34),
-            L::Fill,
-        ];
+        let sizes = [L::Px(24), L::Px(22), L::Px(30), L::Px(22), L::Px(30), L::Px(22), L::Px(30), L::Px(28), L::Px(34), L::Fill];
         let rows = ui.split_v(col, &sizes, 6);
         let title = self.tabs.get(self.active).cloned().unwrap_or_default();
         let accent = ui.style().palette.accent;

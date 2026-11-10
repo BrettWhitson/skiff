@@ -41,10 +41,10 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
         return home_dir().unwrap_or_else(|| PathBuf::from(path));
     }
-    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
-        if let Some(home) = home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"))
+        && let Some(home) = home_dir()
+    {
+        return home.join(rest);
     }
     PathBuf::from(path)
 }
@@ -105,11 +105,7 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
                     let idx = match out.iter().position(|h| h.alias == pattern) {
                         Some(i) => i,
                         None => {
-                            out.push(SshHost {
-                                alias: pattern.to_string(),
-                                source: source.to_path_buf(),
-                                ..Default::default()
-                            });
+                            out.push(SshHost { alias: pattern.to_string(), source: source.to_path_buf(), ..Default::default() });
                             fresh.push(out.len() - 1);
                             out.len() - 1
                         }
@@ -176,10 +172,10 @@ pub(crate) fn unquote(s: &str) -> &str {
 
 pub(crate) fn resolve_include(pattern: &str) -> Vec<PathBuf> {
     let mut path = expand_tilde(pattern);
-    if path.is_relative() {
-        if let Some(home) = home_dir() {
-            path = home.join(".ssh").join(path);
-        }
+    if path.is_relative()
+        && let Some(home) = home_dir()
+    {
+        path = home.join(".ssh").join(path);
     }
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     if !name.contains(['*', '?']) {
@@ -267,13 +263,15 @@ mod tests {
 
     #[test]
     fn reader_sees_extras_and_proxycommand() {
-        let hosts = parse("Host a
+        let hosts = parse(
+            "Host a
   # termax: tags=x,y; hidden; dir=/srv
   ProxyCommand nc %h 22
 Host a
   # termax: tags=z
 Host b
-");
+",
+        );
         assert_eq!(hosts[0].tags, ["x", "y"]);
         assert!(hosts[0].hidden);
         assert_eq!(hosts[0].remote_dir.as_deref(), Some("/srv"));
