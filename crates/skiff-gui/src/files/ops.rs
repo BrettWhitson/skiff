@@ -1,4 +1,5 @@
-//! File operations run on the engine; results come back as `Msg::Files`.
+//! Pane file work (listing, connecting, mkdir/rename/delete) spawned on the
+//! engine's runtime; results come back to the pane as `Msg::Files`.
 
 use skiff_core::fs::FileEntry;
 use skiff_core::fs::connect::{SshLaunch, connect_sftp};
@@ -7,21 +8,24 @@ use skiff_core::fs::endpoint::Endpoint;
 use super::FilesEvent;
 use crate::engine::{Engine, Msg};
 
+/// A file operation a pane asks for.
 #[derive(Debug, Clone)]
 pub enum Op {
+    /// Create the folder at this full path.
     Mkdir(String),
-    Rename {
-        from: String,
-        to: String,
-    },
+    /// Rename/move `from` to `to` (both full paths).
+    Rename { from: String, to: String },
     /// (path, is_dir)
     Delete(Vec<(String, bool)>),
 }
 
+/// Formats an error with its full cause chain on one line.
 fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
+/// Lists `dir` on `ep` in the background; answers with `FilesEvent::Listed`
+/// tagged with `seq` so the pane can drop stale answers.
 pub fn list(engine: &Engine, tab: u64, side: usize, seq: u64, ep: Endpoint, dir: String) {
     let tx = engine.sender();
     engine.rt.spawn(async move {
@@ -46,12 +50,14 @@ pub fn connect(engine: &Engine, tab: u64, side: usize, seq: u64, launch: SshLaun
         .abort_handle()
 }
 
+/// Runs `op` on `ep` in the background; answers with `FilesEvent::OpDone`.
 pub fn run(engine: &Engine, tab: u64, side: usize, ep: Endpoint, op: Op) {
     let tx = engine.sender();
     engine.rt.spawn(async move {
         let result = match &op {
             Op::Mkdir(p) => ep.mkdir(p).await.map_err(err),
             Op::Rename { from, to } => ep.rename(from, to).await.map_err(err),
+            // Delete in order and stop at the first failure.
             Op::Delete(items) => {
                 let mut r = Ok(());
                 for (p, is_dir) in items {

@@ -1,4 +1,6 @@
-//! File-transfer tabs: two panes, each Local or any host.
+//! File-transfer tabs: two panes, each Local or any host, with a transfer
+//! list below. `pane` draws one side, `ops` runs listing/connect/file
+//! operations on the engine, and `transfers` queues and shows copies.
 
 use std::path::PathBuf;
 
@@ -27,6 +29,8 @@ pub fn tag(tab: u64, side: usize) -> String {
     format!("{tab}:{side}")
 }
 
+/// Splits an askpass tag made by `tag` back into (tab id, side); `None` if
+/// it is not in that form.
 pub fn parse_tag(tag: &str) -> Option<(u64, usize)> {
     let (t, s) = tag.split_once(':')?;
     Some((t.parse().ok()?, s.parse().ok()?))
@@ -43,13 +47,17 @@ pub fn route_ask(tab: &mut FilesTab, tab_id: u64, req: AskRequest) {
     }
 }
 
+/// Where a pane browses: this machine or a configured host.
 #[derive(Debug, Clone)]
 pub enum Location {
+    /// The local file system.
     Local,
+    /// A host reached over SFTP.
     Host(Box<HostEntry>),
 }
 
 impl Location {
+    /// The name shown for this location: "Local" or the host's name.
     pub fn label(&self) -> &str {
         match self {
             Location::Local => "Local",
@@ -60,35 +68,47 @@ impl Location {
 
 /// Results of background file work for one pane.
 pub enum FilesEvent {
+    /// A folder listing for request `seq` of folder `cwd`.
     Listed { seq: u64, cwd: String, result: Result<Vec<FileEntry>, String> },
+    /// A mkdir / rename / delete finished.
     OpDone { result: Result<(), String> },
+    /// The SFTP connection attempt `seq` finished.
     Connected { seq: u64, result: Result<Box<RemoteConn>, String> },
 }
 
 /// What the file views need from the app for one frame.
 pub struct FilesCtx<'a> {
+    /// The id of the tab being drawn.
     pub tab_id: u64,
+    /// Runs background work and delivers its results.
     pub engine: &'a Engine,
     /// Where Local panes start.
     pub start_dir: &'a str,
     /// For the location pickers.
     pub hosts: &'a [HostEntry],
+    /// Routes ssh password/host-key questions to the GUI; `None` if unavailable.
     pub askpass: Option<&'a Broker>,
+    /// The ssh program to launch.
     pub ssh_binary: &'a str,
     /// `ssh -V`; `None` if unknown (assumed new enough).
     pub ssh_version: Option<(u32, u32)>,
 }
 
+/// One file-transfer tab: a left and right pane plus their transfers.
 pub struct FilesTab {
+    /// Left (0) and right (1) panes.
     pub panes: [Pane; 2],
+    /// Copies started from this tab.
     pub transfers: TransferList,
 }
 
 impl FilesTab {
+    /// A tab with its two panes at `left` and `right` (they connect on first draw).
     pub fn new(left: Location, right: Location) -> Self {
         FilesTab { panes: [Pane::new(left), Pane::new(right)], transfers: TransferList::default() }
     }
 
+    /// Tab title: "⇅ left ↔ right" from the two location labels.
     pub fn title(&self) -> String {
         format!("\u{21C5} {} \u{2194} {}", self.panes[0].loc.label(), self.panes[1].loc.label())
     }
@@ -105,6 +125,8 @@ impl FilesTab {
         }
     }
 
+    /// Feeds a transfer event to the list, refreshes the pane whose folder
+    /// it changed, and starts queued transfers that can now run.
     pub fn on_transfer(&mut self, ev: TransferEvent, ctx: &FilesCtx) {
         if let Some(side) = self.transfers.on_event(ev)
             && let Some(p) = self.panes.get_mut(side)
@@ -120,7 +142,8 @@ impl FilesTab {
         [0, 1].map(|i| (self.panes[i].loc.label().to_string(), self.panes[i].ep.clone()))
     }
 
-    /// Copies `items` (from pane `from`) into the other pane's folder.
+    /// Copies `items` (from pane `from`) into the other pane's folder, as
+    /// one batch. Items are (path, is_dir, name) as from `Pane::selected`.
     pub fn copy(&mut self, from: usize, items: Vec<(String, bool, String)>, ctx: &FilesCtx) {
         let to = 1 - from;
         let (Some(src), Some(dst)) = (self.panes[from].ep.clone(), self.panes[to].ep.clone()) else { return };
@@ -150,7 +173,7 @@ impl FilesTab {
         }
     }
 
-    /// Files dropped from the OS onto pane `to`.
+    /// Uploads files dropped from the OS onto pane `to`, as one batch.
     pub fn upload(&mut self, to: usize, paths: Vec<PathBuf>, ctx: &FilesCtx) {
         let Some(dst) = self.panes[to].ep.clone() else { return };
         let batch = self.transfers.new_batch();
@@ -170,6 +193,7 @@ impl FilesTab {
         }
     }
 
+    /// Hands a background result to pane `side` (ignored if out of range).
     pub fn on_event(&mut self, side: usize, ev: FilesEvent, ctx: &FilesCtx) {
         if let Some(p) = self.panes.get_mut(side) {
             p.on_event(ev, ctx, side);
@@ -177,11 +201,13 @@ impl FilesTab {
     }
 }
 
-/// Both panes side by side, the transfer list below.
+/// Draws both panes side by side, the transfer list below, and acts on
+/// their copy requests, pane-to-pane drags and OS file drops.
 pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
     let list_h = transfers::wanted_height(&tab.transfers);
     let rows = ui.split_v(rect, &[L::Fill, L::Px(list_h)], if list_h > 0 { 6 } else { 0 });
     let cols = ui.split_h(rows[0], &[L::Frac(0.5), L::Frac(0.5)], 6);
+    // Files dropped from the OS this frame.
     let dropped: Vec<PathBuf> = ui
         .input()
         .events
@@ -194,6 +220,7 @@ pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
             let items = tab.panes[side].selected();
             tab.copy(side, items, ctx);
         }
+        // Rows dragged from the other pane of this same tab: copy them here.
         if let Some(d) = out.dropped
             && d.tab == ctx.tab_id
             && d.side != side

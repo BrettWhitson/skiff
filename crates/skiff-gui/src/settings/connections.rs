@@ -13,8 +13,11 @@ use skiff_ui::widgets::{TextInputOpts, button, checkbox, dropdown_labeled, label
 use super::{PendingDiscard, Rows, discard_prompt, error_line, field, split_row};
 use crate::app::GuiApp;
 
+/// The host form being edited.
 pub struct Form {
+    /// The editable host fields.
     pub form: HostForm,
+    /// The ssh config files as loaded when the form opened.
     pub set: ConfigSet,
     /// Name of the host being edited (as saved); `None` for a new one.
     /// Looked up on use: the list can change under an open form.
@@ -28,12 +31,16 @@ pub struct Form {
     generation: u64,
 }
 
+/// The Connections page's state.
 #[derive(Default)]
 pub struct ConnState {
+    /// The open form, if any.
     pub form: Option<Form>,
     /// A host that can't be edited here: (name, why).
     pub readonly: Option<(String, String)>,
+    /// Why the last save, duplicate or delete failed.
     pub error: Option<String>,
+    /// The delete question is showing.
     pub confirm_delete: bool,
     /// A switch to another host (`None`: a new one) waiting for "Discard
     /// unsaved changes?".
@@ -43,6 +50,7 @@ pub struct ConnState {
 }
 
 impl ConnState {
+    /// Opens `form` in the editor and clears any read-only notice, error or pending question.
     fn load(&mut self, form: HostForm, set: ConfigSet, editing: Option<String>, app: &GuiApp, dirty: bool) {
         let other = form.other.lines().map(String::from).collect();
         self.form = Some(Form { form, set, editing, other, dirty, generation: app.hosts_gen });
@@ -85,6 +93,8 @@ impl ConnState {
         }
     }
 
+    /// Opens an empty form for a new host, saving to the first ssh config file
+    /// if there is one, else to the skiff config.
     pub fn new_form(&mut self, app: &mut GuiApp) {
         let set = app.load_set();
         let dest = if set.docs.is_empty() { Dest::Skiff } else { Dest::SshConfig(0) };
@@ -93,6 +103,8 @@ impl ConnState {
     }
 }
 
+/// Draws the Connections page: host list with Add / Duplicate / Delete on the
+/// left; on the right a discard or delete question, a read-only notice, or the form.
 pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     // An untouched form follows the host list (outside edits, sidebar
     // changes); an untouched new one is just reloaded.
@@ -105,6 +117,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
             None => st.new_form(app),
         }
     }
+    // Keep the list highlight on the open (or read-only) host as the list changes.
     if let Some(name) = st.form.as_ref().and_then(|f| f.editing.clone()).or_else(|| st.readonly.as_ref().map(|r| r.0.clone())) {
         st.selected = app.hosts.iter().position(|h| h.name == name);
     }
@@ -114,6 +127,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     let names: Vec<(String, bool)> = app.hosts.iter().map(|h| (h.name.clone(), h.source == Source::SshConfig)).collect();
     let before = st.selected;
     let muted = ui.style().palette.muted;
+    // ssh-config hosts carry a muted "ssh" tag (and say so to screen readers).
     let row_name = |i: usize| if names[i].1 { format!("{}, ssh config", names[i].0) } else { names[i].0.clone() };
     list_named(ui, Id::new("settings-conn-list"), left[0], "Connections", names.len(), 28, &mut st.selected, row_name, |ui, r, i, _| {
         let r = Rect::new(r.x + ui.px(8), r.y, r.w - ui.px(16), r.h);
@@ -123,6 +137,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
             label(ui, tag, "ssh", Some(muted));
         }
     });
+    // Clicking a host asks to switch (which may ask about unsaved edits first).
     if st.selected != before
         && let Some(i) = st.selected
     {
@@ -146,6 +161,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
         st.confirm_delete = true;
     }
 
+    // The right side shows, in order of priority: the discard question, the
+    // delete question, a read-only notice, or the form.
     let mut rows = Rows::new(cols[1]);
     if let Some(p) = &mut st.confirm_discard {
         let what = st.form.as_ref().and_then(|f| f.editing.clone()).unwrap_or_else(|| "the new host".to_string());
@@ -199,6 +216,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     };
     let title = if form.editing.is_some() { "Edit host" } else { "New host" };
     label(ui, rows.next(ui), title, None);
+    // "Save to": skiff config or one of the ssh config files.
     if form.form.can_change_dest() && !form.set.docs.is_empty() {
         let (l, c) = split_row(ui, rows.next(ui));
         label(ui, l, "Save to", None);
@@ -223,6 +241,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     if checkbox(ui, Id::new("settings-conn-hidden"), c, &mut form.form.hidden, "Hidden (left out of host lists)").clicked {
         form.dirty = true;
     }
+    // Free-form "Other options" lines, only for ssh config hosts.
     if matches!(form.form.dest, Dest::SshConfig(_)) {
         let mut remove = None;
         for (i, line) in form.other.iter_mut().enumerate() {
@@ -260,6 +279,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     error_line(ui, rows.next(ui), &st.error);
 }
 
+/// Saves the form to the skiff config or its ssh config file and applies it;
+/// returns the saved name. On error nothing is lost and it can be saved again.
 fn save(form: &mut Form, app: &mut GuiApp) -> Result<String, String> {
     form.form.other = form.other.join("\n");
     // Where the edited connection is now; one deleted meanwhile is saved as new.
@@ -269,6 +290,7 @@ fn save(form: &mut Form, app: &mut GuiApp) -> Result<String, String> {
             None => Editing::New,
         };
     }
+    // Names already in use, and the name before this edit (to detect a rename).
     let taken = hostform::taken_names(&app.hosts);
     let old = form.form.original_name(&app.cfg);
     // Edit a copy: if the write fails, the form can be saved again as is.
@@ -277,6 +299,7 @@ fn save(form: &mut Form, app: &mut GuiApp) -> Result<String, String> {
     let name = saved.name().to_string();
     app.apply_saved(saved, &mut set)?;
     if let Some(old) = old {
+        // A rename moves the host's forwards, history and status to the new name.
         app.after_rename(&old, &name);
     }
     form.set = set;

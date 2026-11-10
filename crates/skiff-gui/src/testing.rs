@@ -14,18 +14,26 @@ use skiff_ui::ui::testing::Harness;
 use crate::engine::{Engine, Msg};
 use crate::files::{FilesCtx, FilesTab, Location, PaneState, view};
 
+/// One file-transfer tab (id 1) driven headlessly, with its own engine.
 pub struct Env {
+    /// Background runtime the tab's work runs on (no waker).
     pub engine: Engine,
+    /// The tab under test.
     pub tab: FilesTab,
+    /// Offscreen 1200x700 window that records what was drawn.
     pub h: Harness,
+    /// Hosts the panes can pick from.
     pub hosts: Vec<HostEntry>,
+    /// Folder local panes start in.
     pub start: String,
+    /// Askpass broker, when prompts are enabled.
     pub broker: Option<Broker>,
     /// What `ssh -V` reports (tests override it).
     pub ssh_version: Option<(u32, u32)>,
 }
 
 impl Env {
+    /// Two local panes starting in `start`, no hosts, no askpass.
     pub fn new(start: &Path) -> Env {
         Self::with(start, vec![], Location::Local, Location::Local, None)
     }
@@ -47,6 +55,8 @@ impl Env {
         e
     }
 
+    /// Delivers queued engine messages to the tab, then draws one frame with
+    /// `events` as input.
     pub fn frame(&mut self, events: Vec<Event>) {
         let ctx = FilesCtx {
             tab_id: 1,
@@ -69,10 +79,12 @@ impl Env {
         self.h.frame(events, &mut |ui| view(ui, ui.window_rect(), tab, &ctx));
     }
 
-    /// Runs frames until `cond` holds (engine work is asynchronous).
+    /// Runs frames until `cond` holds (engine work is asynchronous); panics
+    /// after 25 s naming `what`.
     pub fn until(&mut self, what: &str, cond: impl Fn(&Env) -> bool) {
         let start = Instant::now();
         loop {
+            // SKIFF_TEST_TRACE=1 logs pane states each poll, for debugging hangs.
             if std::env::var_os("SKIFF_TEST_TRACE").is_some() {
                 eprintln!(
                     "until {what}: {:?} state={:?} prompt={}",
@@ -90,10 +102,13 @@ impl Env {
         }
     }
 
+    /// Every text string drawn in the last frame, in draw order.
     pub fn texts(&self) -> Vec<String> {
         self.h.list().prims.iter().filter_map(|p| if let Prim::Text { text, .. } = p { Some(text.clone()) } else { None }).collect()
     }
 
+    /// A point just inside the first drawn text equal to `s` whose origin
+    /// passes `ok`.
     fn find_where(&self, s: &str, ok: impl Fn(Point) -> bool) -> Option<Point> {
         self.h.list().prims.iter().find_map(|p| match p {
             Prim::Text { text, origin, .. } if text == s && ok(*origin) => Some(Point::new(origin.x + 4, origin.y + 6)),
@@ -101,6 +116,7 @@ impl Env {
         })
     }
 
+    /// Where the text `s` is drawn; panics with the visible texts if absent.
     pub fn find(&self, s: &str) -> Point {
         self.find_where(s, |_| true).unwrap_or_else(|| panic!("no text {s:?}; have {:?}", self.texts()))
     }
@@ -110,16 +126,20 @@ impl Env {
         self.find_where(s, |p| p.x > 600).unwrap_or_else(|| panic!("no text {s:?} on the right; have {:?}", self.texts()))
     }
 
+    /// A left click at `p`, plus a follow-up frame.
     pub fn click_at(&mut self, p: Point) {
         self.frame(vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)]);
         self.frame(vec![]);
     }
 
+    /// Clicks the text `s`.
     pub fn click(&mut self, s: &str) {
         let p = self.find(s);
         self.click_at(p);
     }
 
+    /// Two clicks at `p` on consecutive frames (read as a double click),
+    /// plus a follow-up frame.
     pub fn double_click_at(&mut self, p: Point) {
         let c = vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)];
         self.frame(c.clone());
@@ -127,6 +147,7 @@ impl Env {
         self.frame(vec![]);
     }
 
+    /// Double-clicks the text `s`.
     pub fn double_click(&mut self, s: &str) {
         let p = self.find(s);
         self.double_click_at(p);
@@ -138,6 +159,7 @@ impl Env {
         self.frame(vec![]);
     }
 
+    /// Types `s` into whatever has focus (one frame).
     pub fn typed(&mut self, s: &str) {
         self.frame(vec![Event::Text(s.into())]);
     }
@@ -156,10 +178,12 @@ impl Env {
         self.tab.panes[side].navigate(path.to_string(), &ctx, side);
     }
 
+    /// File names pane `side` currently lists (after filtering).
     pub fn names(&self, side: usize) -> Vec<String> {
         self.tab.panes[side].visible().iter().map(|e| e.name.clone()).collect()
     }
 
+    /// Pane `side` is connected and has finished loading its folder.
     pub fn loaded(&self, side: usize) -> bool {
         matches!(self.tab.panes[side].state, PaneState::Idle) && self.tab.panes[side].ep.is_some()
     }

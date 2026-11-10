@@ -16,11 +16,13 @@ use crate::app::GuiApp;
 pub struct SnippetForm {
     /// Name of the snippet being edited (as saved); `None` for a new one.
     pub editing: Option<String>,
+    /// The snippet's name, as typed.
     pub name: String,
     /// The command, one input per line.
     pub lines: Vec<String>,
     /// Only for this host; `None` = every host.
     pub host: Option<String>,
+    /// Press Enter after sending the command.
     pub run: bool,
     /// Edited by the user since it was opened or saved (a new, untouched
     /// form is not: leaving it loses nothing).
@@ -28,10 +30,12 @@ pub struct SnippetForm {
 }
 
 impl SnippetForm {
+    /// An empty form for a new snippet, with one empty command line.
     fn new() -> SnippetForm {
         SnippetForm { lines: vec![String::new()], ..Default::default() }
     }
 
+    /// The form for saved snippet `s`, one input per command line.
     fn of(s: &Snippet) -> SnippetForm {
         SnippetForm {
             editing: Some(s.name.clone()),
@@ -53,6 +57,7 @@ impl SnippetForm {
             return Err(format!("A snippet named {name} already exists"));
         }
         let mut lines: Vec<&str> = self.lines.iter().map(String::as_str).collect();
+        // Trailing blank lines are dropped; a command of only blank lines is empty.
         while lines.last().is_some_and(|l| l.trim().is_empty()) {
             lines.pop();
         }
@@ -63,23 +68,29 @@ impl SnippetForm {
     }
 }
 
+/// The Snippets page's state.
 #[derive(Default)]
 pub struct SnippetsState {
+    /// The open form, if any.
     pub form: Option<SnippetForm>,
+    /// Why the last save failed.
     pub error: Option<String>,
     /// Asking "Delete snippet …?"; the first frame moves focus to Cancel.
     confirm_delete: Option<bool>,
     /// Another row (or Add, `None`) was picked while the form had unsaved
     /// edits: asking "Discard …?" before switching.
     confirm_discard: Option<PendingDiscard<Option<usize>>>,
+    /// The list's highlighted row (follows the open snippet).
     selected: Option<usize>,
     /// A stable id per command line input (so focus and cursor stay with a
     /// line when one above it is removed), parallel to `form.lines`.
     line_ids: Vec<u64>,
+    /// Last line id handed out.
     next_line_id: u64,
 }
 
 impl SnippetsState {
+    /// Opens saved snippet `s` in the form, dropping any error or question.
     fn select(&mut self, s: &Snippet) {
         self.form = Some(SnippetForm::of(s));
         self.error = None;
@@ -87,6 +98,7 @@ impl SnippetsState {
         self.confirm_discard = None;
     }
 
+    /// Opens an empty form for a new snippet and focuses its Name field.
     fn new_form(&mut self, ui: &mut Ui) {
         self.form = Some(SnippetForm::new());
         self.error = None;
@@ -112,6 +124,7 @@ impl SnippetsState {
         }
     }
 
+    /// A fresh id for a command line input.
     fn new_line_id(&mut self) -> u64 {
         self.next_line_id += 1;
         self.next_line_id
@@ -131,6 +144,8 @@ impl SnippetsState {
     }
 }
 
+/// Draws the Snippets page: list with Add / Delete on the left; on the right
+/// a discard or delete question, or the form with Save.
 pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     // An untouched form follows the config (outside edits).
     if let Some(f) = &st.form
@@ -148,6 +163,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
 
     let cols = ui.split_h(rect, &[L::Px(250), L::Fill], 16);
     let left = ui.split_v(cols[0], &[L::Fill, L::Px(30)], 8);
+    // Host-specific snippets say so to screen readers.
     let names: Vec<String> = app.cfg.snippets.iter().map(|s| s.name.clone()).collect();
     let row_name = |i: usize| {
         let s = &app.cfg.snippets[i];
@@ -162,6 +178,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
         let r = Rect::new(r.x + ui.px(8), r.y, r.w - ui.px(16), r.h);
         label(ui, r, &names[i], None);
     });
+    // Clicking a snippet asks to switch (which may ask about unsaved edits first).
     if st.selected != before
         && let Some(i) = st.selected
     {
@@ -177,6 +194,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
         st.confirm_delete = Some(true);
     }
 
+    // The right side shows, in order of priority: the discard question, the
+    // delete question, or the form.
     let mut rows = Rows::new(cols[1]);
     if let Some(p) = &mut st.confirm_discard {
         let what = st.form.as_ref().and_then(|f| f.editing.clone()).unwrap_or_else(|| "the new snippet".to_string());
@@ -233,6 +252,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     form.dirty |= field(ui, Id::new("settings-snip-name"), rows.next(ui), "Name", &mut form.name);
     let mut remove = None;
     let n = form.lines.len();
+    // One input per command line, each with a remove button once there are two or more.
     for (i, (line, &key)) in form.lines.iter_mut().zip(&st.line_ids).enumerate() {
         let (l, c) = split_row(ui, rows.next(ui));
         if i == 0 {
@@ -284,6 +304,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     form.dirty |= checkbox(ui, Id::new("settings-snip-run"), c, &mut form.run, "Run it (press Enter after the command)").clicked;
     let r = rows.next(ui);
     if button(ui, Id::new("settings-snip-save"), Rect::new(r.x + ui.px(LABEL_W), r.y, ui.px(100), r.h), "Save").clicked {
+        // Replace the snippet being edited (if still there) or add a new one, then
+        // reopen it from the saved config.
         match form.validate(&app.cfg.snippets) {
             Ok(s) => {
                 let name = s.name.clone();

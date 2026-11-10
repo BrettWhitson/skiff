@@ -1,4 +1,6 @@
-//! One row per action; click a chord to record a new one.
+//! The Keybindings page: one row per action showing its chords; click one
+//! to record a new chord (saved to `[keys]` at once). Chords shared with
+//! another action are flagged.
 
 use skiff_ui::geom::Rect;
 use skiff_ui::input::{Event, Key, Modifiers};
@@ -9,12 +11,15 @@ use super::{Rows, split_row};
 use crate::app::GuiApp;
 use crate::keys::{Action, Chord};
 
+/// The Keybindings page's state.
 #[derive(Default)]
 pub struct KeysState {
     /// The action whose chord is being recorded.
     pub capturing: Option<Action>,
 }
 
+/// Draws the Keybindings page in a scroll area, recording a chord first
+/// if one is being captured (the page then takes all keyboard input).
 pub fn view(ui: &mut Ui, rect: Rect, st: &mut KeysState, app: &mut GuiApp) {
     let id = Id::new("settings-keys");
     if let Some(a) = st.capturing {
@@ -32,6 +37,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut KeysState, app: &mut GuiApp) {
     scroll_area(ui, sid, rect, content, |ui, vis, off| rows_view(ui, Rect::new(vis.x, vis.y - off, vis.w, content), st, app));
 }
 
+/// The hint line and one row per action: label, chord button, and an
+/// "also <action>" warning when another action uses one of its chords.
 fn rows_view(ui: &mut Ui, rect: Rect, st: &mut KeysState, app: &mut GuiApp) {
     let mut rows = Rows::new(rect);
     let muted = ui.style().palette.muted;
@@ -52,6 +59,7 @@ fn rows_view(ui: &mut Ui, rect: Rect, st: &mut KeysState, app: &mut GuiApp) {
         if button(ui, Id::new(("settings-key", a.config_name())), b, &text).clicked {
             st.capturing = Some(a);
         }
+        // Another action bound to any of the same chords.
         let clash = Action::ALL.into_iter().find(|&o| o != a && app.keymap.chords(o).iter().any(|ch| chords.contains(ch)));
         if let Some(o) = clash {
             let r = Rect::new(b.x + b.w + ui.px(10), c.y, (c.x + c.w - b.x - b.w - ui.px(10)).max(0), c.h);
@@ -60,6 +68,8 @@ fn rows_view(ui: &mut Ui, rect: Rect, st: &mut KeysState, app: &mut GuiApp) {
     }
 }
 
+/// Handles key presses while recording for action `a`: Esc cancels, Backspace
+/// restores the default, any other valid chord is saved.
 fn record(ui: &mut Ui, st: &mut KeysState, a: Action, app: &mut GuiApp) {
     let presses: Vec<(Key, Modifiers)> = ui
         .input()
@@ -67,6 +77,7 @@ fn record(ui: &mut Ui, st: &mut KeysState, a: Action, app: &mut GuiApp) {
         .iter()
         .filter_map(|e| if let Event::KeyDown { key, mods, .. } = e { Some((key.clone(), *mods)) } else { None })
         .collect();
+    // Every press is consumed; only the first one that ends capture counts.
     for (key, mods) in presses {
         ui.input_mut().take_key(&key, mods);
         if st.capturing.is_none() {

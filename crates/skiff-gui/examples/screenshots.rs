@@ -18,9 +18,11 @@ use skiff_ui::input::{Event, Key, Modifiers};
 use skiff_ui::text::Fonts;
 use skiff_ui::ui::testing::Harness;
 
+/// Screenshot size in pixels.
 const W: i32 = 1440;
 const H: i32 = 900;
 
+/// The app in an offscreen window, and where screenshots go.
 struct Shots {
     app: GuiApp,
     h: Harness,
@@ -28,11 +30,13 @@ struct Shots {
 }
 
 impl Shots {
+    /// Draws one app frame with `events` as input.
     fn frame(&mut self, events: Vec<Event>) {
         let app = &mut self.app;
         self.h.frame(events, &mut |ui| app.ui(ui));
     }
 
+    /// Runs frames until `cond` holds (panics after 30 s), then settles.
     fn until(&mut self, what: &str, cond: impl Fn(&GuiApp) -> bool) {
         let start = Instant::now();
         while !cond(&self.app) {
@@ -51,17 +55,21 @@ impl Shots {
         }
     }
 
+    /// Types `s` into the focused widget.
     fn typed(&mut self, s: &str) {
         self.frame(vec![Event::Text(s.into())]);
     }
 
+    /// Presses `key` without modifiers.
     fn key(&mut self, key: Key) {
         self.frame(vec![Event::KeyDown { key, mods: Modifiers::NONE, text: None }]);
     }
 
+    /// Renders the current frame and writes it as `OUT_DIR/<name>.ppm`.
     fn save(&mut self, name: &str) {
         self.frame(vec![]);
         let c = self.h.render();
+        // Binary PPM: header, then RGB bytes from each 0xRRGGBB pixel.
         let mut ppm = format!("P6 {} {} 255\n", c.width, c.height).into_bytes();
         for p in &c.pixels {
             ppm.extend([(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
@@ -71,6 +79,7 @@ impl Shots {
         println!("wrote {}", path.display());
     }
 
+    /// The active tab, if it is a file-transfer tab.
     fn files_tab(&self) -> Option<&skiff_gui::files::FilesTab> {
         match &self.app.tabs.get(self.app.active)?.kind {
             TabKind::Files(f) => Some(f),
@@ -79,6 +88,7 @@ impl Shots {
     }
 }
 
+/// A saved connection to fixture `fx`, using its ssh options.
 fn conn(name: &str, fx: &TestFixture, tags: &[&str]) -> Connection {
     Connection {
         name: name.into(),
@@ -89,6 +99,7 @@ fn conn(name: &str, fx: &TestFixture, tags: &[&str]) -> Connection {
     }
 }
 
+/// Creates `dirs` and files of the given byte sizes under `dir`.
 fn write_files(dir: &Path, files: &[(&str, usize)], dirs: &[&str]) {
     for d in dirs {
         std::fs::create_dir_all(dir.join(d)).unwrap();
@@ -98,9 +109,12 @@ fn write_files(dir: &Path, files: &[(&str, usize)], dirs: &[&str]) {
     }
 }
 
+/// Starts the fixtures and a scratch config, then stages and saves six
+/// screens in turn.
 fn main() {
     let out = PathBuf::from(std::env::args().nth(1).expect("usage: screenshots OUT_DIR"));
     std::fs::create_dir_all(&out).unwrap();
+    // The skiff-gui binary next to the examples dir doubles as the askpass helper.
     let helper = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(if cfg!(windows) {
         "skiff-gui.exe"
     } else {
@@ -127,6 +141,7 @@ fn main() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     let mut cfg = Config::load_or_create(&path).unwrap();
+    // `save` writes only the differences from `baseline`, so take it first.
     let baseline = cfg.clone();
     cfg.settings.load_ssh_config = false;
     cfg.settings.theme = "midnight".into();
@@ -193,6 +208,7 @@ fn main() {
         if let TabKind::Files(f) = &mut s.app.tabs[a].kind {
             let items = names.into_iter().map(|(n, p)| (p, false, n.to_string())).collect();
             f.copy(0, items, &ctx);
+            // Highlight one local row for the shot.
             f.panes[0].sel.set = [3usize].into_iter().collect();
         }
     }
@@ -245,6 +261,7 @@ fn main() {
         target: Some(format!("127.0.0.1:{}", files_fx.port())),
     };
     s.app.cfg.forwards.push(fwd.clone());
+    // `start_forward` borrows the app and the forwards state separately.
     let mut st = std::mem::take(&mut s.app.forwards);
     s.app.start_forward(&mut st, &fwd);
     s.app.forwards = st;

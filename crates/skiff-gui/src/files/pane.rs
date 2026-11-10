@@ -1,4 +1,6 @@
-//! One file pane: location picker, path bar, actions, listing.
+//! One file pane of a files tab: location picker, path bar, action row
+//! (or an inline confirm bar), error banner, and the folder listing or an
+//! inline ssh prompt while connecting.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,13 +23,19 @@ use super::ops::{self, Op};
 use super::transfers::FileDrag;
 use super::{FilesCtx, FilesEvent, Location};
 
+/// Height of one listing row, in unscaled pixels.
 const ROW_H: i32 = 24;
 
+/// What a pane is doing right now.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneState {
+    /// Nothing pending (connects on next draw if there is no endpoint yet).
     Idle,
+    /// A listing request is in flight.
     Loading,
+    /// The SFTP connection is being made.
     Connecting,
+    /// Connecting or listing failed; shown in the banner.
     Error(String),
 }
 
@@ -36,27 +44,30 @@ pub enum PaneState {
 pub enum Confirm {
     /// (path, is_dir, name)
     Delete(Vec<(String, bool, String)>),
-    Rename {
-        from: String,
-        input: String,
-    },
-    NewFolder {
-        input: String,
-    },
+    /// Rename the entry at full path `from`; `input` is the new name being typed.
+    Rename { from: String, input: String },
+    /// Create a folder; `input` is the name being typed.
+    NewFolder { input: String },
 }
 
 /// An ssh question shown inline in the pane that is connecting.
 pub struct Prompt {
     /// The prompt exactly as ssh wrote it.
     pub text: String,
+    /// Password, yes/no, or a notice with nothing to answer.
     pub kind: AskKind,
+    /// What the user has typed so far.
     input: String,
+    /// Where the answer goes (`None` = cancel); taken once answered.
     reply: Option<oneshot::Sender<Option<String>>>,
+    /// Set when ssh withdraws the question.
     cancelled: CancellationToken,
+    /// Focus the input on the next frame.
     focus: bool,
 }
 
 impl Prompt {
+    /// Sends `a` to ssh (once; later calls do nothing) and wipes the typed input.
     fn answer(&mut self, a: Option<String>) {
         if let Some(r) = self.reply.take() {
             let _ = r.send(a);
@@ -66,20 +77,30 @@ impl Prompt {
 }
 
 impl Drop for Prompt {
+    /// Makes sure ssh is never left waiting for an answer.
     fn drop(&mut self) {
         self.answer(None); // an unanswered prompt is a cancel
     }
 }
 
+/// One side of a files tab.
 pub struct Pane {
+    /// Where this pane browses.
     pub loc: Location,
+    /// The open connection (or Local); `None` until connected.
     pub ep: Option<Endpoint>,
+    /// The folder currently listed.
     pub cwd: String,
+    /// The listing of `cwd`, sorted folders first.
     entries: Vec<FileEntry>,
+    /// Selected rows, as indices into `visible()`.
     pub sel: Selection,
     pub state: PaneState,
+    /// Show dot-files.
     pub show_hidden: bool,
+    /// The path being typed while the path bar is in edit mode.
     pub path_edit: Option<String>,
+    /// The inline bar currently replacing the action row.
     pub confirm: Option<Confirm>,
     /// Problem from the last file operation (the listing is still valid).
     pub banner: Option<String>,
@@ -94,16 +115,18 @@ pub struct Pane {
 }
 
 impl Drop for Pane {
+    /// Kills a connection attempt still running for this pane.
     fn drop(&mut self) {
         self.abort_connect();
     }
 }
 
-/// `YYYY-MM-DD HH:MM` (UTC).
+/// Formats `t` as `YYYY-MM-DD HH:MM` (UTC); times before 1970 show as the epoch.
 pub fn format_time(t: SystemTime) -> String {
     let secs = t.duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Howard Hinnant's civil-from-days.
+    // Howard Hinnant's civil-from-days: days since 1970-01-01 to (y, m, d),
+    // using 400-year eras that start on 0000-03-01.
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -116,11 +139,13 @@ pub fn format_time(t: SystemTime) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rem / 3600, rem % 3600 / 60)
 }
 
+/// Sorts folders first, then by name ignoring case.
 fn sort_entries(v: &mut [FileEntry]) {
     v.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
 }
 
 impl Pane {
+    /// An unconnected pane at `loc`; it connects the first time it is drawn.
     pub fn new(loc: Location) -> Self {
         Pane {
             loc,
@@ -140,6 +165,7 @@ impl Pane {
         }
     }
 
+    /// True for a host pane (remote path rules apply), false for Local.
     pub fn is_remote(&self) -> bool {
         matches!(self.loc, Location::Host(_))
     }
@@ -151,11 +177,13 @@ impl Pane {
 
     /// Replaces the listing, keeping the same files selected.
     fn reselect(&mut self, entries: Vec<FileEntry>) {
+        // Remember the selected, anchor and cursor rows by name...
         let name_at = |vis: &[&FileEntry], i: Option<usize>| i.and_then(|i| vis.get(i)).map(|e| e.name.clone());
         let vis = self.visible();
         let names: Vec<String> = self.sel.iter().filter_map(|i| vis.get(i).map(|e| e.name.clone())).collect();
         let (anchor, cursor) = (name_at(&vis, self.sel.anchor), name_at(&vis, self.sel.cursor));
         self.entries = entries;
+        // ...then map those names to rows of the new listing (gone ones drop out).
         let vis = self.visible();
         let index_of = |n: &String| vis.iter().position(|e| &e.name == n);
         let set = names.iter().filter_map(index_of).collect();
@@ -165,12 +193,13 @@ impl Pane {
         self.sel.cursor = cursor;
     }
 
-    /// Full paths of the selected entries, with `is_dir`.
+    /// The selected entries as (full path, is_dir, name).
     pub fn selected(&self) -> Vec<(String, bool, String)> {
         let vis = self.visible();
         self.sel.iter().filter_map(|i| vis.get(i)).map(|e| (self.join(&e.name), e.is_dir, e.name.clone())).collect()
     }
 
+    /// Full path of `name` inside the current folder, using this pane's path style.
     pub fn join(&self, name: &str) -> String {
         skiff_core::fs::join(self.is_remote(), &self.cwd, name)
     }
@@ -183,11 +212,13 @@ impl Pane {
         ops::list(ctx.engine, ctx.tab_id, side, self.seq, ep, path);
     }
 
+    /// Lists the current folder again.
     pub fn refresh(&mut self, ctx: &FilesCtx, side: usize) {
         let cwd = self.cwd.clone();
         self.navigate(cwd, ctx, side);
     }
 
+    /// Goes to the parent folder; does nothing at the root.
     pub fn go_up(&mut self, ctx: &FilesCtx, side: usize) {
         if let Some((p, _)) = parent(self.is_remote(), &self.cwd) {
             self.navigate(p, ctx, side);
@@ -195,6 +226,8 @@ impl Pane {
     }
 
     /// Switches this pane to another location (connects in the background).
+    /// Resets everything but "show hidden"; `seq` keeps rising so answers for
+    /// the old location are ignored.
     pub fn set_location(&mut self, loc: Location) {
         self.abort_connect();
         self.prompt = None;
@@ -204,6 +237,7 @@ impl Pane {
         self.seq = seq;
     }
 
+    /// Aborts a running connection attempt (which kills its ssh process).
     fn abort_connect(&mut self) {
         if let Some(h) = self.connecting.take() {
             h.abort();
@@ -218,6 +252,8 @@ impl Pane {
         self.state = PaneState::Error("connection cancelled".into());
     }
 
+    /// Opens the pane's location: Local lists the start folder at once, a
+    /// host starts an SFTP connection in the background.
     fn start(&mut self, ctx: &FilesCtx, side: usize) {
         match &self.loc {
             Location::Local => {
@@ -225,6 +261,9 @@ impl Pane {
                 self.navigate(ctx.start_dir.to_string(), ctx, side);
             }
             Location::Host(h) => {
+                // Prompts go through askpass only when the broker exists and
+                // ssh supports SSH_ASKPASS_REQUIRE; otherwise run ssh in batch
+                // mode and explain why if the version is too old.
                 let can_prompt = ctx.askpass.is_some() && ctx.ssh_version.is_none_or(supports_askpass_require);
                 let mut launch = h.sftp_launch(ctx.ssh_binary, !can_prompt);
                 if can_prompt && let Some(b) = ctx.askpass {
@@ -251,6 +290,8 @@ impl Pane {
         self.prompt = Some(Prompt { text: prompt, kind, input: String::new(), reply: Some(reply), cancelled, focus: true });
     }
 
+    /// Applies a background result: a listing, a finished connection, or a
+    /// finished file operation (which refreshes the listing).
     pub fn on_event(&mut self, ev: FilesEvent, ctx: &FilesCtx, side: usize) {
         match ev {
             FilesEvent::Listed { seq, cwd, result } => {
@@ -281,6 +322,7 @@ impl Pane {
                 self.prompt = None;
                 self.connecting = None;
                 match result {
+                    // Connected: start in the remote home folder.
                     Ok(conn) => {
                         let home = conn.home.clone();
                         self.ep = Some(Endpoint::Remote(Arc::new(*conn)));
@@ -298,6 +340,7 @@ impl Pane {
         }
     }
 
+    /// Starts `op` in the background (if connected), clearing an old banner.
     fn run(&mut self, op: Op, ctx: &FilesCtx, side: usize) {
         if let Some(ep) = self.ep.clone() {
             self.banner = None;
@@ -305,6 +348,7 @@ impl Pane {
         }
     }
 
+    /// Opens the delete confirmation for the selection (if any).
     fn ask_delete(&mut self) {
         let items = self.selected();
         if !items.is_empty() {
@@ -313,6 +357,7 @@ impl Pane {
         }
     }
 
+    /// Opens the rename bar, prefilled with the name, when exactly one entry is selected.
     fn ask_rename(&mut self) {
         if let [(path, _, name)] = self.selected().as_slice() {
             self.confirm = Some(Confirm::Rename { from: path.clone(), input: name.clone() });
@@ -335,9 +380,11 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
     let mut out = PaneOut::default();
     let p = ui.style().palette;
     let id = Id::new(("pane", ctx.tab_id, side));
+    // Not connected and nothing pending: connect now.
     if pane.ep.is_none() && pane.state == PaneState::Idle {
         pane.start(ctx, side);
     }
+    // An error state wins over an operation banner.
     let banner = match &pane.state {
         PaneState::Error(e) => Some(e.clone()),
         _ => pane.banner.clone(),
@@ -361,6 +408,7 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
     };
     let what = if side == 0 { "Left pane location" } else { "Right pane location" };
     if dropdown_labeled(ui, id.with("loc"), top_parts[0], what, &options, &mut sel_loc) {
+        // Index 0 is Local, 1.. are hosts, and a trailing extra is the gone host.
         let loc = match ctx.hosts.get(sel_loc.wrapping_sub(1)) {
             _ if sel_loc == 0 => Location::Local,
             Some(h) => Location::Host(Box::new(h.clone())),
@@ -402,6 +450,7 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
         }
     }
 
+    // Row 3: the error banner, with Reconnect / Retry / Dismiss.
     if let Some(msg) = banner {
         let radius = ui.px(4) as f32;
         ui.painter().rect(banner_r, p.danger.with_alpha(40), radius);
@@ -420,6 +469,8 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
                 pane.set_location(loc);
             }
         } else if button(ui, id.with("dismiss"), parts[2], "Dismiss").clicked {
+            // Clearing an error leaves an unconnected pane in an error state,
+            // so it does not silently reconnect on the next frame.
             pane.banner = None;
             if matches!(pane.state, PaneState::Error(_)) {
                 pane.state = PaneState::Idle;
@@ -430,6 +481,8 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
         }
     }
 
+    // Rest: the ssh prompt while one is open (dropped if ssh withdrew it),
+    // else the listing.
     if pane.prompt.as_ref().is_some_and(|p| p.cancelled.is_cancelled()) {
         pane.prompt = None;
     }
@@ -451,6 +504,7 @@ fn prompt_card(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane) {
     let px = ui.font_px();
     let lh = ui.line_height(FontKind::Ui, px) + ui.px(4);
     let mut y = rect.y + pad;
+    // Title, then the prompt text line by line (blank lines skipped).
     let title = format!("{} asks:", pane.loc.label());
     ui.painter().text(Point::new(rect.x + pad, y), &title, FontKind::Ui, px, p.muted);
     y += lh + ui.px(4);
@@ -462,6 +516,7 @@ fn prompt_card(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane) {
     y += ui.px(6);
     let row = Rect::new(rect.x + pad, y, (rect.w - 2 * pad).min(ui.px(520)), ui.px(30));
     let iid = id.with("prompt-input");
+    // `Some(None)` = cancel (stops connecting), `Some(Some(a))` = answer `a`.
     let mut answer: Option<Option<String>> = None;
     match pr.kind {
         AskKind::Secret => {
@@ -517,9 +572,12 @@ fn prompt_card(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane) {
     }
 }
 
+/// The current folder, shown as a focusable button with a loading suffix;
+/// clicking it turns it into a text field where Enter goes to the typed path.
 fn path_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx) {
     let p = ui.style().palette;
     let pid = id.with("path");
+    // Edit mode: the field stays open only while it keeps focus.
     if let Some(mut text) = pane.path_edit.take() {
         if pane.focus_input {
             ui.request_focus(pid);
@@ -570,6 +628,9 @@ fn invalid_name(name: &str) -> String {
     if name.is_empty() { "Type a name first".into() } else { format!("{name} is not a valid name (no / \\ or :)") }
 }
 
+/// The inline bar for the open `Confirm`: a delete question, or a name field
+/// for rename / new folder, with OK and Cancel. Bad names keep the bar open
+/// and show a banner.
 fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx) {
     let p = ui.style().palette;
     let Some(confirm) = pane.confirm.clone() else { return };
@@ -609,11 +670,13 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
             }
             if ok && is_safe_name(input.trim()) {
                 let to = pane.join(input.trim());
+                // An unchanged name just closes the bar.
                 if to != from {
                     pane.run(Op::Rename { from: from.clone(), to }, ctx, side);
                 }
                 done = true;
             } else {
+                // Still open: store the edited text back for next frame.
                 pane.confirm = Some(Confirm::Rename { from, input });
             }
         }
@@ -658,6 +721,9 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
     }
 }
 
+/// The folder listing: rows with icon, name, size and time; drag source and
+/// drop target for copies; Enter/double-click opens folders; Backspace, F2,
+/// Delete and F5 go up, rename, delete and copy.
 fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx, out: &mut PaneOut) {
     let p = ui.style().palette;
     let radius = ui.px(4) as f32;
@@ -666,6 +732,7 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
     let vis: Vec<FileEntry> = pane.visible().into_iter().cloned().collect();
     let px = ui.font_px();
     let list_name = format!("{} files", pane.loc.label());
+    // Screen-reader text for row `i`.
     let row_name = |i: usize| {
         let e = &vis[i];
         let kind = if e.is_dir { "folder".to_string() } else { human_size(e.size) };
@@ -687,6 +754,7 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
         } else {
             ui.painter().border(icon, p.muted, bw, r2);
         }
+        // Right-aligned size and time columns; the name gets what is left.
         let time_w = ui.px(130);
         let size_w = ui.px(70);
         let name_w = (row.w - ui.px(28) - time_w - size_w - ui.px(16)).max(ui.px(20));
@@ -706,6 +774,7 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
             ui.painter().text(at, &format_time(t), FontKind::Ui, px, p.muted);
         }
     });
+    // Dragging the selection out; dropping rows from elsewhere onto this list.
     if r.drag_started {
         let items = pane.selected();
         let label = match items.as_slice() {

@@ -11,15 +11,20 @@ pub const REFRESH: Duration = Duration::from_secs(3);
 /// A value read at most once per `every`, or again after `invalidate`.
 #[derive(Debug)]
 pub struct Cached<T> {
+    /// Last value read and when it was read.
     value: Option<(T, Instant)>,
+    /// How long a read stays valid.
     every: Duration,
 }
 
 impl<T: Copy> Cached<T> {
+    /// An empty cache that refreshes every `every`.
     pub const fn new(every: Duration) -> Self {
         Cached { value: None, every }
     }
 
+    /// The cached value, or a fresh one from `read` when there is none or it
+    /// is at least `every` old as of `now`.
     pub fn get(&mut self, now: Instant, read: impl FnOnce() -> T) -> T {
         match self.value {
             Some((v, at)) if now.saturating_duration_since(at) < self.every => v,
@@ -31,15 +36,18 @@ impl<T: Copy> Cached<T> {
         }
     }
 
+    /// Forgets the value so the next `get` reads again.
     pub fn invalidate(&mut self) {
         self.value = None;
     }
 }
 
+// One cache per preference, shared by every caller in the process.
 static HIGH_CONTRAST: Mutex<Cached<bool>> = Mutex::new(Cached::new(REFRESH));
 static ANIMATIONS: Mutex<Cached<bool>> = Mutex::new(Cached::new(REFRESH));
 static TEXT_SCALE: Mutex<Cached<u32>> = Mutex::new(Cached::new(REFRESH));
 
+/// Reads through a shared cache; a poisoned lock is recovered, not panicked on.
 fn cached<T: Copy>(c: &Mutex<Cached<T>>, read: fn() -> T) -> T {
     c.lock().unwrap_or_else(|e| e.into_inner()).get(Instant::now(), read)
 }
@@ -68,6 +76,8 @@ pub fn text_scale() -> f32 {
     cached(&TEXT_SCALE, read_text_scale).clamp(100, 225) as f32 / 100.0
 }
 
+/// Reads `HKCU\Software\Microsoft\Accessibility\TextScaleFactor`
+/// (a percentage); 100 when unset or unreadable.
 #[cfg(windows)]
 fn read_text_scale() -> u32 {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
@@ -83,11 +93,13 @@ fn read_text_scale() -> u32 {
     if err == 0 { data } else { 100 } // unset: 100%
 }
 
+/// No OS text scale outside Windows: always 100%.
 #[cfg(not(windows))]
 fn read_text_scale() -> u32 {
     100
 }
 
+/// Asks `SystemParametersInfoW(SPI_GETHIGHCONTRAST)`; false if the call fails.
 #[cfg(windows)]
 fn read_high_contrast() -> bool {
     use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
@@ -99,11 +111,13 @@ fn read_high_contrast() -> bool {
     ok != 0 && hc.dwFlags & HCF_HIGHCONTRASTON != 0
 }
 
+/// High contrast is a Windows-only setting here: always off.
 #[cfg(not(windows))]
 fn read_high_contrast() -> bool {
     false
 }
 
+/// Asks `SPI_GETCLIENTAREAANIMATION`; assumes on if the call fails.
 #[cfg(windows)]
 fn read_animations() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
@@ -113,6 +127,7 @@ fn read_animations() -> bool {
     ok == 0 || on != 0
 }
 
+/// Animations are always allowed outside Windows.
 #[cfg(not(windows))]
 fn read_animations() -> bool {
     true
@@ -122,6 +137,8 @@ fn read_animations() -> bool {
 mod tests {
     use super::*;
 
+    /// A cached value is reused within its period and re-read after it
+    /// expires or is invalidated.
     #[test]
     fn cached_reads_once_per_period_and_after_invalidate() {
         let mut c = Cached::new(Duration::from_secs(3));

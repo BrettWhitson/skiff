@@ -20,7 +20,9 @@ use crate::engine::Msg;
 /// A drag of pane rows (the drag-and-drop payload).
 #[derive(Debug, Clone)]
 pub struct FileDrag {
+    /// The files tab the rows came from.
     pub tab: u64,
+    /// The pane the rows came from.
     pub side: usize,
     /// (path, is_dir, name)
     pub items: Vec<(String, bool, String)>,
@@ -29,11 +31,15 @@ pub struct FileDrag {
 /// What to copy and where (kept for Retry).
 #[derive(Clone)]
 pub struct Spec {
+    /// Connection to read from.
     pub src: Endpoint,
+    /// Full path of the file or folder to copy.
     pub src_path: String,
     /// The pane the files came from (`None`: dropped from the OS).
     pub src_side: Option<usize>,
+    /// Connection to write to.
     pub dst: Endpoint,
+    /// Folder the copy lands in.
     pub dst_dir: String,
     /// The pane to refresh when done.
     pub dst_side: usize,
@@ -41,6 +47,7 @@ pub struct Spec {
     pub src_label: String,
     /// Destination location label (host name or "Local").
     pub dst_host: String,
+    /// Destination shown in the list: "host:folder".
     pub dst_label: String,
 }
 
@@ -49,6 +56,7 @@ impl Spec {
     /// reconnected since, so use its current connection. Returns which
     /// endpoints (source, destination) were replaced.
     pub fn refresh_endpoints(&mut self, panes: [(String, Option<Endpoint>); 2]) -> (bool, bool) {
+        // OS drops (no source pane) keep their Local source.
         let mut src = false;
         if let Some(s) = self.src_side
             && let Some((label, Some(ep))) = panes.get(s)
@@ -71,67 +79,95 @@ impl Spec {
 /// Transfers running at once per tab; the rest wait in the list.
 pub const MAX_RUNNING: usize = 4;
 
+/// An "already exists, replace it?" question from a running transfer.
 pub struct Question {
+    /// The destination path that already exists.
     pub path: String,
+    /// Where the answer goes; taken once answered (dropping it cancels).
     reply: Option<oneshot::Sender<OverwriteDecision>>,
+    /// The "Apply to all" box.
     pub apply_all: bool,
 }
 
+/// Where one transfer row is in its life.
 pub enum RowState {
     /// Waiting for a free slot (at most `MAX_RUNNING` run at once).
     Queued,
+    /// Copying.
     Running,
+    /// Paused on an overwrite question.
     Waiting(Question),
+    /// Finished; the summary counts skipped files.
     Done(TransferSummary),
+    /// Failed with this message (can be retried).
     Failed(String),
+    /// Stopped by the user (or by closing the tab).
     Cancelled,
 }
 
+/// One copy in the transfer list.
 pub struct TransferRow {
+    /// Engine transfer id; a retry gets a new one.
     pub id: u64,
+    /// The copy action this row belongs to (for "apply to all").
     batch: u64,
     pub spec: Spec,
+    /// Bytes copied so far.
     pub done: u64,
+    /// Total bytes, once known.
     pub total: Option<u64>,
+    /// The file being copied now.
     pub current: String,
     /// Bytes per second (smoothed).
     pub speed: f64,
+    /// Time and byte count of the last speed sample.
     last: Option<(Instant, u64)>,
     pub state: RowState,
+    /// Cancels the running transfer; `None` while queued or finished.
     handle: Option<TransferHandle>,
     /// The user pressed Cancel: however it ends, it ends "cancelled".
     cancelled: bool,
 }
 
 impl TransferRow {
+    /// Not finished yet (queued, running or asking).
     pub fn is_active(&self) -> bool {
         matches!(self.state, RowState::Queued | RowState::Running | RowState::Waiting(_))
     }
 
+    /// Holds a running slot (running or asking; not queued).
     fn in_flight(&self) -> bool {
         matches!(self.state, RowState::Running | RowState::Waiting(_))
     }
 }
 
+/// A tab's transfers, oldest first, with the running-slot limit and
+/// per-batch "apply to all" answers.
 #[derive(Default)]
 pub struct TransferList {
     pub rows: Vec<TransferRow>,
+    /// Last transfer id handed out.
     next_id: u64,
+    /// Last batch id handed out.
     next_batch: u64,
     /// "Apply to all" answers, per copy action.
     batch_policy: HashMap<u64, OverwriteDecision>,
 }
 
 impl TransferList {
+    /// A fresh batch id for one copy action.
     pub fn new_batch(&mut self) -> u64 {
         self.next_batch += 1;
         self.next_batch
     }
 
+    /// Starts transfer `id` on the engine (asking before overwriting) and
+    /// forwards its events to the app as `Msg::Transfer`.
     fn launch(ctx: &FilesCtx, id: u64, spec: &Spec) -> TransferHandle {
         let (etx, mut erx) = tokio::sync::mpsc::unbounded_channel();
         let tx = ctx.engine.sender();
         let tab = ctx.tab_id;
+        // Relay task: tags each event with this tab.
         ctx.engine.rt.spawn(async move {
             while let Some(ev) = erx.recv().await {
                 tx.send(Msg::Transfer { tab, ev });
@@ -147,6 +183,8 @@ impl TransferList {
         transfer::start(ctx.engine.rt.handle(), req, OverwritePolicy::Ask, etx)
     }
 
+    /// Adds a row for `spec` in `batch`, running it now if a slot is free
+    /// and queueing it otherwise; returns its id.
     pub fn start(&mut self, ctx: &FilesCtx, spec: Spec, batch: u64) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
@@ -168,6 +206,7 @@ impl TransferList {
         id
     }
 
+    /// How many rows hold a running slot.
     fn in_flight(&self) -> usize {
         self.rows.iter().filter(|r| r.in_flight()).count()
     }
@@ -185,6 +224,8 @@ impl TransferList {
         }
     }
 
+    /// Restarts row `i` under a new id (so late events from the old run are
+    /// ignored), using the panes' current connections where they still match.
     fn retry(&mut self, i: usize, ctx: &FilesCtx, panes: [(String, Option<Endpoint>); 2]) {
         self.next_id += 1;
         let id = self.next_id;
@@ -201,7 +242,7 @@ impl TransferList {
         row.last = None;
     }
 
-    /// Cancels every running transfer (closing the tab).
+    /// Cancels every unfinished transfer, queued ones included (closing the tab).
     pub fn cancel_all(&mut self) {
         for i in 0..self.rows.len() {
             if self.rows[i].is_active() {
@@ -210,6 +251,7 @@ impl TransferList {
         }
     }
 
+    /// How many rows are unfinished (queued, running or asking).
     pub fn running(&self) -> usize {
         self.rows.iter().filter(|r| r.is_active()).count()
     }
@@ -220,6 +262,8 @@ impl TransferList {
             TransferEvent::Progress { id, done, total, current } => {
                 let row = self.rows.iter_mut().find(|r| r.id == id)?;
                 let now = Instant::now();
+                // Speed: sample at most every 50 ms, smoothed with an
+                // exponential moving average (30% new sample).
                 if let Some((t, d)) = row.last {
                     let dt = now.duration_since(t).as_secs_f64();
                     if dt >= 0.05 {
@@ -237,6 +281,7 @@ impl TransferList {
             }
             TransferEvent::NeedsDecision { id, path, reply } => {
                 let row = self.rows.iter_mut().find(|r| r.id == id)?;
+                // An earlier "apply to all" in this batch answers at once.
                 match self.batch_policy.get(&row.batch) {
                     Some(d) => {
                         let _ = reply.send(*d);
@@ -248,6 +293,7 @@ impl TransferList {
             TransferEvent::Done { id, result } => {
                 let row = self.rows.iter_mut().find(|r| r.id == id)?;
                 row.handle = None;
+                // A user cancel wins over however the transfer reported ending.
                 row.state = match result {
                     _ if row.cancelled => RowState::Cancelled,
                     Ok(s) if s.cancelled => RowState::Cancelled,
@@ -278,6 +324,7 @@ impl TransferList {
             let _ = r.send(d);
         }
         self.rows[i].state = RowState::Running;
+        // Remember the answer for later questions and answer the open ones.
         if all {
             self.batch_policy.insert(batch, d);
             for r in self.rows.iter_mut().filter(|r| r.batch == batch) {
@@ -291,6 +338,8 @@ impl TransferList {
         }
     }
 
+    /// Cancels row `i`: a queued row ends at once; a running one is told to
+    /// stop and shows "cancelled" when its Done event arrives.
     fn cancel(&mut self, i: usize) {
         let r = &mut self.rows[i];
         if matches!(r.state, RowState::Queued) {
@@ -310,9 +359,12 @@ impl TransferList {
 
 /// Height the transfer list wants (0 when empty), logical px.
 pub fn wanted_height(list: &TransferList) -> i32 {
+    // Header plus one 32 px line per row, capped (the rest scrolls).
     if list.rows.is_empty() { 0 } else { (34 + 32 * list.rows.len() as i32).min(200) }
 }
 
+/// Draws the transfer list (header with "Clear finished", then one scrolling
+/// line per row) and applies the buttons pressed. `panes` is used by Retry.
 pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx, panes: [(String, Option<Endpoint>); 2]) {
     if list.rows.is_empty() || rect.h <= 0 {
         return;
@@ -332,11 +384,13 @@ pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx, pa
     }
     let row_h = ui.px(32);
     let content = row_h * list.rows.len() as i32;
+    // Button presses are collected while the rows are borrowed and applied after.
     let mut actions: Vec<(usize, &'static str)> = vec![];
     scroll_area(ui, id.with("scroll"), parts[1], content, |ui, vis, off| {
         let px = ui.font_px();
         for (i, row) in list.rows.iter_mut().enumerate() {
             let r = Rect::new(vis.x, vis.y + i as i32 * row_h - off, vis.w, row_h - ui.px(4));
+            // Skip rows scrolled out of view.
             if r.bottom() < vis.y || r.y > vis.bottom() {
                 continue;
             }
@@ -344,6 +398,7 @@ pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx, pa
             let name = row.spec.src_path.rsplit(['/', '\\']).next().unwrap_or("").to_string();
             let what = format!("{name}  {} \u{2192} {}", row.spec.src_label, row.spec.dst_label);
             match &mut row.state {
+                // The overwrite question replaces the whole line.
                 RowState::Waiting(q) => {
                     let cols = ui.split_h(r, &[L::Fill, L::Px(90), L::Px(64), L::Px(140), L::Px(76)], 6);
                     let qname = q.path.rsplit(['/', '\\']).next().unwrap_or(&q.path).to_string();

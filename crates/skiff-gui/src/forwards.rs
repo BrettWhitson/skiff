@@ -16,13 +16,20 @@ use crate::settings::{PendingDiscard, Rows, discard_prompt, error_line, field, s
 /// Askpass tags of forwards start with this (file panes use `<tab>:<side>`).
 pub const TAG_PREFIX: &str = "fwd:";
 
+/// A forward started this session (running, starting, or failed).
 pub struct Running {
+    /// The forward as it was when started.
     pub fwd: Forward,
+    /// Live state of its ssh process; dropping it stops ssh.
     pub handle: ForwardHandle,
+    /// Askpass tag (`fwd:<n>`) routing ssh's prompts back to this forward.
     pub tag: String,
+    /// Already counted as a connection in the host's history (done once,
+    /// when it first reaches Running).
     pub recorded: bool,
 }
 
+/// The inline add/edit form's fields, as typed.
 #[derive(Default)]
 pub struct FwdForm {
     /// The saved forward being edited (found again by value when saving,
@@ -30,27 +37,40 @@ pub struct FwdForm {
     pub editing: Option<Forward>,
     /// Host name.
     pub host: String,
+    /// Index into `ForwardKind::ALL` (local, remote, dynamic).
     pub kind: usize,
+    /// Optional display name.
     pub name: String,
+    /// Optional bind address.
     pub bind: String,
+    /// Listen port, validated on save.
     pub listen: String,
+    /// `host:port` to forward to (ignored for dynamic forwards).
     pub target: String,
+    /// Validation or save error shown under the buttons.
     pub error: Option<String>,
     /// Edited since it was opened.
     pub dirty: bool,
 }
 
+/// A question ssh asked for a running forward (password, yes/no, notice).
 pub struct FwdPrompt {
+    /// Tag of the forward that asked.
     pub tag: String,
+    /// ssh's prompt text.
     pub text: String,
+    /// Which answer widgets to show.
     pub kind: AskKind,
+    /// The password typed so far.
     pub input: String,
+    /// Where the answer goes; taken on first answer.
     reply: Option<tokio::sync::oneshot::Sender<Option<String>>>,
     /// ssh withdrew the question (e.g. a security key was touched).
     cancelled: tokio_util::sync::CancellationToken,
 }
 
 impl FwdPrompt {
+    /// Sends the answer (`None` = declined) once; later calls do nothing.
     fn answer(&mut self, a: Option<String>) {
         if let Some(r) = self.reply.take() {
             let _ = r.send(a);
@@ -59,15 +79,21 @@ impl FwdPrompt {
 }
 
 impl Drop for FwdPrompt {
+    /// A prompt closed without an answer declines, so ssh never hangs.
     fn drop(&mut self) {
         self.answer(None);
     }
 }
 
+/// Everything the Forwards tab keeps between frames (owned by the app even
+/// while the tab is closed, so forwards keep running).
 #[derive(Default)]
 pub struct ForwardsState {
+    /// Forwards started this session, oldest first.
     pub running: Vec<Running>,
+    /// The open add/edit form.
     pub form: Option<FwdForm>,
+    /// The ssh question being shown, if any (one at a time).
     pub prompt: Option<FwdPrompt>,
     /// The saved forward waiting for "Delete?" to be confirmed.
     pub confirm_delete: Option<Forward>,
@@ -75,14 +101,17 @@ pub struct ForwardsState {
     confirm_new: bool,
     /// Another form waiting for "Discard unsaved changes?" to be answered.
     confirm_discard: Option<PendingDiscard<FwdForm>>,
+    /// Counter behind `new_tag`.
     next_tag: u64,
 }
 
 impl ForwardsState {
+    /// State of the most recent run of `f`; `None` if never started (or pruned).
     pub fn state_of(&self, f: &Forward) -> Option<ForwardState> {
         self.running.iter().rev().find(|r| &r.fwd == f).map(|r| r.handle.state())
     }
 
+    /// Shows ssh's question, replacing (and so declining) any earlier one.
     pub fn ask(&mut self, req: AskRequest) {
         self.prompt = Some(FwdPrompt {
             tag: req.tag,
@@ -94,6 +123,7 @@ impl ForwardsState {
         });
     }
 
+    /// Stops every run of `f` and drops its pending prompt, if any.
     pub fn stop(&mut self, f: &Forward) {
         for r in self.running.iter().filter(|r| &r.fwd == f) {
             r.handle.stop();
@@ -103,6 +133,7 @@ impl ForwardsState {
         }
     }
 
+    /// Stops all forwards (app shutdown).
     pub fn stop_all(&mut self) {
         self.prompt = None;
         self.running.clear(); // dropping a handle stops its ssh
@@ -118,6 +149,7 @@ impl ForwardsState {
         });
     }
 
+    /// A fresh askpass tag for a forward about to start.
     pub fn new_tag(&mut self) -> String {
         self.next_tag += 1;
         format!("{TAG_PREFIX}{}", self.next_tag)
@@ -139,6 +171,8 @@ impl ForwardsState {
     }
 }
 
+/// Validates the form into a [`Forward`]: port 1-65535, blank optional
+/// fields become `None`, then the forward's own checks.
 fn form_to_forward(f: &FwdForm) -> Result<Forward, String> {
     let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
     let listen = f.listen.trim().parse::<u16>().ok().filter(|p| *p > 0).ok_or("Listen port must be 1\u{2013}65535")?;
@@ -178,6 +212,7 @@ fn save_form(st: &mut ForwardsState, app: &mut GuiApp, start: bool) {
         form.error = Some("This forward is already saved".into());
         return;
     }
+    // Replace in place when editing, else append.
     let mut was_live = false;
     match at {
         Some(i) => {
@@ -192,12 +227,15 @@ fn save_form(st: &mut ForwardsState, app: &mut GuiApp, start: bool) {
     }
     app.save_config();
     st.form = None;
+    // An unchanged forward that is already running is left alone.
     let unchanged_and_live = old.as_ref() == Some(&f) && was_live;
     if (start || was_live) && !unchanged_and_live {
         app.start_forward(st, &f);
     }
 }
 
+/// Draws the Forwards tab and applies its actions. The state is moved out of
+/// the app for the frame so both can be borrowed mutably.
 pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     let mut st = std::mem::take(&mut app.forwards);
     let p = ui.style().palette;
@@ -211,6 +249,8 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         st.new_form(&h);
     }
 
+    // ssh's question: hidden once ssh withdraws it, otherwise a notice
+    // (Hide), a yes/no confirmation, or a password field.
     if st.prompt.as_ref().is_some_and(|p| p.cancelled.is_cancelled()) {
         st.prompt = None;
     }
@@ -255,6 +295,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     let mut host_names: Vec<String> = app.hosts.iter().map(|h| h.name.clone()).collect();
     let mut save = None;
     let mut cancel = false;
+    // The discard question replaces the form until answered.
     if let Some(p) = &mut st.confirm_discard {
         let what = if st.form.as_ref().is_some_and(|f| f.editing.is_some()) { "this forward" } else { "the new forward" };
         match discard_prompt(ui, &mut rows, "fwd", what, p) {
@@ -277,6 +318,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
             form.host = h.clone();
             form.dirty = true;
         }
+        // A new form with no host takes the dropdown's first choice.
         if form.host.is_empty()
             && let Some(h) = host_names.get(hi)
         {
@@ -314,6 +356,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         st.form = None;
     }
 
+    // Delete confirmation; it vanishes if the forward was removed elsewhere.
     if let Some(f) = st.confirm_delete.clone() {
         if !app.cfg.forwards.contains(&f) {
             st.confirm_delete = None;
@@ -351,6 +394,8 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     if app.cfg.forwards.is_empty() && st.form.is_none() {
         label(ui, rows.next(ui), "No saved forwards. Right-click a host and choose Port forward\u{2026}", Some(p.muted));
     }
+    // One row per saved forward; the clicked action runs after the loop,
+    // when `app.cfg` is no longer borrowed.
     let mut act: Option<(Forward, &str)> = None;
     for (i, f) in app.cfg.forwards.iter().enumerate() {
         let r = rows.next(ui);

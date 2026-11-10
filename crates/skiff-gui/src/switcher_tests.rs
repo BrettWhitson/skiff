@@ -1,3 +1,5 @@
+//! Tests for the quick switcher: ranking and the open/choose/close flow.
+
 use skiff_ui::input::{Event, Key, Modifiers};
 
 use super::*;
@@ -5,6 +7,7 @@ use crate::app::tests::Fixture;
 
 const CTRL_SHIFT: Modifiers = Modifiers { ctrl: true, shift: true, alt: false, logo: false };
 
+/// Two custom hosts, `alpha` and `beta`, without the ssh config.
 fn hosts() -> Vec<HostEntry> {
     let cfg = skiff_core::config::Config::parse(
         "[settings]\nload_ssh_config=false\n[[connection]]\nname=\"alpha\"\nhost=\"a\"\n[[connection]]\nname=\"beta\"\nhost=\"b\"\n",
@@ -13,6 +16,7 @@ fn hosts() -> Vec<HostEntry> {
     skiff_core::hosts::collect(&cfg).0
 }
 
+/// Fuzzy queries rank the matching host or theme first and drop non-matches.
 #[test]
 fn rank_prefers_hosts_by_fuzzy() {
     let r = rank("bet", &hosts(), &[], &["dracula".into()], &RankCtx::default());
@@ -22,6 +26,7 @@ fn rank_prefers_hosts_by_fuzzy() {
     assert_eq!(r[0].0, Item::Theme("dracula".into()));
 }
 
+/// With no query, open tabs come before hosts.
 #[test]
 fn empty_query_lists_tabs_first() {
     let tabs = vec![(7u64, "\u{25CF} alpha".to_string())];
@@ -30,6 +35,7 @@ fn empty_query_lists_tabs_first() {
     assert_eq!(r[1].0, Item::Host(0));
 }
 
+/// An empty query shows only recent hosts; typing searches all of them.
 #[test]
 fn switcher_lists_recent_first() {
     let ctx = RankCtx { recent: vec!["beta".into()], ..Default::default() };
@@ -40,12 +46,14 @@ fn switcher_lists_recent_first() {
     assert_eq!(r[0].0, Item::Host(0), "typing still finds every host");
 }
 
+/// Opens the switcher with Ctrl+Shift+K and checks it opened.
 fn open(f: &mut Fixture) {
     f.frame(vec![Event::KeyDown { key: Key::Char('k'), mods: CTRL_SHIFT, text: None }]);
     f.frame(vec![]);
     assert!(f.app.switcher_open);
 }
 
+/// Typing a host name and pressing Enter opens a terminal tab and closes.
 #[test]
 fn enter_opens_terminal_for_host() {
     let mut f = Fixture::new();
@@ -58,6 +66,7 @@ fn enter_opens_terminal_for_host() {
     assert!(f.app.tab_title(0).contains("beta"));
 }
 
+/// Esc closes the switcher and gives focus back to where it was.
 #[test]
 fn escape_closes_and_restores_focus() {
     let mut f = Fixture::new();
@@ -72,6 +81,7 @@ fn escape_closes_and_restores_focus() {
     assert_eq!(f.h.state.focused(), before);
 }
 
+/// Choosing a theme applies it and saves it, keeping config comments.
 #[test]
 fn theme_item_applies_and_saves() {
     let mut f = Fixture::new();
@@ -84,6 +94,7 @@ fn theme_item_applies_and_saves() {
     assert!(text.contains("# my hand-written comment"));
 }
 
+/// The tab strip's "+" button opens the switcher.
 #[test]
 fn plus_button_opens_switcher() {
     let mut f = Fixture::new();

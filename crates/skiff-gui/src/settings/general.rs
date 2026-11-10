@@ -1,5 +1,6 @@
-//! ssh program, ssh config, scrollback, hidden files, local start folder,
-//! host status checks, hidden hosts, connection history.
+//! General settings: ssh program, ssh config, scrollback, hidden files, local
+//! start folder and host status checks (saved with Save), plus hidden hosts and
+//! connection history (applied at once).
 
 use skiff_core::config::StatusChecks;
 use skiff_ui::geom::Rect;
@@ -9,19 +10,27 @@ use skiff_ui::widgets::{button, checkbox, dropdown_labeled, label};
 use super::{LABEL_W, Rows, error_line, field, split_row};
 use crate::app::{GuiApp, local_start_dir};
 
+/// The General page's form state.
 #[derive(Default)]
 pub struct GeneralState {
     /// ssh program, ssh config file, scrollback lines, local start folder.
     fields: [String; 4],
+    /// "Load ~/.ssh/config".
     load_ssh_config: bool,
+    /// "Show hidden files" in file panes.
     show_hidden: bool,
     /// 0 = only when asked, 1 = also at start.
     status_checks: usize,
+    /// Edited since loaded or saved (stop following the config).
     dirty: bool,
+    /// Why the last save failed.
     error: Option<String>,
 }
 
+/// Draws the General page. The Save part follows the config until edited;
+/// the last two rows act immediately.
 pub fn view(ui: &mut Ui, rect: Rect, st: &mut GeneralState, app: &mut GuiApp) {
+    // An unedited form follows the config.
     if !st.dirty {
         let s = &app.cfg.settings;
         st.fields = [
@@ -85,6 +94,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut GeneralState, app: &mut GuiApp) {
     label(ui, parts[1], &format!("{n} host{} remembered", if n == 1 { "" } else { "s" }), Some(muted));
 }
 
+/// Validates the fields (ssh program required, scrollback 100..=1000000),
+/// writes them to the config, updates the local start folder and saves.
 fn save(st: &GeneralState, app: &mut GuiApp) -> Result<(), String> {
     let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
     let ssh = opt(&st.fields[0]).ok_or("The ssh program is required")?;

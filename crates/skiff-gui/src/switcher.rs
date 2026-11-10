@@ -9,20 +9,29 @@ use skiff_ui::text::FontKind;
 use skiff_ui::ui::{Id, Sense, Ui};
 use skiff_ui::widgets::{TextInputOpts, text_input};
 
+/// Most result rows shown at once; lower-ranked matches are cut off.
 const MAX_ROWS: usize = 10;
 
+/// App commands the switcher can run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cmd {
+    /// Open the new-host form in the settings tab.
     NewConnection,
+    /// Open the settings tab.
     Settings,
+    /// Re-read the config files.
     ReloadConfig,
+    /// Open the port-forwards tab.
     Forwards,
+    /// Re-probe the hosts' reachability.
     CheckStatus,
 }
 
 impl Cmd {
+    /// Every command, in the order listed on an empty query.
     const ALL: [Cmd; 5] = [Cmd::NewConnection, Cmd::Settings, Cmd::ReloadConfig, Cmd::Forwards, Cmd::CheckStatus];
 
+    /// The text shown and matched against the query.
     fn label(self) -> &'static str {
         match self {
             Cmd::NewConnection => "New host",
@@ -40,6 +49,7 @@ pub const RECENT_HOSTS: usize = 8;
 /// What ranking needs from the app besides the lists.
 #[derive(Debug, Default)]
 pub struct RankCtx {
+    /// Include hosts the user marked hidden.
     pub show_hidden: bool,
     /// Most recent first (see `History::recent`).
     pub recent: Vec<String>,
@@ -47,20 +57,26 @@ pub struct RankCtx {
     pub snippets: Vec<(usize, String)>,
 }
 
+/// What a switcher row does when chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     /// Open a terminal to `hosts[i]`.
     Host(usize),
     /// Open a file transfer to `hosts[i]`.
     HostFiles(usize),
+    /// Switch to the open tab with this id.
     Tab(u64),
+    /// Apply (and save) the named theme.
     Theme(String),
+    /// Run an app command.
     Command(Cmd),
     /// Type `cfg.snippets[i]` into the active terminal.
     Snippet(usize),
 }
 
-/// Case-insensitive subsequence score (higher is better), `None` if no match.
+/// Case-insensitive match score (higher is better), `None` if no match: a
+/// substring scores 1000 minus its position, a scattered subsequence scores
+/// the query's length (so a substring hit normally beats a subsequence hit).
 fn score_text(query: &str, text: &str) -> Option<i64> {
     let q = query.to_lowercase();
     let hay = text.to_lowercase();
@@ -79,7 +95,10 @@ fn score_text(query: &str, text: &str) -> Option<i64> {
     Some(score)
 }
 
-/// Everything matching `query`, best first, with display labels.
+/// Everything matching `query`, best first, as (item, label, score).
+///
+/// On an empty query fixed score bands order the groups: tabs, then recent
+/// hosts, then commands, snippets and themes. Typing ranks purely by match.
 pub fn rank(query: &str, hosts: &[HostEntry], tabs: &[(u64, String)], themes: &[String], ctx: &RankCtx) -> Vec<(Item, String, i64)> {
     let q = query.trim();
     let mut out: Vec<(Item, String, i64)> = vec![];
@@ -100,12 +119,14 @@ pub fn rank(query: &str, hosts: &[HostEntry], tabs: &[(u64, String)], themes: &[
             continue;
         }
         if let Some(s) = fuzzy_score(q, h) {
+            // Empty query: by recency (or config order); else by match score.
             let base = match (empty, recent) {
                 (true, Some(r)) => 2000 + n - r as i64,
                 (true, None) => 2000 + n - i as i64,
                 _ => s,
             };
             out.push((Item::Host(i), format!("{}  \u{2014} terminal", h.name), base));
+            // The file-transfer variant only appears once the user types.
             if !empty {
                 out.push((Item::HostFiles(i), format!("{}  \u{2014} file transfer", h.name), base - 1));
             }
@@ -126,26 +147,34 @@ pub fn rank(query: &str, hosts: &[HostEntry], tabs: &[(u64, String)], themes: &[
             out.push((Item::Theme(t.clone()), format!("Theme: {t}"), if empty { 0 } else { s }));
         }
     }
-    // Stable: equal scores keep the order above (tabs, hosts, commands, themes).
+    // Stable: equal scores keep the order above (tabs, hosts, commands,
+    // snippets, themes).
     out.sort_by_key(|o| std::cmp::Reverse(o.2));
     out
 }
 
+/// The switcher's state between frames while it is open.
 #[derive(Debug, Default)]
 pub struct SwitcherState {
+    /// The search text.
     pub query: String,
+    /// Index of the highlighted row (among the shown rows).
     pub sel: usize,
     /// Set on the frame the switcher opens (focus moves into the input).
     pub just_opened: bool,
 }
 
+/// What happened in the switcher this frame.
 #[derive(Debug, Default, PartialEq)]
 pub struct Outcome {
+    /// The row picked by Enter or a click.
     pub chosen: Option<Item>,
+    /// The switcher should close (Esc, click outside, or a choice was made).
     pub close: bool,
 }
 
-/// Draws the switcher over everything; `items` comes from [`rank`].
+/// Draws the switcher over everything and handles its keys and clicks;
+/// `items` comes from [`rank`].
 pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) -> Outcome {
     let mut out = Outcome::default();
     let input_id = Id::new("switcher-input");
@@ -153,6 +182,8 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
         ui.request_focus(input_id);
         st.just_opened = false;
     }
+    // Keyboard first: Up/Down wrap around the shown rows, Esc closes,
+    // Enter picks the highlighted row.
     let shown = items.len().min(MAX_ROWS);
     st.sel = st.sel.min(shown.saturating_sub(1));
     for (key, delta) in [(Key::Down, 1i32), (Key::Up, -1)] {
@@ -167,6 +198,7 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
         out.chosen = items.get(st.sel).map(|i| i.0.clone());
     }
 
+    // Panel: centred horizontally near the top, sized to the shown rows.
     let p = ui.style().palette;
     let win = ui.window_rect();
     let w = ui.px(600).min(win.w - ui.px(40)).max(ui.px(200));
@@ -177,6 +209,7 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
     let panel = Rect::new(win.x + (win.w - w) / 2, win.y + ui.px(80), w, h);
     ui.overlay(|ui| {
         ui.a11y_group(Id::new("switcher-dialog"), skiff_ui::a11y::Role::Dialog, "Quick switcher", |ui| {
+            // A click on the dimmed backdrop (outside the panel) closes.
             let backdrop = ui.interact(Id::new("switcher-backdrop"), win, Sense::click());
             if backdrop.clicked {
                 out.close = true;
@@ -189,6 +222,7 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
                 painter.rect(panel, p.surface_alt, radius);
                 painter.border(panel, p.border, bw, radius);
             }
+            // Claims the panel area so clicks on it don't reach the backdrop.
             ui.interact(Id::new("switcher-panel"), panel, Sense::hover());
             let input = Rect::new(panel.x + pad, panel.y + pad, panel.w - 2 * pad, input_h);
             let r = text_input(
@@ -211,6 +245,8 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
             for (i, (item, label, _)) in items.iter().take(MAX_ROWS).enumerate() {
                 let row = Rect::new(panel.x + pad, input.bottom() + pad + i as i32 * row_h, panel.w - 2 * pad, row_h);
                 let rr = ui.interact(Id::new(("switcher-row", i)), row, Sense::click());
+                // Hover moves the highlight only on real mouse movement, so a
+                // still pointer doesn't fight the arrow keys.
                 if rr.hovered && ui.input().events.iter().any(|e| matches!(e, skiff_ui::input::Event::MouseMove(_))) {
                     st.sel = i;
                 }

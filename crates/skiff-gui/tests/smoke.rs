@@ -8,6 +8,8 @@ use skiff_gui::app::GuiApp;
 use skiff_ui::display::Prim;
 use skiff_ui::ui::testing::Harness;
 
+/// A temp config with one connection to a closed local port; keep the
+/// returned dir alive for the test.
 fn temp_config() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -19,6 +21,8 @@ fn temp_config() -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
+/// The app draws its first frame offscreen: the host is in the sidebar and
+/// the theme's background is painted.
 #[test]
 fn renders_first_frame_offscreen() {
     let (_dir, path) = temp_config();
@@ -33,6 +37,8 @@ fn renders_first_frame_offscreen() {
     assert_eq!(c.pixel(640, 400) & 0xffffff, 0x0f1117, "midnight background");
 }
 
+/// Started with the askpass environment set, the binary acts as the helper:
+/// it fails fast on an unreachable broker instead of opening a window.
 #[test]
 fn askpass_helper_mode_exits_without_window() {
     let start = Instant::now();

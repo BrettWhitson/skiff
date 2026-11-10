@@ -9,6 +9,7 @@ use crate::testing::Env;
 
 const CTRL: Modifiers = Modifiers { ctrl: true, shift: false, alt: false, logo: false };
 
+/// A temp folder with two files, a dot-file, and two folders (`adir` holding `inner.txt`).
 fn tree() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     for f in ["b.txt", "A.txt", ".hidden"] {
@@ -21,6 +22,7 @@ fn tree() -> tempfile::TempDir {
     d
 }
 
+/// Folders come first, names sort case-insensitively, and dot-files show only with "Hidden".
 #[test]
 fn lists_sorted_dirs_first_hidden_filtered() {
     let d = tree();
@@ -31,6 +33,7 @@ fn lists_sorted_dirs_first_hidden_filtered() {
     assert!(e.names(0).contains(&".hidden".to_string()));
 }
 
+/// Double-clicking a folder opens it and Backspace goes back to the parent.
 #[test]
 fn navigate_into_and_up() {
     let d = tree();
@@ -44,6 +47,7 @@ fn navigate_into_and_up() {
     assert_eq!(e.tab.panes[0].cwd, e.start);
 }
 
+/// A listing answering an older request is ignored in favour of the newest one.
 #[test]
 fn stale_listing_dropped() {
     let d = tree();
@@ -68,6 +72,7 @@ fn stale_listing_dropped() {
     assert_eq!(e.tab.panes[0].cwd, adir);
 }
 
+/// New folder, rename and delete work end to end, and delete waits for confirmation.
 #[test]
 fn mkdir_rename_delete_with_confirm() {
     let d = tree();
@@ -97,6 +102,7 @@ fn mkdir_rename_delete_with_confirm() {
     assert!(!d.path().join("renamed").exists());
 }
 
+/// The Delete key asks about a multi-selection by count, and Cancel deletes nothing.
 #[test]
 fn delete_key_confirms_multi_selection() {
     let d = tree();
@@ -117,6 +123,7 @@ fn delete_key_confirms_multi_selection() {
     assert!(d.path().join("A.txt").exists());
 }
 
+/// Typing a missing path shows an error and keeps the old folder and listing.
 #[test]
 fn go_to_path_invalid_shows_error() {
     let d = tree();
@@ -134,12 +141,14 @@ fn go_to_path_invalid_shows_error() {
     assert!(e.texts().iter().any(|t| t.contains("no-such-dir")), "{:?}", e.texts());
 }
 
+/// A known timestamp formats as the right UTC date and time.
 #[test]
 fn formats_modified_time() {
     let t = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     assert_eq!(format_time(t), "2023-11-14 22:13");
 }
 
+/// After a refresh adds a file, the same files stay selected even though rows moved.
 #[test]
 fn selection_follows_names_across_refresh() {
     let d = tempfile::tempdir().unwrap();
@@ -164,6 +173,7 @@ fn selection_follows_names_across_refresh() {
     assert_eq!(names, vec!["c.log", "e.log"]);
 }
 
+/// The path bar is a button for screen readers and Enter on it opens editing.
 #[test]
 fn path_bar_edits_from_keyboard() {
     let d = tree();
@@ -176,6 +186,7 @@ fn path_bar_edits_from_keyboard() {
     assert!(e.tab.panes[0].path_edit.is_some(), "Enter on the focused path bar edits it");
 }
 
+/// A folder name with a slash is refused with a reason and the bar stays open.
 #[test]
 fn invalid_new_folder_name_says_why() {
     let d = tree();
@@ -188,6 +199,7 @@ fn invalid_new_folder_name_says_why() {
     assert!(e.tab.panes[0].confirm.is_some(), "the bar stays open to fix the name");
 }
 
+/// Esc closes only the inline bar of the pane that has focus; a delete question starts on Cancel.
 #[test]
 fn esc_closes_only_the_focused_panes_bar() {
     let d = tree();
@@ -210,6 +222,7 @@ fn esc_closes_only_the_focused_panes_bar() {
     assert!(e.tab.panes[0].confirm.is_some(), "and left the other question alone");
 }
 
+/// The location pickers have accessible names, and a host missing from the list still shows by name.
 #[test]
 fn location_picker_is_named_and_keeps_a_removed_host() {
     let d = tree();

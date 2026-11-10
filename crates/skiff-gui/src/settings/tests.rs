@@ -9,6 +9,7 @@ use crate::keys::Action;
 const CTRL: Modifiers = Modifiers { ctrl: true, shift: false, alt: false, logo: false };
 const CTRL_SHIFT: Modifiers = Modifiers { ctrl: true, shift: true, alt: false, logo: false };
 
+/// A fixture with the settings tab open on `section`.
 fn settings(section: &str) -> Fixture {
     let mut f = Fixture::new();
     f.app.do_action(Action::Settings);
@@ -26,10 +27,12 @@ fn set_field(f: &mut Fixture, label: &str, value: &str) {
     f.frame(vec![]);
 }
 
+/// The config file's current text on disk.
 fn file(f: &Fixture) -> String {
     std::fs::read_to_string(&f.path).unwrap()
 }
 
+/// Saving a connection edited from the sidebar keeps the file's comments and writes the new port.
 #[test]
 fn settings_save_preserves_comments() {
     let mut f = Fixture::new();
@@ -44,6 +47,7 @@ fn settings_save_preserves_comments() {
     assert_eq!(f.app.cfg.connections[0].port, Some(2222));
 }
 
+/// A host added in settings is saved and shows in the sidebar.
 #[test]
 fn add_connection_appears_in_sidebar() {
     let mut f = settings("Connections");
@@ -57,6 +61,7 @@ fn add_connection_appears_in_sidebar() {
     assert!(f.texts().iter().filter(|t| *t == "gamma").count() >= 1);
 }
 
+/// Adding a host with a taken name fails with a message and leaves the file untouched.
 #[test]
 fn duplicate_name_rejected() {
     let mut f = settings("Connections");
@@ -69,6 +74,7 @@ fn duplicate_name_rejected() {
     assert_eq!(file(&f), CONFIG);
 }
 
+/// Port 0 is refused and nothing is added.
 #[test]
 fn port_out_of_range_rejected() {
     let mut f = settings("Connections");
@@ -81,6 +87,7 @@ fn port_out_of_range_rejected() {
     assert_eq!(f.app.cfg.connections.len(), 2);
 }
 
+/// A missing font file shows an error and changes neither the fonts nor the config.
 #[test]
 fn font_path_invalid_keeps_old_fonts() {
     let mut f = settings("Appearance");
@@ -92,6 +99,7 @@ fn font_path_invalid_keeps_old_fonts() {
     assert!(!file(&f).contains("missing.ttf"));
 }
 
+/// Recording a chord saves it under `[keys]`, takes effect, and is not acted on while recording.
 #[test]
 fn rebind_action_saves_keys_table() {
     let mut f = settings("Keybindings");
@@ -105,6 +113,7 @@ fn rebind_action_saves_keys_table() {
     assert!(f.app.tabs.len() == 1, "the captured chord did not close the tab");
 }
 
+/// Esc while recording saves nothing; Backspace removes the override and restores the default chord.
 #[test]
 fn rebind_escape_cancels_backspace_resets() {
     let mut f = settings("Keybindings");
@@ -125,6 +134,7 @@ fn rebind_escape_cancels_backspace_resets() {
     assert_eq!(f.app.keymap.match_key(&Key::Char('w'), CTRL_SHIFT, false), Some(Action::CloseTab));
 }
 
+/// A config file changed on disk is picked up (here: the theme).
 #[test]
 fn external_edit_reloads() {
     let mut f = Fixture::new();
@@ -137,6 +147,7 @@ fn external_edit_reloads() {
     assert_eq!(f.app.theme.name, "nord");
 }
 
+/// An unfocused window stops polling the config file and checks again as soon as it regains focus.
 #[test]
 fn unfocused_window_does_not_poll() {
     let mut f = Fixture::new();
@@ -153,6 +164,7 @@ fn unfocused_window_does_not_poll() {
     assert_eq!(f.app.theme.name, "nord", "focus gain polls at once");
 }
 
+/// A config reload does not overwrite a form with unsaved edits.
 #[test]
 fn unsaved_form_survives_reload() {
     let mut f = settings("General");
@@ -162,6 +174,7 @@ fn unsaved_form_survives_reload() {
     assert!(f.texts().iter().any(|t| t == "my-ssh"), "{:?}", f.texts());
 }
 
+/// An open connection form saves and duplicates the right host after an earlier one is deleted elsewhere.
 #[test]
 fn form_follows_its_connection_when_others_are_deleted() {
     let mut f = Fixture::new();
@@ -178,6 +191,7 @@ fn form_follows_its_connection_when_others_are_deleted() {
     assert_eq!(f.app.cfg.connections[0].port, Some(3333));
 }
 
+/// One host-specific, two-line snippet, appended to the test config.
 const SNIPPET: &str = r#"
 [[snippet]]
 name = "greet"
@@ -185,6 +199,7 @@ command = "echo one\necho two"
 host = "beta"
 "#;
 
+/// A fixture with `extra` appended to the config and the Snippets page open.
 fn snippets_page(extra: &str) -> Fixture {
     let mut f = Fixture::with_config(&format!("{CONFIG}{extra}"));
     f.app.do_action(Action::Settings);
@@ -193,6 +208,7 @@ fn snippets_page(extra: &str) -> Fixture {
     f
 }
 
+/// Adding a snippet focuses Name, saves a `[[snippet]]` entry, and lists it with an accessible name.
 #[test]
 fn add_snippet_saves_to_config() {
     let mut f = snippets_page("");
@@ -211,6 +227,7 @@ fn add_snippet_saves_to_config() {
     assert_eq!((host.role, host.value.as_deref()), (skiff_ui::a11y::Role::ComboBox, Some("Every host")));
 }
 
+/// Missing name, duplicate name and blank command are each refused with a message; nothing is saved.
 #[test]
 fn snippet_form_validates() {
     let mut f = snippets_page(SNIPPET);
@@ -229,6 +246,7 @@ fn snippet_form_validates() {
     assert_eq!(file(&f), format!("{CONFIG}{SNIPPET}"));
 }
 
+/// Renaming a multi-line, host-specific snippet keeps its command lines and host.
 #[test]
 fn edit_snippet_keeps_lines_and_host() {
     let mut f = snippets_page(SNIPPET);
@@ -244,6 +262,7 @@ fn edit_snippet_keeps_lines_and_host() {
     assert!(!file(&f).contains("greet"), "{}", file(&f));
 }
 
+/// Delete asks first with focus on Cancel; Esc keeps the snippet, confirming removes it.
 #[test]
 fn delete_snippet_asks_first() {
     let mut f = snippets_page(SNIPPET);
@@ -262,6 +281,7 @@ fn delete_snippet_asks_first() {
     assert_eq!(file(&f), CONFIG);
 }
 
+/// Settings lists and dropdowns expose accessible names and roles.
 #[test]
 fn settings_lists_and_dropdowns_are_named() {
     let f = settings("Connections");
@@ -275,6 +295,7 @@ fn settings_lists_and_dropdowns_are_named() {
     assert_eq!(t.find("Check host status").map(|n| n.role), Some(skiff_ui::a11y::Role::ComboBox));
 }
 
+/// Focusing a keybinding row below the fold scrolls it fully into view.
 #[test]
 fn keybindings_scroll_to_the_focused_row() {
     let mut f = settings("Keybindings");
@@ -285,6 +306,7 @@ fn keybindings_scroll_to_the_focused_row() {
     assert!(b.h > 0 && b.bottom() <= 800 - 24, "fully above the status bar: {b:?}");
 }
 
+/// Two snippets for switching between.
 const TWO_SNIPPETS: &str = r#"
 [[snippet]]
 name = "greet"
@@ -295,6 +317,7 @@ name = "other"
 command = "ls"
 "#;
 
+/// Switching away from an edited snippet asks first (Esc and Keep keep edits); an untouched new form does not ask.
 #[test]
 fn switching_snippets_asks_before_discarding_edits() {
     let mut f = snippets_page(TWO_SNIPPETS);
@@ -320,6 +343,7 @@ fn switching_snippets_asks_before_discarding_edits() {
     assert_eq!(f.app.settings.snippets.form.as_ref().unwrap().name, "greet");
 }
 
+/// Removing a command line keeps the remaining line's input id (and so its focus and cursor).
 #[test]
 fn snippet_line_inputs_keep_their_ids() {
     let mut f = snippets_page(SNIPPET);
@@ -331,6 +355,7 @@ fn snippet_line_inputs_keep_their_ids() {
     assert_eq!(id_of(&f, "echo two"), Some(before), "its input (focus, cursor) stays with the line");
 }
 
+/// Opening another host over an edited connection form asks first; an untouched new form does not ask.
 #[test]
 fn connection_form_asks_before_discarding_edits() {
     let mut f = Fixture::new();

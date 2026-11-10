@@ -21,6 +21,7 @@ fn env(a: &Path, b: &Path) -> Env {
     e
 }
 
+/// Source folder with `x.txt`, `y.txt` and `sub/deep.txt`, plus an empty destination folder.
 fn dirs() -> (tempfile::TempDir, tempfile::TempDir) {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
@@ -31,10 +32,12 @@ fn dirs() -> (tempfile::TempDir, tempfile::TempDir) {
     (a, b)
 }
 
+/// True once there are transfers and none is still running or asking.
 fn all_done(e: &Env) -> bool {
     !e.tab.transfers.rows.is_empty() && e.tab.transfers.rows.iter().all(|r| !matches!(r.state, RowState::Running | RowState::Waiting(_)))
 }
 
+/// Dragging a row onto the other pane copies the file and refreshes that pane.
 #[test]
 fn drag_between_panes_copies_local_to_local() {
     let (a, b) = dirs();
@@ -51,6 +54,7 @@ fn drag_between_panes_copies_local_to_local() {
     e.until("right pane refreshed", |e| e.names(1).contains(&"x.txt".to_string()));
 }
 
+/// F5 copies a selected folder with its contents.
 #[test]
 fn f5_copies_directory_recursively() {
     let (a, b) = dirs();
@@ -61,6 +65,7 @@ fn f5_copies_directory_recursively() {
     assert_eq!(std::fs::read(b.path().join("sub").join("deep.txt")).unwrap(), b"deep");
 }
 
+/// Existing files raise a question, and "Apply to all" + Skip leaves every one untouched.
 #[test]
 fn overwrite_prompt_skip_all() {
     let (a, b) = dirs();
@@ -86,6 +91,7 @@ fn overwrite_prompt_skip_all() {
     assert_eq!(std::fs::read(b.path().join("y.txt")).unwrap(), b"old y");
 }
 
+/// Cancelling a transfer paused on a question ends it as cancelled without writing.
 #[test]
 fn cancel_marks_row_cancelled() {
     let (a, b) = dirs();
@@ -100,6 +106,7 @@ fn cancel_marks_row_cancelled() {
     assert_eq!(std::fs::read(b.path().join("x.txt")).unwrap(), b"old x");
 }
 
+/// A copy into a vanished folder fails, and Retry succeeds once the folder is back.
 #[test]
 fn failed_transfer_retry_succeeds() {
     let (a, b) = dirs();
@@ -119,6 +126,7 @@ fn failed_transfer_retry_succeeds() {
     assert_eq!(std::fs::read(gone.join("x.txt")).unwrap(), b"new x");
 }
 
+/// A file dropped from the OS onto a pane is copied into that pane's folder.
 #[test]
 fn os_file_drop_uploads() {
     let (a, b) = dirs();
@@ -131,6 +139,7 @@ fn os_file_drop_uploads() {
     assert_eq!(std::fs::read(b.path().join("dropped.bin")).unwrap(), b"from explorer");
 }
 
+/// "Clear finished" removes completed rows.
 #[test]
 fn clear_finished_removes_done_rows() {
     let (a, b) = dirs();
@@ -142,6 +151,7 @@ fn clear_finished_removes_done_rows() {
     assert!(e.tab.transfers.rows.is_empty());
 }
 
+/// Twelve copies never run more than four at once, the rest queue, and all complete.
 #[test]
 fn queue_runs_at_most_four_at_once() {
     let a = tempfile::tempdir().unwrap();
@@ -170,6 +180,7 @@ fn queue_runs_at_most_four_at_once() {
     }
 }
 
+/// Retry swaps in a pane's current connection only while that pane still shows the same location.
 #[test]
 fn retry_takes_the_panes_current_connection() {
     use super::transfers::Spec;

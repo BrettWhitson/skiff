@@ -21,6 +21,8 @@ fn set_field(f: &mut Fixture, label: &str, value: &str) {
     f.frame(vec![]);
 }
 
+/// A fixture whose hosts come from a temp ssh config holding `ssh`; returns
+/// the fixture and that file's path. ssh itself is a nonexistent binary.
 fn with_ssh(ssh: &str) -> (Fixture, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let ssh_path = dir.path().join("ssh_config");
@@ -33,6 +35,7 @@ fn with_ssh(ssh: &str) -> (Fixture, std::path::PathBuf) {
     (f, ssh_path)
 }
 
+/// Editing an ssh-config host rewrites just its line, keeping comments.
 #[test]
 fn sidebar_edit_ssh_host_saves_in_place() {
     let (mut f, ssh) = with_ssh("# servers\nHost web\n    HostName 10.0.0.5\n    Port 22\n");
@@ -44,6 +47,7 @@ fn sidebar_edit_ssh_host_saves_in_place() {
     assert_eq!(f.app.hosts.iter().find(|h| h.name == "web").unwrap().port, Some(2200));
 }
 
+/// A host from a shared `Host a b` block opens read-only with the reason shown.
 #[test]
 fn read_only_ssh_host_shows_why() {
     let (mut f, _) = with_ssh("Host a b\n    User x\n");
@@ -52,6 +56,8 @@ fn read_only_ssh_host_shows_why() {
     assert!(f.texts().iter().any(|t| t.contains("shared block")), "{:?}", f.texts());
 }
 
+/// "Check status" against a closed local port marks the host offline, shown
+/// in the status dot's hover label.
 #[test]
 fn check_status_shows_dot_label() {
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
@@ -72,6 +78,7 @@ fn check_status_shows_dot_label() {
     assert!(f.texts().iter().any(|t| t.contains("offline")), "{:?}", f.texts());
 }
 
+/// Hiding a host writes the hidden marker and removes it from the list.
 #[test]
 fn hide_moves_host_out_of_the_list() {
     let (mut f, ssh) = with_ssh("Host a\n    HostName 1.1.1.1\nHost b\n");
@@ -82,6 +89,7 @@ fn hide_moves_host_out_of_the_list() {
     assert!(f.try_find("b").is_some());
 }
 
+/// An invalid listen port shows an inline error and saves nothing.
 #[test]
 fn forward_form_validation_inline() {
     let mut f = Fixture::new();
@@ -93,6 +101,7 @@ fn forward_form_validation_inline() {
     assert!(f.app.cfg.forwards.is_empty());
 }
 
+/// A save that failed (read-only ssh config) succeeds when retried.
 #[cfg(windows)]
 #[test]
 fn failed_save_can_be_retried() {
@@ -113,6 +122,8 @@ fn failed_save_can_be_retried() {
     assert!(std::fs::read_to_string(&ssh).unwrap().contains("Host web2"));
 }
 
+/// The delete confirmation removes the right host even if the host list
+/// is rebuilt (reindexed) while it is open.
 #[test]
 fn delete_confirm_follows_the_host_after_a_rebuild() {
     let mut f = Fixture::new();
@@ -128,8 +139,11 @@ fn delete_confirm_follows_the_host_after_a_rebuild() {
     assert_eq!(names, ["gamma", "alpha"]);
 }
 
+/// One host `alpha` (unreachable port) with one saved dynamic forward.
 const FWD_CONFIG: &str = "[settings]\nload_ssh_config = false\nssh_binary = \"skiff-test-no-such-ssh\"\n\n[[connection]]\nname = \"alpha\"\nhost = \"127.0.0.1\"\nport = 1\n\n[[forward]]\nhost = \"alpha\"\nkind = \"dynamic\"\nlisten = 47390\n";
 
+/// "Save" stores a forward without starting it, and Delete only removes it
+/// after the confirmation's own Delete button.
 #[test]
 fn forward_save_without_start_and_delete_asks() {
     let mut f = Fixture::with_config(FWD_CONFIG);
@@ -157,6 +171,7 @@ fn forward_save_without_start_and_delete_asks() {
     assert!(!std::fs::read_to_string(&f.path).unwrap().contains("47390"));
 }
 
+/// A stopped forward is pruned from the running list on a later frame.
 #[test]
 fn stopped_forwards_are_dropped() {
     let mut f = Fixture::with_config(FWD_CONFIG);
@@ -175,6 +190,7 @@ fn stopped_forwards_are_dropped() {
     }
 }
 
+/// Renaming a host moves its forwards and connection history to the new name.
 #[test]
 fn rename_carries_forwards_and_history() {
     let mut f = Fixture::with_config(FWD_CONFIG);
@@ -190,6 +206,7 @@ fn rename_carries_forwards_and_history() {
     assert_eq!(hist.recent(5), ["alpha2"]);
 }
 
+/// Editing a forward whose host no longer exists keeps that host.
 #[test]
 fn editing_a_forward_keeps_a_host_no_longer_listed() {
     let mut f = Fixture::with_config(&FWD_CONFIG.replace("host = \"alpha\"\nkind", "host = \"gone\"\nkind"));
@@ -201,6 +218,7 @@ fn editing_a_forward_keeps_a_host_no_longer_listed() {
     assert_eq!((f.app.cfg.forwards[0].host.as_str(), f.app.cfg.forwards[0].listen), ("gone", 47392), "not moved to another host");
 }
 
+/// Forward row buttons and sidebar controls have accessible names.
 #[test]
 fn forward_rows_and_sidebar_controls_are_named() {
     let mut f = Fixture::with_config(FWD_CONFIG);
@@ -215,6 +233,8 @@ fn forward_rows_and_sidebar_controls_are_named() {
     assert_eq!(t.find("Sort hosts by").and_then(|n| n.value.clone()).as_deref(), Some("Name"));
 }
 
+/// The Delete key asks first with focus on Cancel; Esc cancels and returns
+/// focus to the host list.
 #[test]
 fn sidebar_delete_key_focuses_cancel_and_esc_cancels() {
     let mut f = Fixture::new();
@@ -230,6 +250,8 @@ fn sidebar_delete_key_focuses_cancel_and_esc_cancels() {
     assert_eq!(f.h.state.focused(), Some(skiff_ui::ui::Id::new("sidebar-list")), "back on the list");
 }
 
+/// Saving refuses to resurrect a forward deleted meanwhile and refuses an
+/// exact duplicate.
 #[test]
 fn forward_save_refuses_deleted_and_duplicate() {
     let mut f = Fixture::with_config(FWD_CONFIG);
@@ -248,6 +270,8 @@ fn forward_save_refuses_deleted_and_duplicate() {
     assert!(f.texts().iter().any(|t| t == "This forward is already saved"), "{:?}", f.texts());
 }
 
+/// Opening another form over unsaved edits asks first; "Keep editing" keeps
+/// them and "Discard" replaces the form.
 #[test]
 fn forward_form_asks_before_discarding_edits() {
     let mut f = Fixture::with_config(FWD_CONFIG);

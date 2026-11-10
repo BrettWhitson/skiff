@@ -23,6 +23,7 @@ pub const LABEL_W: i32 = 150;
 /// Height of a form row, logical px.
 pub const ROW_H: i32 = 30;
 
+/// A page of the settings tab, picked in the left-hand list.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Section {
     #[default]
@@ -34,8 +35,10 @@ pub enum Section {
 }
 
 impl Section {
+    /// All sections, in list order.
     const ALL: [Section; 5] = [Section::Connections, Section::Appearance, Section::Keybindings, Section::Snippets, Section::General];
 
+    /// The name shown in the section list.
     fn label(self) -> &'static str {
         match self {
             Section::Connections => "Connections",
@@ -47,6 +50,8 @@ impl Section {
     }
 }
 
+/// The settings tab's UI state: the open section and each form's state
+/// (kept while switching sections).
 #[derive(Default)]
 pub struct SettingsState {
     pub section: Section,
@@ -64,12 +69,17 @@ impl SettingsState {
     }
 }
 
+/// Draws the settings tab: the section list on the left and the chosen
+/// section's form on the right.
 pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
+    // Taken out of the app so the forms can borrow both; put back at the end.
     let mut st = std::mem::take(&mut app.settings);
     let cols = ui.split_h(rect, &[L::Px(170), L::Fill], 0);
     let p = app.theme.palette;
     ui.painter().rect(cols[0], p.surface, 0.0);
     let mut y = cols[0].y + ui.px(12);
+    // Section list: the current one gets an accent bar, and switching
+    // sections stops any key capture.
     for s in Section::ALL {
         let r = Rect::new(cols[0].x + ui.px(8), y, cols[0].w - ui.px(16), ui.px(ROW_H));
         if s == st.section {
@@ -100,14 +110,17 @@ pub struct Rows {
 }
 
 impl Rows {
+    /// Rows starting at the top of `rect`.
     pub fn new(rect: Rect) -> Rows {
         Rows { rect, y: rect.y }
     }
 
+    /// The next standard-height row.
     pub fn next(&mut self, ui: &Ui) -> Rect {
         self.next_h(ui, ROW_H)
     }
 
+    /// The next row `h` logical px tall (plus a 6 px gap after it).
     pub fn next_h(&mut self, ui: &Ui, h: i32) -> Rect {
         let r = Rect::new(self.rect.x, self.y, self.rect.w, ui.px(h));
         self.y += ui.px(h + 6);
@@ -116,6 +129,7 @@ impl Rows {
 }
 
 /// Splits a row into its label and control parts.
+/// The control part is capped at 460 logical px wide.
 pub fn split_row(ui: &Ui, row: Rect) -> (Rect, Rect) {
     let lw = ui.px(LABEL_W).min(row.w);
     (Rect::new(row.x, row.y, lw, row.h), Rect::new(row.x + lw, row.y, (row.w - lw).min(ui.px(460)), row.h))
@@ -146,11 +160,14 @@ pub fn error_line(ui: &mut Ui, row: Rect, err: &Option<String>) {
 /// A switch away from a form with unsaved edits (to `to`), waiting for
 /// "Discard …?" to be answered.
 pub struct PendingDiscard<T> {
+    /// Where to go if the edits are discarded.
     pub to: T,
+    /// Not shown yet: focus Keep editing on the first frame.
     first: bool,
 }
 
 impl<T> PendingDiscard<T> {
+    /// A pending switch to `to`; the prompt takes focus when first shown.
     pub fn new(to: T) -> Self {
         PendingDiscard { to, first: true }
     }
@@ -168,6 +185,7 @@ pub fn discard_prompt<T>(ui: &mut Ui, rows: &mut Rows, ids: &str, what: &str, p:
     if std::mem::take(&mut p.first) {
         ui.request_focus(no);
     }
+    // Esc counts only while focus is on one of the two buttons.
     let esc =
         (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&skiff_ui::input::Key::Escape, skiff_ui::input::Modifiers::NONE);
     if button(ui, yes, b[0], "Discard").clicked {

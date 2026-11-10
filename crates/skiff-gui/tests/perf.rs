@@ -14,8 +14,10 @@ use skiff_ui::input::{Event, Key, Modifiers};
 use skiff_ui::text::Fonts;
 use skiff_ui::ui::testing::Harness;
 
+/// No ssh config, a fixed theme, and an ssh binary that doesn't exist.
 const CONFIG: &str = "[settings]\nload_ssh_config = false\ntheme = \"midnight\"\nssh_binary = \"skiff-test-no-such-ssh\"\n";
 
+/// A fresh app using `CONFIG`, saved in `dir`.
 fn app(dir: &Path) -> GuiApp {
     let path = dir.join("config.toml");
     std::fs::write(&path, CONFIG).unwrap();
@@ -33,6 +35,7 @@ fn local_terminal(app: &mut GuiApp, program: &str, args: Vec<String>) {
     app.active = app.tabs.len() - 1;
 }
 
+/// The visible text of the active terminal's focused pane (empty if none).
 fn screen_text(app: &GuiApp) -> String {
     match &app.tabs[app.active].kind {
         TabKind::Terminal(t) => t.focused().session.as_ref().map(|s| s.parser.lock().unwrap().screen().contents()).unwrap_or_default(),
@@ -45,6 +48,7 @@ fn mixed_output(bytes: usize) -> String {
     let mut s = String::with_capacity(bytes + 200);
     let mut i = 0u32;
     while s.len() < bytes {
+        // Cycle through the ANSI foreground colours 31-37.
         let c = 31 + i % 7;
         s.push_str(&format!("\x1b[{c}m{i:>8}\x1b[0m \x1b[1mbold\x1b[0m plain text \u{4e2d}\u{6587} \x1b[4munder\x1b[0m"));
         if i.is_multiple_of(5) {
@@ -56,10 +60,12 @@ fn mixed_output(bytes: usize) -> String {
     s
 }
 
+/// The system fonts, for realistic glyph rasterising costs.
 fn real_fonts() -> Fonts {
     Fonts::load(None, None).expect("system fonts")
 }
 
+/// An idle, unfocused window schedules no repaint timer.
 #[test]
 fn idle_requests_no_redraw() {
     let dir = tempfile::tempdir().unwrap();
@@ -71,6 +77,8 @@ fn idle_requests_no_redraw() {
     assert_eq!(h.repaint_in, None, "unfocused and idle: no timer");
 }
 
+/// Loading fonts, building the app and painting the first frame take under
+/// 300 ms.
 #[test]
 #[ignore]
 fn first_frame_under_300ms() {
@@ -88,6 +96,8 @@ fn first_frame_under_300ms() {
     assert!(took < Duration::from_millis(300), "{took:?}");
 }
 
+/// A batch file that prints `text`, then either reads a line and echoes
+/// `GOT:<line>` or waits; returns the command to run it.
 #[cfg(windows)]
 fn printer(dir: &Path, text: &str, then_read: bool) -> (String, Vec<String>) {
     std::fs::write(dir.join("out.txt"), text).unwrap();
@@ -97,6 +107,8 @@ fn printer(dir: &Path, text: &str, then_read: bool) -> (String, Vec<String>) {
     ("cmd.exe".into(), vec!["/c".into(), bat.display().to_string()])
 }
 
+/// A shell command that prints `text`, then either reads a line and echoes
+/// `GOT:<line>` or sleeps.
 #[cfg(unix)]
 fn printer(dir: &Path, text: &str, then_read: bool) -> (String, Vec<String>) {
     std::fs::write(dir.join("out.txt"), text).unwrap();
@@ -104,6 +116,7 @@ fn printer(dir: &Path, text: &str, then_read: bool) -> (String, Vec<String>) {
     ("sh".into(), vec!["-c".into(), format!("cat '{}'; {tail}", dir.join("out.txt").display())])
 }
 
+/// A full 4K terminal screen builds and repaints from scratch in under 16 ms.
 #[test]
 #[ignore]
 fn full_terminal_frame_4k_under_16ms() {
@@ -133,6 +146,8 @@ fn full_terminal_frame_4k_under_16ms() {
     let mut tiles = skiff_ui::display::TileRenderer::default();
     let mut cache = skiff_ui::text::cache::GlyphCache::default();
     let bg = h.style.palette.bg;
+    // Best of five, each with every tile invalidated; a second render with
+    // nothing dirty shows the cost of hashing alone.
     let mut best = Duration::MAX;
     for _ in 0..5 {
         tiles.invalidate();
@@ -150,6 +165,8 @@ fn full_terminal_frame_4k_under_16ms() {
     assert!(best < Duration::from_millis(16), "{best:?}");
 }
 
+/// While 10 MB of output floods the terminal, no frame takes over 16 ms
+/// and typed input still reaches the shell.
 #[test]
 #[ignore]
 fn flood_output_frame_bounded() {
@@ -165,6 +182,8 @@ fn flood_output_frame_bounded() {
     let mut typed = false;
     while !screen_text(&a).contains("GOT:ok") {
         assert!(start.elapsed() < Duration::from_secs(300), "flood never finished; worst frame {worst:?}");
+        // After half a second, type "ok" + Enter once; the loop ends when the
+        // shell echoes it back.
         let events = if !typed && start.elapsed() > Duration::from_millis(500) {
             typed = true;
             vec![
@@ -183,6 +202,7 @@ fn flood_output_frame_bounded() {
         let took = t.elapsed();
         worst = worst.max(took);
         frames += 1;
+        // Pace frames at about 60 per second.
         std::thread::sleep(Duration::from_millis(16u64.saturating_sub(took.as_millis() as u64)));
     }
     println!("flood: {frames} frames in {:?}, worst frame {worst:?}", start.elapsed());

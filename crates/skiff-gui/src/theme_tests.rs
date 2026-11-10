@@ -1,6 +1,10 @@
+//! Tests for `theme`: colour mapping, fallbacks and contrast adjustment.
+
 use super::*;
 use skiff_core::theme::builtin;
 
+/// `reset` colours become the concrete defaults and named ANSI colours
+/// resolve through the theme's own palette.
 #[test]
 fn theme_reset_gets_concrete_colors() {
     let term = builtin().into_iter().find(|t| t.name == "terminal").unwrap();
@@ -12,6 +16,7 @@ fn theme_reset_gets_concrete_colors() {
     assert_eq!(t.palette.accent, Color::hex(0x11a8cd));
 }
 
+/// Spot checks of the colour cube and grey ramp against xterm's values.
 #[test]
 fn xterm_256_cube_and_grey() {
     assert_eq!(xterm_256(16), Color::hex(0x000000));
@@ -20,6 +25,7 @@ fn xterm_256_cube_and_grey() {
     assert_eq!(xterm_256(231), Color::hex(0xffffff));
 }
 
+/// A missing ANSI list, or an unparsable entry, uses the xterm default colour.
 #[test]
 fn missing_ansi_falls_back_to_default_palette() {
     let mut d = builtin().into_iter().find(|t| t.name == "nord").unwrap();
@@ -31,6 +37,7 @@ fn missing_ansi_falls_back_to_default_palette() {
     assert_eq!(from_def(&d).ansi[4], xterm_256(4));
 }
 
+/// Every built-in theme maps to an opaque palette without a contrast warning.
 #[test]
 fn every_builtin_maps() {
     for d in builtin() {
@@ -89,6 +96,8 @@ fn builtin_palettes_meet_contrast() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
+/// A theme whose colours are nearly identical still gets distinguishable
+/// muted text and selection, and a warning naming the theme.
 #[test]
 fn unreadable_custom_theme_keeps_muted_and_selection_visible() {
     let mut d = builtin().into_iter().find(|t| t.name == "nord").unwrap();
