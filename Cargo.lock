@@ -4129,6 +4129,91 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
+name = "skiff-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "directories",
+ "interprocess",
+ "libc",
+ "portable-pty",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "skiff-testserver",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "toml_edit",
+ "vt100",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "skiff-gui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "skiff-core",
+ "skiff-testserver",
+ "skiff-ui",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "vt100",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "skiff-ssh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "ratatui",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "skiff-core",
+ "skiff-testserver",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tui-term",
+ "vt100",
+]
+
+[[package]]
+name = "skiff-testserver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "russh",
+ "russh-sftp",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "skiff-ui"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "accesskit_winit",
+ "anyhow",
+ "arboard",
+ "fontdue",
+ "softbuffer",
+ "ttf-parser",
+ "winit",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4393,91 +4478,6 @@ dependencies = [
  "once_cell",
  "rustix 1.1.6",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "termax-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "directories",
- "interprocess",
- "libc",
- "portable-pty",
- "russh-sftp",
- "serde",
- "serde_json",
- "shell-words",
- "tempfile",
- "termax-testserver",
- "tokio",
- "tokio-util",
- "toml",
- "toml_edit",
- "vt100",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "termax-gui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "tempfile",
- "termax-core",
- "termax-testserver",
- "termax-ui",
- "tokio",
- "tokio-util",
- "vt100",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "termax-testserver"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "russh",
- "russh-sftp",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "termax-tui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "ratatui",
- "russh-sftp",
- "serde",
- "serde_json",
- "shell-words",
- "tempfile",
- "termax-core",
- "termax-testserver",
- "tokio",
- "tokio-util",
- "tui-term",
- "vt100",
-]
-
-[[package]]
-name = "termax-ui"
-version = "0.1.0"
-dependencies = [
- "accesskit",
- "accesskit_winit",
- "anyhow",
- "arboard",
- "fontdue",
- "softbuffer",
- "ttf-parser",
- "winit",
 ]
 
 [[package]]

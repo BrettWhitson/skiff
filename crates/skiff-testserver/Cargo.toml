@@ -1,0 +1,15 @@
+[package]
+name = "skiff-testserver"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Local SSH/SFTP server for skiff tests. Never ships."
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+russh-sftp.workspace = true
+russh = "0.65"
+tempfile = "3"
+
+[dev-dependencies]

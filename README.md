@@ -1,4 +1,4 @@
-# termax
+# Skiff
 
 A terminal UI for SSH and file transfer, written in Rust.
 
@@ -6,51 +6,61 @@ A terminal UI for SSH and file transfer, written in Rust.
   **edits `~/.ssh/config` in place** (comments and formatting kept, with backups)
 - Opens each connection in its own **tab**, as an interactive terminal or a dual-pane **SFTP browser**
 - **Port forwards**, opt-in **reachability status**, **recent hosts**, hidden hosts
-- A **command line**: `termax web`, `termax web uptime`, `termax list --json`, shell completion
+- A **command line**: `skiff web`, `skiff web uptime`, `skiff list --json`, shell completion
 - **Themes**, including built-in ones and your own, with live preview
 - **Accessible**: screen readers (GUI), full keyboard use, high-contrast
   themes, interface scaling, a plain TUI mode
 
-termax drives the system OpenSSH client (`ssh`), so `ProxyJump`, agents, keys,
+Skiff drives the system OpenSSH client (`ssh`), so `ProxyJump`, agents, keys,
 `known_hosts`, `Include` and everything else in your OpenSSH setup work exactly
 as they do on the command line.
+
+## Install
+
+```bash
+cargo install skiff-ssh     # installs the `skiff` command
+```
+
+The crate is called `skiff-ssh` (the name `skiff` on crates.io belongs to an
+unrelated project); the command it installs is `skiff`. Skiff was called
+termax before; see [Coming from termax](#coming-from-termax).
 
 ## Build and run
 
 ```bash
-cargo run --release
+cargo run -p skiff-ssh --release
 ```
 
 ```bash
 cargo test
 ```
 
-`termax --config-path` prints where the config file lives; `termax --help`
+`skiff --config-path` prints where the config file lives; `skiff --help`
 lists every command.
 
 ## Command line
 
 ```bash
-termax                       # host list
-termax web                   # terminal to "web"
-termax --files web           # file transfer with "web"
-termax web uptime            # run a command; exits with its status
-termax -t web htop           # same, with a terminal (interactive programs)
-termax list                  # name<TAB>user@host:port<TAB>tags (hidden hosts: --all)
-termax list --json           # the same as JSON
-termax info web [--json]     # one host's details
-termax --host list uptime    # a host literally named "list"
-termax-gui web               # the GUI, opening "web"
+skiff                       # host list
+skiff web                   # terminal to "web"
+skiff --files web           # file transfer with "web"
+skiff web uptime            # run a command; exits with its status
+skiff -t web htop           # same, with a terminal (interactive programs)
+skiff list                  # name<TAB>user@host:port<TAB>tags (hidden hosts: --all)
+skiff list --json           # the same as JSON
+skiff info web [--json]     # one host's details
+skiff --host list uptime    # a host literally named "list"
+skiff-gui web               # the GUI, opening "web"
 ```
 
 An unknown name exits with status 2 and suggests the closest matches.
 Shell completion (host names included):
 
 ```bash
-eval "$(termax completion bash)"     # ~/.bashrc
-eval "$(termax completion zsh)"      # ~/.zshrc
-termax completion fish > ~/.config/fish/completions/termax.fish
-termax completion powershell | Out-String | Invoke-Expression   # $PROFILE
+eval "$(skiff completion bash)"     # ~/.bashrc
+eval "$(skiff completion zsh)"      # ~/.zshrc
+skiff completion fish > ~/.config/fish/completions/skiff.fish
+skiff completion powershell | Out-String | Invoke-Expression   # $PROFILE
 ```
 
 ## How it works
@@ -63,13 +73,31 @@ termax completion powershell | Out-String | Invoke-Expression   # $PROFILE
 
 ## Config
 
-On first run termax writes a commented template to:
+On first run Skiff writes a commented template to:
 
-- Windows: `%APPDATA%\termax\config\config.toml`
-- Linux: `~/.config/termax/config.toml`
-- macOS: `~/Library/Application Support/termax/config.toml`
+- Windows: `%APPDATA%\skiff\config\config.toml`
+- Linux: `~/.config/skiff/config.toml`
+- macOS: `~/Library/Application Support/skiff/config.toml`
 
-You can override the location with `TERMAX_CONFIG=/path/to/config.toml`.
+You can override the location with `SKIFF_CONFIG=/path/to/config.toml`.
+
+### Coming from termax
+
+Skiff was called termax. On its first start, when the Skiff folder above
+doesn't exist yet and the old termax one does, Skiff copies everything in it
+(config, history, window state, ssh config backups) into its own folder and
+says so once; the old folder is left as it was, and nothing that already
+exists is overwritten. This is skipped when `SKIFF_CONFIG` or `TERMAX_CONFIG`
+is set.
+
+| Old (termax) | New (Skiff) |
+|---|---|
+| `%APPDATA%\termax\config\` | `%APPDATA%\skiff\config\` |
+| `~/.config/termax/` | `~/.config/skiff/` |
+| `~/Library/Application Support/termax/` | `~/Library/Application Support/skiff/` |
+| `TERMAX_CONFIG` | `SKIFF_CONFIG` (`TERMAX_CONFIG` still works in this release) |
+| `# termax:` comments in ssh config | `# skiff:` (old ones are read and rewritten when the host is edited) |
+| `*.termax-part` leftovers | `*.skiff-part` (both are skipped when copying folders) |
 
 ```toml
 [settings]
@@ -78,7 +106,7 @@ ssh_binary = "ssh"
 load_ssh_config = true
 # ssh_config_path = "~/.ssh/config"
 scrollback = 5000
-sftp_batch_mode = true      # only when termax can't prompt: fail instead of asking (see below)
+sftp_batch_mode = true      # only when skiff can't prompt: fail instead of asking (see below)
 show_hidden_files = false
 # local_start_dir = "~/Downloads"
 status_checks = "manual"    # or "on_start": check which hosts are reachable at start
@@ -130,14 +158,14 @@ formatting in `config.toml` are kept.
 
 **SFTP passwords.** The SFTP channel has no terminal, so when ssh needs a
 password, a one-time code or a yes/no for an unknown host key, it asks
-termax (`SSH_ASKPASS`, OpenSSH 8.4 or newer): the TUI shows the question in
+Skiff (`SSH_ASKPASS`, OpenSSH 8.4 or newer): the TUI shows the question in
 a dialog (input masked; `y` / `n` for host keys; `Esc` cancels) and the GUI
 in the pane. A question only opens on its own SFTP tab: while you work in
 another tab, that tab is flagged with `?` and the status line says where to
 answer, and keys typed in the first moment after a question opens are
 ignored. A security-key notice ("confirm user presence") needs no answer:
 it shows on the status line (the GUI's pane) and goes away when the key is
-touched. Answers go straight to ssh and are never stored. When termax
+touched. Answers go straight to ssh and are never stored. When Skiff
 can't prompt (an older OpenSSH), `sftp_batch_mode = true` makes ssh fail at
 once with its own message instead; key and agent auth always work.
 
@@ -146,7 +174,7 @@ once with its own message instead; key and agent auth always work.
 **Editing `~/.ssh/config`.** Hosts from your ssh config (and the files it
 `Include`s) can be added, edited, duplicated, hidden, moved between files and
 deleted, from the TUI (`n` / `e` / `d`) or the GUI (sidebar right-click, or
-Settings → Connections). termax changes only the lines you changed: comments,
+Settings → Connections). Skiff changes only the lines you changed: comments,
 indentation, `Key=value` style, quoting, line endings and blank lines stay as
 they were. Before every write it:
 
@@ -158,8 +186,8 @@ they were. Before every write it:
 - writes a temp file and renames it over the original, so a crash never
   leaves half a file (on Unix the file keeps its permissions; a new one is 0600).
 
-termax keeps its own extras (tags, hidden, remote directory) in one comment
-inside the host's block, e.g. `# termax: tags=prod,web; hidden; dir=/srv/app`.
+Skiff keeps its own extras (tags, hidden, remote directory) in one comment
+inside the host's block, e.g. `# skiff: tags=prod,web; hidden; dir=/srv/app`.
 OpenSSH ignores it.
 
 Some hosts are shown but left alone, with the reason: a host that shares a
@@ -174,13 +202,13 @@ saved forwards and in the connection history.
 port and reads the `SSH-` greeting — no login. It is off until you ask
 (`status_checks = "on_start"` runs it at start) because probing many servers
 unprompted can trip intrusion alarms. A host reached through `ProxyJump`
-(including one inherited from `Host *`) is never probed itself: termax checks
+(including one inherited from `Host *`) is never probed itself: Skiff checks
 its first jump host the same way and shows "via bastion: reachable" (or why
 the jump host is down). It never logs in to the jump host or runs ssh
 through it, so the host behind it may still be down. Hosts behind a
 `ProxyCommand` show "unknown".
 
-**History.** termax remembers when you last connected to each host
+**History.** Skiff remembers when you last connected to each host
 (`history.toml` next to `config.toml`): sort by Recent (`o` in the TUI, the
 sidebar sort menu in the GUI), and the GUI switcher lists recent hosts first.
 Settings → General → Clear history forgets it.
@@ -191,9 +219,9 @@ In the TUI a forward runs in its own tab (close the tab to stop it); in the
 GUI the Forwards tab starts and stops them (Save keeps a forward for later, Save
 and start runs it; Delete asks first) and asks for passwords inline. A forward
 counts toward history once it is up, not when ssh starts.
-Forwards stop when termax exits, even when it is killed (on Windows through a
+Forwards stop when Skiff exits, even when it is killed (on Windows through a
 job object, on Linux through a parent-death signal; on macOS this is best
-effort, so a killed termax can leave a forward running until ssh notices).
+effort, so a killed Skiff can leave a forward running until ssh notices).
 
 Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`,
 `nord`, `gruvbox`, `solarized-dark`, `catppuccin`, `paper`.
@@ -239,7 +267,7 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | | `c` or `Esc` | Cancel the transfer |
 
 A copied file is written next to its destination as
-`.<name>.<id>.termax-part` and moved into place only when complete, so
+`.<name>.<id>.skiff-part` and moved into place only when complete, so
 cancelling (or a failure) never damages a file being overwritten. When
 overwriting, that temp file is private (`0600`) while it is written and then
 gets the old file's group and permission bits, checked before the move. Over
@@ -254,9 +282,9 @@ followed by the rest of the old file. Copies refuse to write to a directory,
 FIFO, device or other special file, a broken symlink, a symlink owned by
 another user, and (Windows) a read-only file.
 
-A `*.termax-part` file is only left behind if termax was killed or lost its
-connection mid-copy; it is safe to delete. Such files are skipped (and counted
-as skipped) when copying folders.
+A `*.skiff-part` file (or a `*.termax-part` one from termax) is only left
+behind if Skiff was killed or lost its connection mid-copy; it is safe to
+delete. Such files are skipped (and counted as skipped) when copying folders.
 
 All other keys in a terminal tab go straight to the remote shell. Only the
 shortcuts from the keymap are intercepted (by default `Alt+` chords, and only
@@ -298,7 +326,7 @@ help = "f1, alt+h"
 | `focus_next_pane` | `alt+o` (terminal tabs) |
 
 An unknown action, a chord that doesn't parse, or a chord already bound to
-another action is reported when termax starts (and listed at the top of the
+another action is reported when Skiff starts (and listed at the top of the
 help); that entry keeps its default. The help (`Alt+H`) and the status line
 always show the keys in effect.
 
@@ -321,7 +349,7 @@ pane's terminal is resized to fit its half. Port-forward tabs can't be split.
   are highlighted (the current one stands out) and stay on their text as new
   output arrives, even once the scrollback is full and old lines drop off.
 - **Paste warning.** Pasting text with a line break into a shell that hasn't
-  turned on bracketed paste would run each line, so termax asks first
+  turned on bracketed paste would run each line, so Skiff asks first
   ("Paste 3 lines into homelab?"). Programs that use bracketed paste (most
   modern shells and editors) are never interrupted. In the GUI, focus starts
   on Cancel, so a reflexive Enter doesn't paste; in the TUI press `y`. Windows
@@ -349,13 +377,13 @@ pane's terminal is resized to fit its half. Port-forward tabs can't be split.
   in the TUI. In the GUI, Settings > Snippets adds, edits and deletes them. A snippet with `host` only appears in that host's terminals. A
   multi-line snippet goes through the paste warning.
 
-## GUI (`termax-gui`)
+## GUI (`skiff-gui`)
 
-A native window version of termax with the same config file. It draws
+A native window version of Skiff with the same config file. It draws
 everything itself (winit + softbuffer + fontdue, no web view).
 
 ```bash
-cargo run -p termax-gui --release
+cargo run -p skiff-gui --release
 ```
 
 - **Sidebar** lists hosts grouped by where they are defined, with a status dot
@@ -387,7 +415,7 @@ cargo run -p termax-gui --release
   button) asks before removing one. Under Appearance, "Choose terminal font…" and "Choose
   interface font…" list the installed fonts (the terminal list shows only
   monospace ones; per-user installed fonts included), with a filter box;
-  picking one applies it at once. Edits to `config.toml` made outside termax are picked
+  picking one applies it at once. Edits to `config.toml` made outside Skiff are picked
   up within a second while the window has focus.
 
 | Action | Windows / Linux | macOS |
@@ -431,17 +459,17 @@ Window size and sidebar width are kept in `state.toml` next to `config.toml`.
 
 ### Trying it without a real server
 
-`termax-testserver` runs a throwaway SSH server on 127.0.0.1 (for testing
+`skiff-testserver` runs a throwaway SSH server on 127.0.0.1 (for testing
 only). It prints the `ssh` options it needs:
 
 ```bash
-cargo run -p termax-testserver -- --shell --password secret
+cargo run -p skiff-testserver -- --shell --password secret
 ```
 
-Point termax at a scratch config so nothing touches your real hosts:
+Point Skiff at a scratch config so nothing touches your real hosts:
 
 ```toml
-# scratch.toml (run with TERMAX_CONFIG=scratch.toml)
+# scratch.toml (run with SKIFF_CONFIG=scratch.toml)
 [settings]
 load_ssh_config = false
 
@@ -452,18 +480,18 @@ host = "127.0.0.1"
 extra_args = ["-F", "C:/.../ssh_config", "-o", "UserKnownHostsFile=C:/.../known_hosts", "...", "-p", "PORT"]
 ```
 
-`cargo run -p termax-gui --release --example flood -- 50` prints 50 MB of mixed
+`cargo run -p skiff-gui --release --example flood -- 50` prints 50 MB of mixed
 output; run it in a terminal tab to check that typing stays responsive.
 
 Performance checks (release build):
 
 ```bash
-cargo test -p termax-gui --release --test perf -- --ignored --nocapture
+cargo test -p skiff-gui --release --test perf -- --ignored --nocapture
 ```
 
 ## Accessibility
 
-**Screen readers (GUI).** termax-gui exposes its interface through
+**Screen readers (GUI).** skiff-gui exposes its interface through
 [AccessKit](https://accesskit.dev): Narrator, NVDA and JAWS on Windows,
 VoiceOver on macOS and Orca on Linux see every control with its role, name and
 state. Hosts are read as "web, online 23 ms, ops@10.0.0.5". A terminal tab is a
@@ -505,7 +533,7 @@ move toward the text color, and the selection toward the background, until
 they read, but dimmed text stays visibly dimmer and the selection stays visible;
 a theme whose colors are too close for that gets a warning. On Windows, `theme = "auto"` (or the default) switches to
 `high-contrast` while Windows high contrast is on, also when it is turned on
-or off while termax runs. `cursor_blink = false` (or turning off Windows
+or off while Skiff runs. `cursor_blink = false` (or turning off Windows
 animation effects) stops the cursor blinking.
 
 **Text size.** `Ctrl+Alt+=` / `-` (or `ui_scale`) scales the whole interface,
@@ -514,9 +542,9 @@ Text size) is applied on top. Terminal text keeps `font_size` (zoom it with the
 terminal's own zoom keys), and the mouse wheel scrolls the same lines per notch.
 
 **TUI.** The TUI runs in your terminal, whose screen reader support applies.
-termax keeps the terminal cursor on the selected row of every list, so readers
+Skiff keeps the terminal cursor on the selected row of every list, so readers
 that follow the cursor read the selection; the selection is also marked with
-`›`, and messages start with `Error:` or `Info:`. `termax --plain` (or
+`›`, and messages start with `Error:` or `Info:`. `skiff --plain` (or
 `tui_plain = true` under `[settings]`) drops borders and turns status symbols
 into words.
 

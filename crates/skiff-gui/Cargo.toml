@@ -1,0 +1,26 @@
+[package]
+name = "skiff-gui"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Desktop GUI front-end for Skiff"
+
+[[bin]]
+name = "skiff-gui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+tokio.workspace = true
+tokio-util = "0.7"
+vt100.workspace = true
+skiff-core.workspace = true
+skiff-ui = { path = "../skiff-ui" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+skiff-testserver = { path = "../skiff-testserver" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

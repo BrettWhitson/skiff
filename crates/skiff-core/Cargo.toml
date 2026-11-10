@@ -1,0 +1,31 @@
+[package]
+name = "skiff-core"
+version.workspace = true
+edition.workspace = true
+description = "Shared SSH/SFTP engine for Skiff front-ends"
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+directories.workspace = true
+interprocess = { version = "2.4", features = ["tokio"] }
+portable-pty.workspace = true
+russh-sftp.workspace = true
+serde.workspace = true
+serde_json = "1.0.154"
+shell-words.workspace = true
+tokio.workspace = true
+tokio-util = "0.7"
+toml.workspace = true
+toml_edit = "0.25"
+vt100.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+skiff-testserver = { path = "../skiff-testserver" }
