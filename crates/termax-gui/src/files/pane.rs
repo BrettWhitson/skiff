@@ -13,7 +13,7 @@ use termax_ui::input::{Key, Modifiers};
 use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Sense, Ui};
-use termax_ui::widgets::{Selection, TextInputOpts, button, checkbox, dropdown, elide, label, select_list_named, text_input};
+use termax_ui::widgets::{Selection, TextInputOpts, button, checkbox, dropdown_labeled, elide, label, select_list_named, text_input};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -309,6 +309,7 @@ impl Pane {
         let items = self.selected();
         if !items.is_empty() {
             self.confirm = Some(Confirm::Delete(items));
+            self.focus_input = true; // the question starts on Cancel
         }
     }
 
@@ -348,12 +349,23 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
     let top_parts = ui.split_h(top, &[L::Px(160), L::Fill], 6);
     let mut options: Vec<&str> = vec!["Local"];
     options.extend(ctx.hosts.iter().map(|h| h.name.as_str()));
+    // A host renamed or removed meanwhile stays shown (not as "Local").
+    let gone = match &pane.loc {
+        Location::Host(h) if !ctx.hosts.iter().any(|x| x.name == h.name) => Some(h.name.clone()),
+        _ => None,
+    };
+    options.extend(gone.as_deref());
     let mut sel_loc = match &pane.loc {
         Location::Local => 0,
-        Location::Host(h) => ctx.hosts.iter().position(|x| x.name == h.name).map_or(0, |i| i + 1),
+        Location::Host(h) => ctx.hosts.iter().position(|x| x.name == h.name).map_or(options.len() - 1, |i| i + 1),
     };
-    if dropdown(ui, id.with("loc"), top_parts[0], &options, &mut sel_loc) {
-        let loc = if sel_loc == 0 { Location::Local } else { Location::Host(Box::new(ctx.hosts[sel_loc - 1].clone())) };
+    let what = if side == 0 { "Left pane location" } else { "Right pane location" };
+    if dropdown_labeled(ui, id.with("loc"), top_parts[0], what, &options, &mut sel_loc) {
+        let loc = match ctx.hosts.get(sel_loc.wrapping_sub(1)) {
+            _ if sel_loc == 0 => Location::Local,
+            Some(h) => Location::Host(Box::new(h.clone())),
+            None => pane.loc.clone(), // the host no longer listed: connect again
+        };
         pane.set_location(loc);
     }
     path_bar(ui, id, top_parts[1], pane, side, ctx);
@@ -545,9 +557,16 @@ fn path_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: 
     }
 }
 
+/// Why `name` can't be a file name.
+fn invalid_name(name: &str) -> String {
+    if name.is_empty() { "Type a name first".into() } else { format!("{name} is not a valid name (no / \\ or :)") }
+}
+
 fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx) {
     let p = ui.style().palette;
     let Some(confirm) = pane.confirm.clone() else { return };
+    // Rename and New folder may have put an invalid-name notice up.
+    let naming = !matches!(confirm, Confirm::Delete(_));
     let parts = ui.split_h(rect, &[L::Fill, L::Px(80), L::Px(80)], 6);
     let iid = id.with("bar-input");
     let mut done = false;
@@ -558,6 +577,12 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
                 _ => format!("Delete {} items?", items.len()),
             };
             label(ui, parts[0], &text, Some(p.danger));
+            if let Some(n) = ui.a11y_node(id.with("bar-question"), termax_ui::a11y::Role::Dialog, &text) {
+                n.live = true;
+            }
+            if std::mem::take(&mut pane.focus_input) {
+                ui.request_focus(id.with("bar-cancel"));
+            }
             if button(ui, id.with("bar-ok"), parts[1], "Delete").clicked {
                 pane.run(Op::Delete(items.into_iter().map(|(p, d, _)| (p, d)).collect()), ctx, side);
                 done = true;
@@ -571,6 +596,9 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
             let r =
                 text_input(ui, iid, parts[0], &mut input, TextInputOpts { password: false, placeholder: "New name", ..Default::default() });
             let ok = button(ui, id.with("bar-ok"), parts[1], "Rename").clicked || r.submitted;
+            if ok && !is_safe_name(input.trim()) {
+                pane.banner = Some(invalid_name(input.trim()));
+            }
             if ok && is_safe_name(input.trim()) {
                 let to = pane.join(input.trim());
                 if to != from {
@@ -594,6 +622,9 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
                 TextInputOpts { password: false, placeholder: "New folder name", ..Default::default() },
             );
             let ok = button(ui, id.with("bar-ok"), parts[1], "Create").clicked || r.submitted;
+            if ok && !is_safe_name(input.trim()) {
+                pane.banner = Some(invalid_name(input.trim()));
+            }
             if ok && is_safe_name(input.trim()) {
                 let path = pane.join(input.trim());
                 pane.run(Op::Mkdir(path), ctx, side);
@@ -603,10 +634,17 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
             }
         }
     }
-    if button(ui, id.with("bar-cancel"), parts[2], "Cancel").clicked || ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
+    let cancel = id.with("bar-cancel");
+    // Esc belongs to the bar only while focus is in it (or on its list):
+    // the other pane may have a bar open too.
+    let mine = [iid, id.with("bar-ok"), cancel, id.with("list")].into_iter().any(|i| ui.has_focus(i));
+    if button(ui, cancel, parts[2], "Cancel").clicked || (mine && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE)) {
         done = true;
     }
     if done {
+        if naming {
+            pane.banner = None; // the invalid-name notice went with its bar
+        }
         pane.confirm = None;
         ui.request_focus(id.with("list"));
     }

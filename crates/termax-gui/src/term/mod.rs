@@ -25,6 +25,7 @@ pub mod mouse;
 pub mod render;
 pub mod search;
 pub mod select;
+pub mod split;
 
 const BLINK: Duration = Duration::from_millis(530);
 /// Logical pixels of wheel movement per scrolled line (a notch = 48 → 3 lines).
@@ -72,6 +73,13 @@ pub struct TermTab {
     /// The paste prompt was drawn (its first frame moves focus to Cancel).
     paste_shown: bool,
     mouse: mouse::MouseState,
+    /// Actions chosen from this terminal's own menu, run next frame (the
+    /// app's action list is only for the frame it was filled in).
+    queued: Vec<Action>,
+    /// Which pane this is ("pane 1 of 2"), while the tab is split; set by the split view.
+    pub pane_label: Option<String>,
+    /// Split or close asked for from this terminal's menu (the split view runs it).
+    pub pane_request: Option<Action>,
 }
 
 /// Rows × columns that fit `rect` (at least 2 × 10, as the pty needs).
@@ -114,6 +122,9 @@ impl TermTab {
             pending_paste: None,
             paste_shown: false,
             mouse: mouse::MouseState::default(),
+            queued: vec![],
+            pane_label: None,
+            pane_request: None,
         }
     }
 
@@ -151,6 +162,21 @@ impl TermTab {
     /// readers hear only output from here on.
     pub fn shown(&mut self) {
         self.resync = true;
+    }
+
+    /// The terminal's accessible name ("Terminal: web, pane 2 of 2").
+    pub fn a11y_name(&self) -> String {
+        match &self.pane_label {
+            Some(p) => format!("Terminal: {}, {p}", self.host.name),
+            None => format!("Terminal: {}", self.host.name),
+        }
+    }
+
+    /// A new terminal to the same host, the same way (a split pane).
+    pub fn sibling(&self) -> TermTab {
+        let mut t = TermTab::with_command(self.host.clone(), self.program.clone(), self.args.clone(), self.scrollback);
+        (t.blink, t.announce, t.confirm_paste, t.font_px) = (self.blink, self.announce, self.confirm_paste, self.font_px);
+        t
     }
 
     pub fn cell_size(&self) -> (i32, i32) {
@@ -233,7 +259,9 @@ pub fn view(
     }
     let scale = ui.scale();
     let default_px = ui.mono_px() / scale;
-    for a in actions.drain(..) {
+    let mut todo = std::mem::take(&mut tab.queued);
+    todo.append(actions);
+    for a in todo {
         match a {
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => tab.zoom(a, default_px),
             Action::Copy => {
@@ -283,10 +311,11 @@ pub fn view(
     if let Some(e) = tab.error.clone() {
         ui.painter().rect(rect, theme.term_bg, 0.0);
         label(ui, Rect::new(inner.x, inner.y, inner.w, cell.h + ui.px(4)), &e, Some(theme.palette.danger));
-        let name = format!("Terminal: {}", tab.host.name);
+        let name = tab.a11y_name();
         if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
             n.value = Some(e);
         }
+        terminal_menu(ui, id, r.right_clicked, tab);
         return;
     }
     let Some(session) = tab.session.as_mut() else {
@@ -364,7 +393,7 @@ pub fn view(
         }
     }
 
-    let name = format!("Terminal: {}", tab.host.name);
+    let name = tab.a11y_name();
     let Some(session) = tab.session.as_mut() else {
         if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
             n.value = tab.error.clone();
@@ -425,18 +454,7 @@ pub fn view(
         tab.select.resolve(p.screen(), offset);
     }
 
-    // Right-click menu: Copy / Paste.
-    let menu = id.with("menu");
-    if r.right_clicked && !report_mouse {
-        open_context_menu(ui, menu, ui.input().mouse);
-    }
-    let has_sel = tab.select.sel.is_some();
-    let items = [MenuItem { label: "Copy", shortcut: None, enabled: has_sel }, MenuItem { label: "Paste", shortcut: None, enabled: true }];
-    match context_menu(ui, menu, &items) {
-        Some(0) => actions.push(Action::Copy),
-        Some(1) => actions.push(Action::Paste),
-        _ => {}
-    }
+    terminal_menu(ui, id, r.right_clicked && !report_mouse, tab);
 
     let cursor = if !focused {
         Some(CursorDraw::Hollow)
@@ -471,6 +489,35 @@ pub fn view(
     }
     find_bar(ui, id, inner, tab, &parser);
     paste_bar(ui, id, inner, tab);
+}
+
+/// The right-click menu: Copy, Paste, and splitting or closing the pane.
+fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab) {
+    let menu = id.with("menu");
+    if open {
+        open_context_menu(ui, menu, ui.input().mouse);
+    }
+    let live = tab.session.is_some();
+    let item = |label, enabled| MenuItem { label, shortcut: None, enabled };
+    let split = tab.pane_label.is_some();
+    let items = [
+        item("Copy", live && tab.select.sel.is_some()),
+        item("Paste", live),
+        item("Split right", true),
+        item("Split down", true),
+        item("Close pane", split),
+    ];
+    match context_menu(ui, menu, &items) {
+        Some(0) => tab.queued.push(Action::Copy),
+        Some(1) => tab.queued.push(Action::Paste),
+        Some(2) => tab.pane_request = Some(Action::SplitRight),
+        Some(3) => tab.pane_request = Some(Action::SplitDown),
+        Some(4) => tab.pane_request = Some(Action::ClosePane),
+        _ => {}
+    }
+    if !tab.queued.is_empty() {
+        ui.request_repaint_in(Duration::ZERO);
+    }
 }
 
 /// Pastes `text`; then Enter, after the paste ends, so the shell runs it.

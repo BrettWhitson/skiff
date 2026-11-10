@@ -151,7 +151,7 @@ fn main() {
     let (prog, args) = if cfg!(windows) { ("cmd.exe", vec!["/k".into(), "prompt $P$G".into()]) } else { ("sh", vec![]) };
     let mut t = TermTab::with_command(lh, prog.into(), args, 1000);
     t.font_px = 0.0;
-    s.app.tabs.push(Tab { id: 900, kind: TabKind::Terminal(Box::new(t)) });
+    s.app.tabs.push(Tab { id: 900, kind: TabKind::Terminal(Box::new(termax_gui::term::split::TermSplit::new(t))) });
     s.app.active = s.app.tabs.len() - 1;
     s.settle();
     std::thread::sleep(Duration::from_millis(800));

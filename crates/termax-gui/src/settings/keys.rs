@@ -3,7 +3,7 @@
 use termax_ui::geom::Rect;
 use termax_ui::input::{Event, Key, Modifiers};
 use termax_ui::ui::{Id, Ui};
-use termax_ui::widgets::{button, label};
+use termax_ui::widgets::{button, label, scroll_area, scroll_into_view};
 
 use super::{Rows, split_row};
 use crate::app::GuiApp;
@@ -21,6 +21,18 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut KeysState, app: &mut GuiApp) {
         ui.capture_keyboard(id);
         record(ui, st, a, app);
     }
+    // More rows than a small window shows: scroll, and follow keyboard focus.
+    let row_h = ui.px(super::ROW_H + 6);
+    let content = (Action::ALL.len() as i32 + 1) * row_h;
+    let sid = id.with("scroll");
+    if let Some(i) = Action::ALL.iter().position(|a| ui.has_focus(Id::new(("settings-key", a.config_name())))) {
+        let top = (i as i32 + 1) * row_h;
+        scroll_into_view(ui, sid, top, top + row_h, rect.h);
+    }
+    scroll_area(ui, sid, rect, content, |ui, vis, off| rows_view(ui, Rect::new(vis.x, vis.y - off, vis.w, content), st, app));
+}
+
+fn rows_view(ui: &mut Ui, rect: Rect, st: &mut KeysState, app: &mut GuiApp) {
     let mut rows = Rows::new(rect);
     let muted = ui.style().palette.muted;
     let danger = ui.style().palette.danger;

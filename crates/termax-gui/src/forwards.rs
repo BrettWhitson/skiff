@@ -5,9 +5,10 @@
 use termax_core::askpass::{AskKind, AskRequest};
 use termax_core::forward::{Forward, ForwardHandle, ForwardKind, ForwardState};
 use termax_ui::geom::Rect;
+use termax_ui::input::{Key, Modifiers};
 use termax_ui::layout::Size as L;
 use termax_ui::ui::{Id, Ui};
-use termax_ui::widgets::{TextInputOpts, button, dropdown, label, text_input};
+use termax_ui::widgets::{TextInputOpts, button, dropdown_labeled, label, text_input};
 
 use crate::app::GuiApp;
 use crate::settings::{Rows, error_line, field, split_row};
@@ -66,6 +67,8 @@ pub struct ForwardsState {
     pub prompt: Option<FwdPrompt>,
     /// The saved forward waiting for "Delete?" to be confirmed.
     pub confirm_delete: Option<Forward>,
+    /// The delete question just appeared: focus goes to Cancel.
+    confirm_new: bool,
     next_tag: u64,
 }
 
@@ -208,20 +211,24 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         }
     }
 
-    let host_names: Vec<String> = app.hosts.iter().map(|h| h.name.clone()).collect();
+    let mut host_names: Vec<String> = app.hosts.iter().map(|h| h.name.clone()).collect();
     let mut save = None;
     let mut cancel = false;
     if let Some(form) = &mut st.form {
+        // A host no longer listed stays the form's host (and a choice) until changed.
+        if !form.host.is_empty() && !host_names.contains(&form.host) {
+            host_names.push(form.host.clone());
+        }
         let (l, c) = split_row(ui, rows.next(ui));
         label(ui, l, "Host", None);
         let opts: Vec<&str> = host_names.iter().map(String::as_str).collect();
         let mut hi = host_names.iter().position(|h| *h == form.host).unwrap_or(0);
-        if dropdown(ui, Id::new("fwd-host"), c, &opts, &mut hi)
+        if dropdown_labeled(ui, Id::new("fwd-host"), c, "Host", &opts, &mut hi)
             && let Some(h) = host_names.get(hi)
         {
             form.host = h.clone();
         }
-        if !host_names.contains(&form.host)
+        if form.host.is_empty()
             && let Some(h) = host_names.get(hi)
         {
             form.host = h.clone();
@@ -229,7 +236,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         let (l, c) = split_row(ui, rows.next(ui));
         label(ui, l, "Kind", None);
         let kinds: Vec<&str> = ForwardKind::ALL.iter().map(|k| k.label()).collect();
-        dropdown(ui, Id::new("fwd-kind"), c, &kinds, &mut form.kind);
+        dropdown_labeled(ui, Id::new("fwd-kind"), c, "Kind", &kinds, &mut form.kind);
         let kind = ForwardKind::ALL[form.kind.min(2)];
         let (_, c) = split_row(ui, rows.next_h(ui, 40));
         label(ui, c, kind.explain(), Some(p.muted));
@@ -270,14 +277,23 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
             }
             let (_, c) = split_row(ui, rows.next(ui));
             let b = ui.split_h(c, &[L::Px(90), L::Px(90)], 8);
-            if button(ui, Id::new("fwd-del-yes"), b[0], "Delete").clicked {
+            let (yes, no) = (Id::new("fwd-del-yes"), Id::new("fwd-del-no"));
+            if std::mem::take(&mut st.confirm_new) {
+                ui.request_focus(no);
+            }
+            let esc = (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE);
+            let (delete, keep) = (button(ui, yes, b[0], "Delete").clicked, button(ui, no, b[1], "Cancel").clicked);
+            if delete {
                 st.stop(&f);
                 st.running.retain(|r| r.fwd != f);
                 app.cfg.forwards.retain(|x| *x != f);
                 app.save_config();
                 st.confirm_delete = None;
-            } else if button(ui, Id::new("fwd-del-no"), b[1], "Cancel").clicked {
+            } else if keep || esc {
                 st.confirm_delete = None;
+            }
+            if st.confirm_delete.is_none() {
+                ui.request_focus(Id::new("fwd-new"));
             }
         }
     }
@@ -300,13 +316,15 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         };
         label(ui, parts[1], &text, Some(color));
         let live = state.as_ref().is_some_and(|s| s.is_live());
-        if button(ui, Id::new(("fwd-run", i)), parts[2], if live { "Stop" } else { "Start" }).clicked {
+        let title = f.title();
+        let run = if live { "Stop" } else { "Start" };
+        if row_button(ui, Id::new(("fwd-run", i)), parts[2], run, &title) {
             act = Some((f.clone(), if live { "stop" } else { "start" }));
         }
-        if button(ui, Id::new(("fwd-edit", i)), parts[3], "Edit").clicked {
+        if row_button(ui, Id::new(("fwd-edit", i)), parts[3], "Edit", &title) {
             act = Some((f.clone(), "edit"));
         }
-        if button(ui, Id::new(("fwd-del", i)), parts[4], "Delete").clicked {
+        if row_button(ui, Id::new(("fwd-del", i)), parts[4], "Delete", &title) {
             act = Some((f.clone(), "delete"));
         }
     }
@@ -326,8 +344,20 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
                     error: None,
                 });
             }
-            _ => st.confirm_delete = Some(f),
+            _ => {
+                st.confirm_delete = Some(f);
+                st.confirm_new = true;
+            }
         }
     }
     app.forwards = st;
+}
+
+/// A row's button, named for screen readers by what it acts on ("Start ⇄ web 8080→…").
+fn row_button(ui: &mut Ui, id: Id, rect: Rect, text: &str, what: &str) -> bool {
+    let clicked = button(ui, id, rect, text).clicked;
+    if let Some(n) = ui.a11y_node(id, termax_ui::a11y::Role::Button, text) {
+        n.name = format!("{text} {what}");
+    }
+    clicked
 }

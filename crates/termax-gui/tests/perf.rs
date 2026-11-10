@@ -29,13 +29,13 @@ fn local_terminal(app: &mut GuiApp, program: &str, args: Vec<String>) {
     cfg.connections.push(Connection { name: "local".into(), host: "127.0.0.1".into(), ..Default::default() });
     let host = collect(&cfg).0.remove(0);
     let tab = TermTab::with_command(host, program.into(), args, 1000);
-    app.tabs.push(Tab { id: 9000, kind: TabKind::Terminal(Box::new(tab)) });
+    app.tabs.push(Tab { id: 9000, kind: TabKind::Terminal(Box::new(termax_gui::term::split::TermSplit::new(tab))) });
     app.active = app.tabs.len() - 1;
 }
 
 fn screen_text(app: &GuiApp) -> String {
     match &app.tabs[app.active].kind {
-        TabKind::Terminal(t) => t.session.as_ref().map(|s| s.parser.lock().unwrap().screen().contents()).unwrap_or_default(),
+        TabKind::Terminal(t) => t.focused().session.as_ref().map(|s| s.parser.lock().unwrap().screen().contents()).unwrap_or_default(),
         _ => String::new(),
     }
 }

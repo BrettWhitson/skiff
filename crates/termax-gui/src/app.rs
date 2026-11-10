@@ -31,6 +31,7 @@ use crate::keys::{Action, Keymap};
 use crate::sidebar::{Sidebar, SidebarAction, SidebarCtx, sidebar};
 use crate::switcher::{Cmd, Item, SwitcherState};
 use crate::term::TermTab;
+use crate::term::split::{Dir, TermSplit};
 use crate::theme::{GuiTheme, from_def};
 
 /// Starts the askpass broker; its questions arrive as `Msg::Ask`.
@@ -51,7 +52,8 @@ const GEOMETRY_SAVE_DELAY: Duration = Duration::from_secs(1);
 const CONFIG_POLL: Duration = Duration::from_secs(1);
 
 pub enum TabKind {
-    Terminal(Box<TermTab>),
+    /// A terminal tab: one or more panes to the same host.
+    Terminal(Box<TermSplit>),
     Files(Box<FilesTab>),
     Settings,
     Forwards,
@@ -256,7 +258,7 @@ impl GuiApp {
 
     // ----- tabs -------------------------------------------------------
 
-    fn push_tab(&mut self, kind: TabKind) -> u64 {
+    pub(crate) fn push_tab(&mut self, kind: TabKind) -> u64 {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         self.tabs.push(Tab { id, kind });
@@ -265,11 +267,8 @@ impl GuiApp {
     }
 
     pub fn open_terminal(&mut self, host: &HostEntry) -> u64 {
-        let id = self.push_tab(TabKind::Terminal(Box::new(TermTab::new(
-            host.clone(),
-            &self.cfg.settings.ssh_binary,
-            self.cfg.settings.scrollback,
-        ))));
+        let term = TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback);
+        let id = self.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))));
         self.pending_records.push((id, host.name.clone(), Instant::now()));
         id
     }
@@ -352,7 +351,8 @@ impl GuiApp {
 
     pub fn tab_title(&self, i: usize) -> String {
         match &self.tabs[i].kind {
-            TabKind::Terminal(t) => format!("\u{25CF} {}", t.host.name),
+            TabKind::Terminal(t) if t.panes.len() > 1 => format!("\u{25CF} {} ({} panes)", t.host().name, t.panes.len()),
+            TabKind::Terminal(t) => format!("\u{25CF} {}", t.host().name),
             TabKind::Files(f) => f.title(),
             TabKind::Settings => "Settings".into(),
             TabKind::Forwards => "\u{21C4} Forwards".into(),
@@ -564,9 +564,10 @@ impl GuiApp {
             let Some(tab) = self.tabs.iter_mut().find(|t| t.id == *id) else {
                 return false;
             };
-            let TabKind::Terminal(t) = &mut tab.kind else {
+            let TabKind::Terminal(split) = &mut tab.kind else {
                 return false;
             };
+            let t = &mut split.panes[0].term;
             match &mut t.session {
                 Some(s) if at.elapsed() >= Duration::from_secs(2) && s.generation() > 0 => {
                     if s.is_alive() {
@@ -719,7 +720,7 @@ impl GuiApp {
                     return;
                 };
                 if let Some(TabKind::Terminal(t)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
-                    t.send_snippet(&snippet);
+                    t.focused_mut().send_snippet(&snippet);
                 }
             }
         }
@@ -744,7 +745,7 @@ impl GuiApp {
                     .snippets
                     .iter()
                     .enumerate()
-                    .filter(|(_, s)| s.host.as_deref().is_none_or(|h| h == t.host.name))
+                    .filter(|(_, s)| s.host.as_deref().is_none_or(|h| h == t.host().name))
                     .map(|(i, s)| (i, s.name.clone()))
                     .collect(),
                 _ => vec![],
@@ -811,7 +812,23 @@ impl GuiApp {
                 self.style = style_for(&self.theme, &self.cfg);
                 self.save_config();
             }
+            Action::SplitRight | Action::SplitDown | Action::FocusNextPane | Action::ClosePane => self.pane_action(a),
             Action::Copy | Action::Paste | Action::Find | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => self.view_actions.push(a),
+            _ => {}
+        }
+    }
+
+    /// Splits, closes or moves between the active terminal's panes.
+    fn pane_action(&mut self, a: Action) {
+        let Some(Tab { id, kind: TabKind::Terminal(t) }) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let id = *id;
+        match a {
+            Action::SplitRight => t.split(Dir::Right),
+            Action::SplitDown => t.split(Dir::Down),
+            Action::FocusNextPane => t.focus_next(true),
+            Action::ClosePane if !t.close_focused() => self.request_close_tab(id),
             _ => {}
         }
     }
@@ -1043,18 +1060,20 @@ impl GuiApp {
         let mut show_forwards = false;
         match &mut tab.kind {
             TabKind::Terminal(t) => {
-                t.announce = self.cfg.gui.announce_output;
-                t.confirm_paste = self.cfg.settings.confirm_multiline_paste;
-                t.blink = self.cfg.gui.cursor_blink && crate::os::animations();
-                let id = Id::new(("term", tab.id));
+                for p in &mut t.panes {
+                    p.term.announce = self.cfg.gui.announce_output;
+                    p.term.confirm_paste = self.cfg.settings.confirm_multiline_paste;
+                    p.term.blink = self.cfg.gui.cursor_blink && crate::os::animations();
+                }
                 if newly_shown {
                     t.shown();
                     // A tab chosen from the strip by keyboard leaves focus there.
                     if !ui.has_focus(Id::new("tabs")) {
-                        ui.request_focus(id);
+                        ui.request_focus(crate::term::split::pane_id(tab.id, t.panes[t.focus].key));
                     }
                 }
-                crate::term::view(ui, id, content, t, &self.theme, &self.keymap, self.engine.wake_fn(), &mut self.view_actions);
+                let wake = self.engine.wake_fn();
+                crate::term::split::view(ui, tab.id, content, t, &self.theme, &self.keymap, wake, &mut self.view_actions);
             }
             TabKind::Files(f) => {
                 let _ = line;
@@ -1149,7 +1168,7 @@ impl GuiApp {
         ui.painter().rect(rect, p.surface, 0.0);
         let px = ui.font_px();
         let left = match self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
-            Some(TabKind::Terminal(t)) => t.status(),
+            Some(TabKind::Terminal(t)) => t.focused_mut().status(),
             Some(TabKind::Files(f)) => format!("files: {} \u{2194} {}", f.panes[0].loc.label(), f.panes[1].loc.label()),
             Some(TabKind::Settings) => "settings".into(),
             Some(TabKind::Forwards) => {

@@ -71,3 +71,22 @@ fn multiple_chords_in_one_override() {
     assert!(warn.is_empty());
     assert_eq!(km.match_event(&down(Key::Char('n'), true, true, false, false), true), Some(Action::NewTab));
 }
+
+#[test]
+fn default_chords_are_unique_and_leave_shell_keys_alone() {
+    for mac in [false, true] {
+        let (km, _) = Keymap::new(&BTreeMap::new(), mac);
+        let mut seen: Vec<(Chord, Action)> = vec![];
+        for a in Action::ALL {
+            for c in km.chords(a) {
+                assert!(!seen.iter().any(|(s, _)| s == c), "{c} is bound twice (mac {mac})");
+                seen.push((c.clone(), a));
+            }
+        }
+        for a in [Action::SplitRight, Action::SplitDown, Action::FocusNextPane, Action::ClosePane] {
+            let c = &km.chords(a)[0];
+            assert!(!c.shell_owned(), "{c}");
+            assert_eq!(km.match_key(&c.key, c.mods, true), Some(a), "{} works in a terminal", a.config_name());
+        }
+    }
+}

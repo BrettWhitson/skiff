@@ -177,3 +177,110 @@ fn form_follows_its_connection_when_others_are_deleted() {
     assert_eq!(names, vec!["beta", "beta-copy"], "nothing else overwritten");
     assert_eq!(f.app.cfg.connections[0].port, Some(3333));
 }
+
+const SNIPPET: &str = r#"
+[[snippet]]
+name = "greet"
+command = "echo one\necho two"
+host = "beta"
+"#;
+
+fn snippets_page(extra: &str) -> Fixture {
+    let mut f = Fixture::with_config(&format!("{CONFIG}{extra}"));
+    f.app.do_action(Action::Settings);
+    f.frame(vec![]);
+    f.click_text("Snippets");
+    f
+}
+
+#[test]
+fn add_snippet_saves_to_config() {
+    let mut f = snippets_page("");
+    f.click_text("Add");
+    assert_eq!(f.h.state.focused(), Some(termax_ui::ui::Id::new("settings-snip-name")), "Add starts at the name");
+    f.frame(vec![Event::Text("logs".into())]);
+    set_field(&mut f, "Command", "journalctl -f");
+    f.click_text("Run it (press Enter after the command)");
+    f.click_text("Save");
+    let text = file(&f);
+    assert!(text.contains("# my hand-written comment"), "{text}");
+    assert!(text.contains("[[snippet]]\nname = \"logs\"\ncommand = \"journalctl -f\"\nrun = true"), "{text}");
+    let t = f.h.tree();
+    assert_eq!(t.find("logs").map(|n| n.role), Some(termax_ui::a11y::Role::ListItem), "listed by name");
+    let host = t.find("Host").expect("host field");
+    assert_eq!((host.role, host.value.as_deref()), (termax_ui::a11y::Role::ComboBox, Some("Every host")));
+}
+
+#[test]
+fn snippet_form_validates() {
+    let mut f = snippets_page(SNIPPET);
+    f.click_text("Add");
+    f.click_text("Save");
+    assert!(f.texts().iter().any(|t| t == "A snippet needs a name"), "{:?}", f.texts());
+    set_field(&mut f, "Name", "greet");
+    set_field(&mut f, "Command", "ls");
+    f.click_text("Save");
+    assert!(f.texts().iter().any(|t| t == "A snippet named greet already exists"), "{:?}", f.texts());
+    set_field(&mut f, "Name", "other");
+    set_field(&mut f, "Command", "   ");
+    f.click_text("Save");
+    assert!(f.texts().iter().any(|t| t == "The command is empty"), "{:?}", f.texts());
+    assert_eq!(f.app.cfg.snippets.len(), 1);
+    assert_eq!(file(&f), format!("{CONFIG}{SNIPPET}"));
+}
+
+#[test]
+fn edit_snippet_keeps_lines_and_host() {
+    let mut f = snippets_page(SNIPPET);
+    f.click_text("greet");
+    assert!(f.texts().iter().any(|t| t == "echo two"), "one input per line: {:?}", f.texts());
+    set_field(&mut f, "Name", "hello");
+    f.click_text("Save");
+    let s = &f.app.cfg.snippets;
+    assert_eq!(
+        (s.len(), s[0].name.as_str(), s[0].command.as_str(), s[0].host.as_deref()),
+        (1, "hello", "echo one\necho two", Some("beta"))
+    );
+    assert!(!file(&f).contains("greet"), "{}", file(&f));
+}
+
+#[test]
+fn delete_snippet_asks_first() {
+    let mut f = snippets_page(SNIPPET);
+    f.click_text("greet");
+    f.frame(vec![Event::KeyDown { key: Key::Delete, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("Delete snippet greet?").is_some(), "{:?}", f.texts());
+    assert_eq!(f.h.state.focused(), Some(termax_ui::ui::Id::new("settings-snip-del-no")), "focus on Cancel");
+    f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("Delete snippet greet?").is_none());
+    assert_eq!(f.app.cfg.snippets.len(), 1);
+    f.click_text("Delete");
+    f.click_text("Yes, delete");
+    assert!(f.app.cfg.snippets.is_empty());
+    assert_eq!(file(&f), CONFIG);
+}
+
+#[test]
+fn settings_lists_and_dropdowns_are_named() {
+    let f = settings("Connections");
+    let t = f.h.tree();
+    assert_eq!(t.find("Connections").map(|n| n.role), Some(termax_ui::a11y::Role::Button), "the nav button comes first");
+    assert!(t.nodes.iter().any(|n| n.role == termax_ui::a11y::Role::List && n.name == "Connections"));
+    assert_eq!(t.find("alpha").map(|n| n.role), Some(termax_ui::a11y::Role::ListItem));
+    let mut f = settings("General");
+    f.frame(vec![]);
+    let t = f.h.tree();
+    assert_eq!(t.find("Check host status").map(|n| n.role), Some(termax_ui::a11y::Role::ComboBox));
+}
+
+#[test]
+fn keybindings_scroll_to_the_focused_row() {
+    let mut f = settings("Keybindings");
+    let id = termax_ui::ui::Id::new(("settings-key", Action::ClosePane.config_name()));
+    f.frame(vec![Event::A11y { target: id, action: termax_ui::a11y::A11yAction::Focus }]);
+    f.frame(vec![]);
+    let b = f.h.tree().by_id(id).expect("close pane row").bounds;
+    assert!(b.h > 0 && b.bottom() <= 800 - 24, "fully above the status bar: {b:?}");
+}

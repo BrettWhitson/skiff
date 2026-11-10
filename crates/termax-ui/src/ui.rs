@@ -542,6 +542,12 @@ impl<'a> Ui<'a> {
         r
     }
 
+    /// Keyboard focus is on a widget registered in region `id` so far this
+    /// frame (ask after the region was laid out).
+    pub fn focus_in_region(&self, id: Id) -> bool {
+        self.st.focus.is_some_and(|f| self.regions.iter().any(|(rid, ids)| *rid == id && ids.contains(&f)))
+    }
+
     /// Moves focus to the next (or previous) region at the end of the frame,
     /// for a widget that owns the keyboard (a terminal) and saw F6.
     pub fn cycle_region(&mut self, forward: bool) {

@@ -9,7 +9,7 @@ use termax_ui::geom::Rect;
 use termax_ui::input::{Key, Modifiers};
 use termax_ui::text::Fonts;
 use termax_ui::ui::{Id, Ui};
-use termax_ui::widgets::{TextInputOpts, button, dropdown, label, list_named, text_input};
+use termax_ui::widgets::{TextInputOpts, button, dropdown_labeled, label, list_named, text_input};
 
 use super::{LABEL_W, Rows, error_line, field, split_row};
 use crate::app::{GuiApp, style_for};
@@ -63,7 +63,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut AppearanceState, app: &mut GuiApp)
     let names = app.theme_names();
     let opts: Vec<&str> = names.iter().map(String::as_str).collect();
     let mut idx = names.iter().position(|n| *n == app.cfg.settings.theme).unwrap_or(0);
-    if dropdown(ui, Id::new("settings-theme"), Rect::new(c.x, c.y, c.w.min(ui.px(240)), c.h), &opts, &mut idx)
+    if dropdown_labeled(ui, Id::new("settings-theme"), Rect::new(c.x, c.y, c.w.min(ui.px(240)), c.h), "Theme", &opts, &mut idx)
         && let Some(n) = names.get(idx)
     {
         app.apply_theme(n);

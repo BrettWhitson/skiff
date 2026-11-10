@@ -183,3 +183,40 @@ fn minimize_keeps_the_grid() {
     h.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), &mut tab, &t, &km, None, &mut vec![]));
     assert_eq!((tab.grid, tab.resizes), (grid, resizes));
 }
+
+#[test]
+fn context_menu_paste_reaches_the_terminal() {
+    use termax_ui::clipboard::Clipboard;
+    use termax_ui::geom::Point;
+    use termax_ui::input::MouseButton;
+    let fx = termax_testserver::TestFixture::with_shell(termax_testserver::FixtureAuth::Key).unwrap();
+    let mut tab = fixture_tab(&fx);
+    let (km, _) = Keymap::new(&BTreeMap::new(), false);
+    let t = theme();
+    let mut h = Harness::new(800, 600, 1.0);
+    h.clipboard.set("one\ntwo");
+    // As the app does: the actions list is emptied after every frame.
+    let frame = |h: &mut Harness, tab: &mut TermTab, ev: Vec<Event>| {
+        h.frame(ev, &mut |ui| view(ui, Id::new("t"), ui.window_rect(), tab, &t, &km, None, &mut vec![]));
+    };
+    frame(&mut h, &mut tab, vec![]);
+    let at = Point::new(200, 200);
+    frame(&mut h, &mut tab, vec![Event::MouseMove(at), Event::MouseDown(MouseButton::Right, at), Event::MouseUp(MouseButton::Right, at)]);
+    frame(&mut h, &mut tab, vec![]);
+    let paste = h
+        .list()
+        .prims
+        .iter()
+        .find_map(|p| match p {
+            Prim::Text { text, origin, .. } if text == "Paste" => Some(Point::new(origin.x + 4, origin.y + 6)),
+            _ => None,
+        })
+        .expect("menu open");
+    frame(
+        &mut h,
+        &mut tab,
+        vec![Event::MouseMove(paste), Event::MouseDown(MouseButton::Left, paste), Event::MouseUp(MouseButton::Left, paste)],
+    );
+    frame(&mut h, &mut tab, vec![]);
+    assert_eq!(tab.pending_paste.as_ref().map(|p| p.1), Some(2), "the menu's Paste asks about the two lines");
+}

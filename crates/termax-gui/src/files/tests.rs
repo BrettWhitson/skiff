@@ -175,3 +175,51 @@ fn path_bar_edits_from_keyboard() {
     e.key(Key::Enter, Modifiers::NONE);
     assert!(e.tab.panes[0].path_edit.is_some(), "Enter on the focused path bar edits it");
 }
+
+#[test]
+fn invalid_new_folder_name_says_why() {
+    let d = tree();
+    let mut e = Env::new(d.path());
+    e.until("listing", |e| e.loaded(0));
+    e.click("New folder");
+    e.typed("a/b");
+    e.key(Key::Enter, Modifiers::NONE);
+    assert!(e.texts().iter().any(|t| t.contains("a/b") && t.contains("not a valid name")), "{:?}", e.texts());
+    assert!(e.tab.panes[0].confirm.is_some(), "the bar stays open to fix the name");
+}
+
+#[test]
+fn esc_closes_only_the_focused_panes_bar() {
+    let d = tree();
+    let mut e = Env::new(d.path());
+    e.until("listing", |e| e.loaded(0) && e.loaded(1));
+    e.click("A.txt"); // left pane
+    e.key(Key::Delete, Modifiers::NONE);
+    assert!(e.texts().iter().any(|t| t == "Delete A.txt?"), "{:?}", e.texts());
+    assert_eq!(
+        e.h.state.focused(),
+        Some(termax_ui::ui::Id::new(("pane", 1u64, 0usize)).with("bar-cancel")),
+        "the question starts on Cancel"
+    );
+    let b = e.find_right("b.txt");
+    e.click_at(b);
+    e.key(Key::F(2), Modifiers::NONE); // rename in the right pane
+    assert!(e.tab.panes[1].confirm.is_some());
+    e.key(Key::Escape, Modifiers::NONE);
+    assert!(e.tab.panes[1].confirm.is_none(), "Esc closed the right pane's rename");
+    assert!(e.tab.panes[0].confirm.is_some(), "and left the other question alone");
+}
+
+#[test]
+fn location_picker_is_named_and_keeps_a_removed_host() {
+    let d = tree();
+    let cfg =
+        termax_core::config::Config::parse("[settings]\nload_ssh_config=false\n[[connection]]\nname=\"web\"\nhost=\"127.0.0.1\"\nport=1\n")
+            .unwrap();
+    let web = termax_core::hosts::collect(&cfg).0.remove(0);
+    let mut e = Env::with(d.path(), vec![], Location::Local, Location::Host(Box::new(web)), None);
+    e.frame(vec![]);
+    let t = e.h.tree();
+    assert_eq!(t.find("Left pane location").and_then(|n| n.value.clone()).as_deref(), Some("Local"));
+    assert_eq!(t.find("Right pane location").and_then(|n| n.value.clone()).as_deref(), Some("web"), "not shown as Local");
+}

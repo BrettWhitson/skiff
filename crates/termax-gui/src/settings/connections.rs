@@ -8,7 +8,7 @@ use termax_core::sshconfig::edit::{ConfigSet, display_path};
 use termax_ui::geom::Rect;
 use termax_ui::layout::Size as L;
 use termax_ui::ui::{Id, Ui};
-use termax_ui::widgets::{TextInputOpts, button, checkbox, dropdown, label, list, text_input};
+use termax_ui::widgets::{TextInputOpts, button, checkbox, dropdown_labeled, label, list_named, text_input};
 
 use super::{Rows, error_line, field, split_row};
 use crate::app::GuiApp;
@@ -92,7 +92,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     let names: Vec<(String, bool)> = app.hosts.iter().map(|h| (h.name.clone(), h.source == Source::SshConfig)).collect();
     let before = st.selected;
     let muted = ui.style().palette.muted;
-    list(ui, Id::new("settings-conn-list"), left[0], names.len(), 28, &mut st.selected, |ui, r, i, _| {
+    let row_name = |i: usize| if names[i].1 { format!("{}, ssh config", names[i].0) } else { names[i].0.clone() };
+    list_named(ui, Id::new("settings-conn-list"), left[0], "Connections", names.len(), 28, &mut st.selected, row_name, |ui, r, i, _| {
         let r = Rect::new(r.x + ui.px(8), r.y, r.w - ui.px(16), r.h);
         let w = label(ui, r, &names[i].0, None);
         if names[i].1 && r.w - w > ui.px(70) {
@@ -170,7 +171,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
             Dest::Termax => 0,
             Dest::SshConfig(i) => i + 1,
         };
-        if dropdown(ui, Id::new("settings-conn-dest"), c, &o, &mut sel) {
+        if dropdown_labeled(ui, Id::new("settings-conn-dest"), c, "Save to", &o, &mut sel) {
             form.form.dest = if sel == 0 { Dest::Termax } else { Dest::SshConfig(sel - 1) };
             form.dirty = true;
         }
