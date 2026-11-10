@@ -311,11 +311,7 @@ mod tests {
     fn ssh_duplicate_goes_after_the_original() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("config");
-        std::fs::write(&p, "Host a
-    User x
-Host *
-    User y
-").unwrap();
+        std::fs::write(&p, "Host a\n    User x\nHost *\n    User y\n").unwrap();
         let mut cfg = Config::default();
         cfg.settings.ssh_config_path = Some(p.display().to_string());
         let hosts = crate::hosts::collect(&cfg).0;
@@ -323,15 +319,7 @@ Host *
         let taken = taken_names(&hosts);
         let a = hosts.iter().find(|h| h.name == "a").unwrap();
         duplicate(a, &cfg, &set, &taken).unwrap().save(&mut cfg, &mut set, &taken).unwrap();
-        assert_eq!(set.docs[0].render(), "Host a
-    User x
-
-Host a-copy
-    User x
-
-Host *
-    User y
-");
+        assert_eq!(set.docs[0].render(), "Host a\n    User x\n\nHost a-copy\n    User x\n\nHost *\n    User y\n");
     }
 
     #[test]
