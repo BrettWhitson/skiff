@@ -14,4 +14,5 @@ pub mod sshver;
 pub mod state;
 pub mod status;
 pub mod terminal;
+pub mod termx;
 pub mod theme;
