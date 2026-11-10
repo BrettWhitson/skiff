@@ -159,7 +159,7 @@ impl Demo {
 
         // Main: tabs + page.
         let mparts = ui.split_v(main, &[L::Px(tokens::TAB_H), L::Fill], 0);
-        let titles: Vec<TabTitle> = self.tabs.iter().map(|t| TabTitle { text: t, closable: true }).collect();
+        let titles: Vec<TabTitle> = self.tabs.iter().map(|t| TabTitle { text: t, ..TabTitle::DEFAULT }).collect();
         let tr = tabs(ui, Id::new("tabs"), mparts[0], &titles, &mut self.active);
         if let Some(i) = tr.closed {
             self.tabs.remove(i);

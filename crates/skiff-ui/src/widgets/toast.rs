@@ -178,6 +178,13 @@ impl Toasts {
 /// the stack's widgets.
 pub fn toasts(ui: &mut Ui, id: Id, queue: &mut Toasts) -> Option<ToastEvent> {
     let win = ui.window_rect();
+    toasts_in(ui, id, win, queue)
+}
+
+/// `toasts`, stacked at the bottom right of `area` instead of the window
+/// (e.g. above an app's status bar).
+pub fn toasts_in(ui: &mut Ui, id: Id, area: Rect, queue: &mut Toasts) -> Option<ToastEvent> {
+    let win = area;
     let margin = ui.px(tokens::SPACE_LG);
     let w = ui.px(360).min(win.w - 2 * margin);
     let pad = ui.px(tokens::SPACE_MD);

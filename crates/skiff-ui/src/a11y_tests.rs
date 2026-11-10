@@ -231,7 +231,7 @@ fn shift_f10_reports_context_row() {
 fn tab_strip_takes_focus_and_arrows() {
     use crate::widgets::{TabTitle, tabs};
     let mut h = Harness::new(600, 100, 1.0);
-    let t = [TabTitle { text: "one", closable: true }, TabTitle { text: "two", closable: true }];
+    let t = [TabTitle { text: "one", ..TabTitle::DEFAULT }, TabTitle { text: "two", ..TabTitle::DEFAULT }];
     let mut active = 0;
     let mut run = |h: &mut Harness, ev: Vec<Event>| {
         h.frame(ev, &mut |ui| {
