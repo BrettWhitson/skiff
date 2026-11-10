@@ -28,17 +28,26 @@ exactly as they do on the command line.
 
 ## Install
 
+From a clone of this repository:
+
 ```bash
-cargo install skiff-ssh     # installs the `skiff` command (the TUI and CLI)
+cargo install --path crates/skiff-tui    # the `skiff` command (TUI and CLI)
+cargo install --path crates/skiff-gui    # the `skiff-gui` app
 ```
 
-The crate is called `skiff-ssh` (the name `skiff` on crates.io belongs to an
-unrelated project). The GUI is built from this repository:
+`cargo install` puts the programs in Cargo's bin folder (`~/.cargo/bin`, or
+`%USERPROFILE%\.cargo\bin` on Windows), which the Rust installer adds to
+`PATH`, so `skiff` and `skiff-gui` work from any terminal. Re-run the same
+commands to update. To try it without installing:
 
 ```bash
 cargo run -p skiff-ssh --release     # TUI
 cargo run -p skiff-gui --release     # GUI
 ```
+
+Skiff isn't on crates.io yet. Once it is, the TUI will install with
+`cargo install skiff-ssh` (the name `skiff` there belongs to an unrelated
+project).
 
 Requirements: the OpenSSH client on `PATH`. Answering passwords inside the
 app for SFTP and forwards needs OpenSSH 8.4 or newer; with an older `ssh`,
