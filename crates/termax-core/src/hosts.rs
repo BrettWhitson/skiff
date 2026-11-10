@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::config::{Config, Connection};
 use crate::sshconfig::edit::ConfigSet;
 pub use crate::sshconfig::resolve::Probe;
-use crate::sshconfig::resolve::{VIA_PROXY, probe_target_all};
+use crate::sshconfig::resolve::{VIA_PROXY, jump_probe, probe_target_all};
 use crate::sshconfig::{self, SshHost};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,19 +128,25 @@ impl HostEntry {
     /// `sets` is `None` when a config file couldn't be read: the host might
     /// be proxied, so it isn't probed.
     pub fn probe(&self, sets: Option<&[ConfigSet]>) -> Probe {
-        let proxy_opt = |a: &String| {
-            let a = a.to_ascii_lowercase();
-            a.starts_with("-j") || a.contains("proxyjump") || a.contains("proxycommand")
-        };
         let has = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
-        if has(&self.proxy_jump) || has(&self.proxy_command) || self.options.iter().any(proxy_opt) {
+        if has(&self.proxy_command) || self.options.iter().any(|a| a.to_ascii_lowercase().contains("proxycommand")) {
             return Probe::Unknown(VIA_PROXY.into());
+        }
+        let Some(sets) = sets else { return Probe::Unknown("ssh config unreadable".into()) };
+        // A jump host on the command line (`-J`, `-o ProxyJump=`) beats the config.
+        if let Some(jump) = self.cli_jump() {
+            return match jump {
+                Some(j) => jump_probe(sets, &j),
+                None => Probe::Unknown(VIA_PROXY.into()),
+            };
+        }
+        if self.source == Source::SshConfig && sets.is_empty() && has(&self.proxy_jump) {
+            return jump_probe(sets, self.proxy_jump.as_deref().unwrap_or_default());
         }
         let dest = self.destination.rsplit('@').next().unwrap_or(&self.destination);
         let probe = match sets {
-            None => return Probe::Unknown("ssh config unreadable".into()),
-            Some([]) => Probe::Direct { host: self.hostname.clone(), port: self.port.unwrap_or(22) },
-            Some(sets) => probe_target_all(sets, dest),
+            [] => Probe::Direct { host: self.hostname.clone(), port: self.port.unwrap_or(22) },
+            sets => probe_target_all(sets, dest),
         };
         // `-p` on the command line (the port field or extra args) beats the config.
         let arg_port = self.options.windows(2).filter(|w| w[0] == "-p").filter_map(|w| w[1].parse::<u16>().ok()).next_back();
@@ -148,6 +154,35 @@ impl HostEntry {
             (Probe::Direct { host, port }, Source::Custom(_)) => Probe::Direct { host, port: arg_port.unwrap_or(port) },
             (p, _) => p,
         }
+    }
+
+    /// The jump host given in the ssh options: `Some(Some(spec))` for
+    /// `-J spec` or `-o ProxyJump=spec`, `Some(None)` when there is one this
+    /// can't read, `None` when there is none (`ProxyJump=none` included).
+    fn cli_jump(&self) -> Option<Option<String>> {
+        let mut args = self.options.iter();
+        while let Some(a) = args.next() {
+            let spec = match a.as_str() {
+                "-J" => args.next().cloned(),
+                "-o" => match args.next().map(|o| proxy_jump_opt(o)) {
+                    Some(Some(v)) => v,
+                    _ => continue,
+                },
+                a if a.starts_with("-J") => Some(a[2..].to_string()),
+                a if a.starts_with("-o") => match proxy_jump_opt(&a[2..]) {
+                    Some(v) => v,
+                    None => continue,
+                },
+                _ => continue,
+            };
+            // ssh uses the first value it gets.
+            return match spec.as_deref().map(str::trim) {
+                Some(s) if s.eq_ignore_ascii_case("none") => None,
+                Some(s) if !s.is_empty() => Some(Some(s.to_string())),
+                _ => Some(None),
+            };
+        }
+        None
     }
 
     /// `user@host:port` for display.
@@ -173,6 +208,16 @@ impl HostEntry {
             self.tags.join(" ")
         )
         .to_lowercase()
+    }
+}
+
+/// For an `-o` option: `Some(value)` when it sets ProxyJump (`None` inside
+/// when it does in a way this can't read), `None` for other options.
+fn proxy_jump_opt(opt: &str) -> Option<Option<String>> {
+    match crate::sshconfig::split_kv(opt.trim()) {
+        Some((k, v)) if k.eq_ignore_ascii_case("proxyjump") => Some(Some(v.to_string())),
+        _ if opt.to_ascii_lowercase().contains("proxyjump") => Some(None),
+        _ => None,
     }
 }
 
@@ -303,6 +348,7 @@ mod tests {
         assert_eq!(HostEntry::from_custom(0, &p).probe(Some(&[])), Probe::Direct { host: "10.0.0.9".into(), port: 2200 });
         let c = Connection { extra_args: vec!["-J".into(), "b".into()], ..c };
         assert!(matches!(HostEntry::from_custom(0, &c).probe(None), Probe::Unknown(_)));
+        assert_eq!(HostEntry::from_custom(0, &c).probe(Some(&[])), Probe::Via { jump: "b".into(), host: "b".into(), port: 22 });
     }
 
     #[test]
@@ -346,8 +392,12 @@ mod probe_tests {
     }
 
     #[test]
-    fn attached_dash_j_is_a_proxy() {
-        assert!(matches!(conn(&["-Jbastion"]).probe(Some(&[])), Probe::Unknown(_)));
+    fn jump_options_probe_the_jump_host() {
+        let via = |j: &str, port| Probe::Via { jump: j.into(), host: j.into(), port };
+        assert_eq!(conn(&["-Jbastion"]).probe(Some(&[])), via("bastion", 22));
+        assert_eq!(conn(&["-o", "ProxyJump=me@j:2022"]).probe(Some(&[])), via("j", 2022));
+        assert_eq!(conn(&["-oProxyJump j2"]).probe(Some(&[])), via("j2", 22));
+        assert!(matches!(conn(&["-o", "ProxyCommand=nc %h %p"]).probe(Some(&[])), Probe::Unknown(_)));
     }
 
     #[test]
@@ -359,7 +409,7 @@ mod probe_tests {
         cfg.settings.load_ssh_config = false;
         cfg.settings.ssh_config_path = Some(p.display().to_string());
         let sets = probe_sets(&cfg).expect("readable");
-        assert!(matches!(conn(&[]).probe(Some(&sets)), Probe::Unknown(_)));
+        assert!(matches!(conn(&[]).probe(Some(&sets)), Probe::Via { jump, .. } if jump == "bastion"));
         std::fs::write(&p, b"Host a\n    User \xe9\n").unwrap();
         assert!(probe_sets(&cfg).is_none(), "an unreadable file is reported, not skipped");
     }

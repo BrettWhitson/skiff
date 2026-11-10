@@ -1,5 +1,6 @@
-//! The Forwards tab: saved port forwards with Start / Stop / Edit / Delete,
-//! an inline form, and ssh's password prompts for forwards that ask.
+//! The Forwards tab: saved port forwards with Start / Stop / Edit / Delete
+//! (Delete asks first), an inline form that saves with or without starting,
+//! and ssh's password prompts for forwards that ask.
 
 use termax_core::askpass::{AskKind, AskRequest};
 use termax_core::forward::{Forward, ForwardHandle, ForwardKind, ForwardState};
@@ -23,9 +24,11 @@ pub struct Running {
 
 #[derive(Default)]
 pub struct FwdForm {
-    /// Index into `Config::forwards` when editing.
-    pub editing: Option<usize>,
-    pub host: usize,
+    /// The saved forward being edited (found again by value when saving,
+    /// so a reload meanwhile can't make the form overwrite another one).
+    pub editing: Option<Forward>,
+    /// Host name.
+    pub host: String,
     pub kind: usize,
     pub name: String,
     pub bind: String,
@@ -61,6 +64,8 @@ pub struct ForwardsState {
     pub running: Vec<Running>,
     pub form: Option<FwdForm>,
     pub prompt: Option<FwdPrompt>,
+    /// The saved forward waiting for "Delete?" to be confirmed.
+    pub confirm_delete: Option<Forward>,
     next_tag: u64,
 }
 
@@ -87,24 +92,34 @@ impl ForwardsState {
         self.running.clear(); // dropping a handle stops its ssh
     }
 
+    /// Forgets forwards that were stopped, and failed ones no longer saved
+    /// (a failed saved forward stays, to show why).
+    pub fn prune(&mut self, saved: &[Forward]) {
+        self.running.retain(|r| match r.handle.state() {
+            ForwardState::Stopped => false,
+            ForwardState::Failed(_) => saved.contains(&r.fwd),
+            _ => true,
+        });
+    }
+
     pub fn new_tag(&mut self) -> String {
         self.next_tag += 1;
         format!("{TAG_PREFIX}{}", self.next_tag)
     }
 
-    /// The form for a new forward on host `host` (index into the host list).
-    pub fn new_form(&mut self, host: usize) {
-        self.form = Some(FwdForm { host, target: "localhost:".into(), ..Default::default() });
+    /// The form for a new forward on host `host`.
+    pub fn new_form(&mut self, host: &str) {
+        self.form = Some(FwdForm { host: host.to_string(), target: "localhost:".into(), ..Default::default() });
     }
 }
 
-fn form_to_forward(f: &FwdForm, hosts: &[String]) -> Result<Forward, String> {
+fn form_to_forward(f: &FwdForm) -> Result<Forward, String> {
     let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
     let listen = f.listen.trim().parse::<u16>().ok().filter(|p| *p > 0).ok_or("Listen port must be 1\u{2013}65535")?;
     let kind = ForwardKind::ALL[f.kind.min(2)];
     let fwd = Forward {
         name: opt(&f.name),
-        host: hosts.get(f.host).cloned().unwrap_or_default(),
+        host: f.host.clone(),
         kind,
         bind: opt(&f.bind),
         listen,
@@ -112,6 +127,38 @@ fn form_to_forward(f: &FwdForm, hosts: &[String]) -> Result<Forward, String> {
     };
     fwd.validate()?;
     Ok(fwd)
+}
+
+/// Saves the form's forward; starts it when `start`, or when it replaces
+/// one that was running.
+fn save_form(st: &mut ForwardsState, app: &mut GuiApp, start: bool) {
+    let Some(form) = &mut st.form else { return };
+    let f = match form_to_forward(form) {
+        Ok(f) => f,
+        Err(e) => {
+            form.error = Some(e);
+            return;
+        }
+    };
+    let old = form.editing.clone();
+    let mut was_live = false;
+    match old.as_ref().and_then(|o| app.cfg.forwards.iter().position(|x| x == o)) {
+        Some(i) => {
+            let o = app.cfg.forwards[i].clone();
+            was_live = st.state_of(&o).is_some_and(|s| s.is_live());
+            if o != f {
+                st.stop(&o);
+            }
+            app.cfg.forwards[i] = f.clone();
+        }
+        None => app.cfg.forwards.push(f.clone()),
+    }
+    app.save_config();
+    st.form = None;
+    let unchanged_and_live = old.as_ref() == Some(&f) && was_live;
+    if (start || was_live) && !unchanged_and_live {
+        app.start_forward(st, &f);
+    }
 }
 
 pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
@@ -123,8 +170,8 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     let hp = ui.split_h(head, &[L::Fill, L::Px(130)], 8);
     label(ui, hp[0], "Port forwards", None);
     if button(ui, Id::new("fwd-new"), hp[1], "New forward").clicked {
-        let h = app.sidebar_selected().unwrap_or(0);
-        st.new_form(h);
+        let h = app.sidebar_selected().or_else(|| app.hosts.first().map(|h| h.name.clone())).unwrap_or_default();
+        st.new_form(&h);
     }
 
     if let Some(pr) = &mut st.prompt {
@@ -156,13 +203,23 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     }
 
     let host_names: Vec<String> = app.hosts.iter().map(|h| h.name.clone()).collect();
+    let mut save = None;
+    let mut cancel = false;
     if let Some(form) = &mut st.form {
-        let mut save = false;
-        let mut cancel = false;
         let (l, c) = split_row(ui, rows.next(ui));
         label(ui, l, "Host", None);
         let opts: Vec<&str> = host_names.iter().map(String::as_str).collect();
-        dropdown(ui, Id::new("fwd-host"), c, &opts, &mut form.host);
+        let mut hi = host_names.iter().position(|h| *h == form.host).unwrap_or(0);
+        if dropdown(ui, Id::new("fwd-host"), c, &opts, &mut hi)
+            && let Some(h) = host_names.get(hi)
+        {
+            form.host = h.clone();
+        }
+        if !host_names.contains(&form.host)
+            && let Some(h) = host_names.get(hi)
+        {
+            form.host = h.clone();
+        }
         let (l, c) = split_row(ui, rows.next(ui));
         label(ui, l, "Kind", None);
         let kinds: Vec<&str> = ForwardKind::ALL.iter().map(|k| k.label()).collect();
@@ -177,33 +234,45 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
             field(ui, Id::new("fwd-target"), rows.next(ui), "Target", &mut form.target);
         }
         let (_, c) = split_row(ui, rows.next(ui));
-        let b = ui.split_h(c, &[L::Px(140), L::Px(90)], 8);
-        if button(ui, Id::new("fwd-save"), b[0], "Save and start").clicked {
-            save = true;
+        let b = ui.split_h(c, &[L::Px(80), L::Px(140), L::Px(90)], 8);
+        if button(ui, Id::new("fwd-save"), b[0], "Save").clicked {
+            save = Some(false);
         }
-        if button(ui, Id::new("fwd-cancel"), b[1], "Cancel").clicked {
+        if button(ui, Id::new("fwd-save-start"), b[1], "Save and start").clicked {
+            save = Some(true);
+        }
+        if button(ui, Id::new("fwd-cancel"), b[2], "Cancel").clicked {
             cancel = true;
         }
         error_line(ui, rows.next(ui), &form.error);
-        if save {
-            match form_to_forward(form, &host_names) {
-                Err(e) => form.error = Some(e),
-                Ok(f) => {
-                    match form.editing {
-                        Some(i) if i < app.cfg.forwards.len() => {
-                            let old = app.cfg.forwards[i].clone();
-                            st.stop(&old);
-                            app.cfg.forwards[i] = f.clone();
-                        }
-                        _ => app.cfg.forwards.push(f.clone()),
-                    }
-                    app.save_config();
-                    st.form = None;
-                    app.start_forward(&mut st, &f);
-                }
+    }
+    if let Some(start) = save {
+        save_form(&mut st, app, start);
+    } else if cancel {
+        st.form = None;
+    }
+
+    if let Some(f) = st.confirm_delete.clone() {
+        if !app.cfg.forwards.contains(&f) {
+            st.confirm_delete = None;
+        } else {
+            let r = rows.next(ui);
+            let what = format!("Delete forward {}?", f.title());
+            label(ui, r, &what, Some(p.danger));
+            if let Some(n) = ui.a11y_node(Id::new("fwd-delete-confirm"), termax_ui::a11y::Role::Dialog, &what) {
+                n.live = true;
             }
-        } else if cancel {
-            st.form = None;
+            let (_, c) = split_row(ui, rows.next(ui));
+            let b = ui.split_h(c, &[L::Px(90), L::Px(90)], 8);
+            if button(ui, Id::new("fwd-del-yes"), b[0], "Delete").clicked {
+                st.stop(&f);
+                st.running.retain(|r| r.fwd != f);
+                app.cfg.forwards.retain(|x| *x != f);
+                app.save_config();
+                st.confirm_delete = None;
+            } else if button(ui, Id::new("fwd-del-no"), b[1], "Cancel").clicked {
+                st.confirm_delete = None;
+            }
         }
     }
 
@@ -211,7 +280,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     if app.cfg.forwards.is_empty() && st.form.is_none() {
         label(ui, rows.next(ui), "No saved forwards. Right-click a host and choose Port forward\u{2026}", Some(p.muted));
     }
-    let mut act: Option<(usize, &str)> = None;
+    let mut act: Option<(Forward, &str)> = None;
     for (i, f) in app.cfg.forwards.iter().enumerate() {
         let r = rows.next(ui);
         let parts = ui.split_h(r, &[L::Fill, L::Frac(0.3), L::Px(70), L::Px(60), L::Px(70)], 6);
@@ -226,25 +295,23 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         label(ui, parts[1], &text, Some(color));
         let live = state.as_ref().is_some_and(|s| s.is_live());
         if button(ui, Id::new(("fwd-run", i)), parts[2], if live { "Stop" } else { "Start" }).clicked {
-            act = Some((i, if live { "stop" } else { "start" }));
+            act = Some((f.clone(), if live { "stop" } else { "start" }));
         }
         if button(ui, Id::new(("fwd-edit", i)), parts[3], "Edit").clicked {
-            act = Some((i, "edit"));
+            act = Some((f.clone(), "edit"));
         }
         if button(ui, Id::new(("fwd-del", i)), parts[4], "Delete").clicked {
-            act = Some((i, "delete"));
+            act = Some((f.clone(), "delete"));
         }
     }
-    if let Some((i, what)) = act {
-        let f = app.cfg.forwards[i].clone();
+    if let Some((f, what)) = act {
         match what {
             "start" => app.start_forward(&mut st, &f),
             "stop" => st.stop(&f),
             "edit" => {
-                let host = host_names.iter().position(|h| *h == f.host).unwrap_or(0);
                 st.form = Some(FwdForm {
-                    editing: Some(i),
-                    host,
+                    editing: Some(f.clone()),
+                    host: f.host.clone(),
                     kind: ForwardKind::ALL.iter().position(|k| *k == f.kind).unwrap_or(0),
                     name: f.name.clone().unwrap_or_default(),
                     bind: f.bind.clone().unwrap_or_default(),
@@ -253,11 +320,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
                     error: None,
                 });
             }
-            _ => {
-                st.stop(&f);
-                app.cfg.forwards.remove(i);
-                app.save_config();
-            }
+            _ => st.confirm_delete = Some(f),
         }
     }
     app.forwards = st;

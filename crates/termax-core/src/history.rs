@@ -49,12 +49,30 @@ impl History {
         std::fs::read_to_string(path).ok().and_then(|t| toml::from_str(&t).ok()).unwrap_or_default()
     }
 
+    /// Writes the history atomically (a temp file, then a rename), so a
+    /// reader never sees a half-written file. Prefer [`History::update`],
+    /// which keeps other processes' changes.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        std::fs::create_dir_all(dir)?;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, toml::to_string(self)?)?;
+        let mut tries = 0;
+        loop {
+            match std::fs::rename(&tmp, path) {
+                Ok(()) => return Ok(()),
+                // Windows: another termax may be replacing it at this moment.
+                Err(_) if cfg!(windows) && tries < 10 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e.into());
+                }
+            }
         }
-        std::fs::write(path, toml::to_string(self)?)?;
-        Ok(())
     }
 
     pub fn record(&mut self, name: &str, kind: ConnKind, now: u64) {
@@ -62,6 +80,38 @@ impl History {
         h.last = now;
         h.count = h.count.saturating_add(1);
         h.kind = kind;
+    }
+
+    /// Moves host `old`'s history to `new` (after a rename), merging with
+    /// any history `new` already has.
+    pub fn rename(&mut self, old: &str, new: &str) {
+        let Some(o) = self.hosts.remove(old) else { return };
+        match self.hosts.get_mut(new) {
+            Some(n) => {
+                n.count = n.count.saturating_add(o.count);
+                if o.last > n.last {
+                    n.last = o.last;
+                    n.kind = o.kind;
+                }
+            }
+            None => {
+                self.hosts.insert(new.to_string(), o);
+            }
+        }
+    }
+
+    /// Applies `change` to the history on disk and to `self`: re-reads the
+    /// file first, so changes another termax made meanwhile are kept, then
+    /// replaces it atomically. `self` ends up with the merged history even
+    /// if the write fails.
+    pub fn update(&mut self, path: &Path, change: impl FnOnce(&mut History)) -> anyhow::Result<()> {
+        // A file that can't be read or parsed right now (or is gone) must not
+        // wipe what this process knows.
+        let mut fresh = std::fs::read_to_string(path).ok().and_then(|t| toml::from_str(&t).ok()).unwrap_or_else(|| self.clone());
+        change(&mut fresh);
+        let res = fresh.save(path);
+        *self = fresh;
+        res
     }
 
     /// Up to `n` host names, most recent first.
@@ -161,5 +211,20 @@ mod tests {
         h.record("web", ConnKind::Forward, 42);
         h.save(&p).unwrap();
         assert_eq!(History::load(&p), h);
+    }
+
+    #[test]
+    fn update_keeps_other_processes_changes() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.toml");
+        let (mut one, mut two) = (History::default(), History::default());
+        one.update(&p, |h| h.record("a", ConnKind::Terminal, 10)).unwrap();
+        two.update(&p, |h| h.record("b", ConnKind::Files, 20)).unwrap();
+        one.update(&p, |h| h.record("a", ConnKind::Terminal, 30)).unwrap();
+        assert_eq!(one.recent(5), ["a", "b"]);
+        assert_eq!(History::load(&p), one);
+        one.update(&p, |h| h.rename("a", "b")).unwrap();
+        assert_eq!((one.hosts["b"].count, one.hosts["b"].last), (3, 30));
+        assert!(!one.hosts.contains_key("a"));
     }
 }

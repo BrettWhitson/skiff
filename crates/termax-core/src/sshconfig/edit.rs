@@ -65,8 +65,10 @@ pub fn validate_with(f: &HostFields, taken: &[String], editing: Option<&str>, ex
     if alias.is_empty() {
         return Err("Alias is required".into());
     }
-    if alias.contains(|c: char| c.is_whitespace() || "*?!".contains(c)) {
-        return Err("Alias can't contain spaces or * ? !".into());
+    // `=` and `"` change how ssh splits the line, `#` starts a comment and
+    // `,` separates hosts in `-J` and `ProxyJump` lists.
+    if alias.contains(|c: char| c.is_whitespace() || "*?!=\"#,".contains(c)) {
+        return Err("Alias can't contain spaces or * ? ! = \" # ,".into());
     }
     if editing != Some(alias) && taken.iter().any(|t| t == alias) {
         return Err(format!("A host named {alias} already exists"));
@@ -120,6 +122,24 @@ fn leading_ws(s: &str) -> &str {
     &s[..s.len() - s.trim_start().len()]
 }
 
+/// The separator between key and value in option line `line` (`" "`,
+/// `"="`, `" = "`…), or `None` for comments and blank lines.
+fn separator(line: &str) -> Option<String> {
+    let t = line.trim();
+    if t.is_empty() || t.starts_with('#') {
+        return None;
+    }
+    let key_end = t.find(|c: char| c.is_whitespace() || c == '=')?;
+    let rest = &t[key_end..];
+    let sep_len = rest.find(|c: char| !(c.is_whitespace() || c == '=')).unwrap_or(rest.len());
+    Some(rest[..sep_len].to_string()).filter(|s| !s.is_empty())
+}
+
+/// The separator the first option line among `lines` uses.
+fn first_separator<'a>(lines: impl IntoIterator<Item = &'a (String, &'static str)>) -> Option<String> {
+    lines.into_iter().find_map(|(c, _)| separator(c))
+}
+
 /// What a line inside a host block is.
 enum LineKind {
     Field(usize),
@@ -139,6 +159,15 @@ impl Doc {
             }
         }
         "    ".into()
+    }
+
+    /// The key/value separator used for options in this file (default a space).
+    fn separator(&self) -> String {
+        self.blocks()
+            .iter()
+            .filter(|b| b.kind != BlockKind::Preamble)
+            .find_map(|b| first_separator(&self.lines[b.start + 1..b.end]))
+            .unwrap_or_else(|| " ".into())
     }
 
     /// Fixes line terminators after an edit: every line but the last ends
@@ -188,16 +217,28 @@ impl Doc {
         }
         self.normalize();
     }
+
+    /// Inserts `block` (raw lines) at line `end`, right after a block, with
+    /// one blank line on each side.
+    fn insert_block_at(&mut self, end: usize, block: Vec<String>) {
+        let mut new: Vec<(String, &'static str)> = vec![(String::new(), self.eol)];
+        new.extend(block.into_iter().map(|l| (l, self.eol)));
+        if self.lines.get(end).is_some_and(|(c, _)| !c.trim().is_empty()) {
+            new.push((String::new(), self.eol));
+        }
+        self.lines.splice(end..end, new);
+        self.normalize();
+    }
 }
 
-fn block_lines(f: &HostFields, indent: &str) -> Vec<String> {
+fn block_lines(f: &HostFields, indent: &str, sep: &str) -> Vec<String> {
     let mut out = vec![format!("Host {}", f.alias.trim())];
     if let Some(x) = format_extras(&f.tags, f.hidden, &f.remote_dir) {
         out.push(format!("{indent}{x}"));
     }
     for (i, name) in FIELD_NAMES.iter().enumerate() {
         if !f.field(i).trim().is_empty() {
-            out.push(format!("{indent}{name} {}", quote(i, f.field(i))));
+            out.push(format!("{indent}{name}{sep}{}", quote(i, f.field(i))));
         }
     }
     out.extend(f.other.iter().map(|o| o.trim()).filter(|o| !o.is_empty()).map(|o| format!("{indent}{o}")));
@@ -320,6 +361,7 @@ impl ConfigSet {
             .find(|(c, _)| !is_comment_or_blank(c))
             .map(|(c, _)| leading_ws(c).to_string())
             .unwrap_or_else(|| doc.indent());
+        let sep = first_separator(&doc.lines[b.start + 1..b.end]).unwrap_or_else(|| doc.separator());
         let eol = doc.eol;
         let old: Vec<(String, &'static str)> = doc.lines[b.start..b.end].to_vec();
 
@@ -386,7 +428,7 @@ impl ConfigSet {
         for (i, name) in FIELD_NAMES.iter().enumerate() {
             let v = f.field(i).trim();
             if !seen[i] && !v.is_empty() {
-                out.push((format!("{indent}{name} {}", quote(i, v)), eol));
+                out.push((format!("{indent}{name}{sep}{}", quote(i, v)), eol));
             }
         }
         out.extend(wanted_other.into_iter().map(|o| (format!("{indent}{o}"), eol)));
@@ -402,26 +444,54 @@ impl ConfigSet {
     pub fn add_host(&mut self, doc: usize, f: &HostFields) -> Result<(), String> {
         validate(f, &self.aliases(), None)?;
         let d = self.docs.get_mut(doc).ok_or("No such file")?;
-        let lines = block_lines(f, &d.indent());
+        let lines = block_lines(f, &d.indent(), &d.separator());
         d.insert_block(lines);
+        Ok(())
+    }
+
+    /// Adds a new host right after host `alias`, in its file: ssh takes the
+    /// first value it finds, so the copy sees the same `Host *` defaults and
+    /// overrides as the original.
+    pub fn add_host_after(&mut self, alias: &str, f: &HostFields) -> Result<(), String> {
+        validate(f, &self.aliases(), None)?;
+        let (di, b) = self.editable(alias)?;
+        let d = &mut self.docs[di];
+        let body = &d.lines[b.start + 1..b.end];
+        let indent = match body.iter().find(|(c, _)| !is_comment_or_blank(c)) {
+            Some((c, _)) => leading_ws(c).to_string(),
+            None => d.indent(),
+        };
+        let sep = first_separator(body).unwrap_or_else(|| d.separator());
+        let lines = block_lines(f, &indent, &sep);
+        d.insert_block_at(b.end, lines);
         Ok(())
     }
 
     /// Removes host `alias` and one blank line next to it.
     pub fn delete_host(&mut self, alias: &str) -> Result<(), String> {
         let (di, b) = self.editable(alias)?;
-        self.remove_block(di, &b);
+        self.remove_block(di, &b, false);
         Ok(())
     }
 
-    fn remove_block(&mut self, di: usize, b: &super::doc::Block) -> Vec<String> {
+    /// Removes block `b`; with `comments`, also the comment lines right
+    /// above its `Host` line (they describe it). Returns the removed lines.
+    fn remove_block(&mut self, di: usize, b: &super::doc::Block, comments: bool) -> Vec<String> {
         let d = &mut self.docs[di];
-        let removed: Vec<String> = d.lines.drain(b.start..b.end).map(|(c, _)| c).collect();
+        let mut start = b.start;
+        if comments {
+            // Never into the previous block (its termax comment is its own).
+            let floor = d.blocks().iter().filter(|o| o.end <= b.start).map(|o| o.end).max().unwrap_or(0);
+            while start > floor && d.lines[start - 1].0.trim().starts_with('#') {
+                start -= 1;
+            }
+        }
+        let removed: Vec<String> = d.lines.drain(start..b.end).map(|(c, _)| c).collect();
         let blank = |d: &Doc, i: usize| d.lines.get(i).is_some_and(|(c, _)| c.trim().is_empty());
-        if blank(d, b.start) {
-            d.lines.remove(b.start);
-        } else if b.start > 0 && blank(d, b.start - 1) {
-            d.lines.remove(b.start - 1);
+        if blank(d, start) {
+            d.lines.remove(start);
+        } else if start > 0 && blank(d, start - 1) {
+            d.lines.remove(start - 1);
         }
         d.normalize();
         removed
@@ -436,7 +506,7 @@ impl ConfigSet {
         if to_doc >= self.docs.len() {
             return Err("No such file".into());
         }
-        let lines = self.remove_block(di, &b);
+        let lines = self.remove_block(di, &b, true);
         self.docs[to_doc].insert_block(lines);
         Ok(())
     }
@@ -505,12 +575,24 @@ fn timestamp() -> String {
     format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", rem / 3600, rem / 60 % 60, rem % 60)
 }
 
-/// Copies `path` to `backups/<name>-<stamp>.bak` and keeps the newest
-/// [`KEEP_BACKUPS`]. Saves within one second get `~01`, `~02`… so names
-/// still sort oldest first.
+/// A short hash of `path`'s full (absolute) spelling, stable across runs
+/// and toolchains (FNV-1a folded to 32 bits), so files that share a name
+/// get their own backups.
+fn path_hash(path: &Path) -> u32 {
+    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in full.to_string_lossy().bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    (h ^ (h >> 32)) as u32
+}
+
+/// Copies `path` to `backups/<name>-<path hash>-<stamp>.bak` and keeps the
+/// newest [`KEEP_BACKUPS`] of that file. Saves within one second get `~01`,
+/// `~02`… so names still sort oldest first.
 fn backup(path: &Path, backups: &Path) -> anyhow::Result<()> {
     create_private_dir(backups)?;
-    let name = file_label(path);
+    let name = format!("{}-{:08x}", file_label(path), path_hash(path));
     let stamp = timestamp();
     let mut target = backups.join(format!("{name}-{stamp}.bak"));
     let mut n = 1;
@@ -642,10 +724,17 @@ mod tests {
         let text = s.docs[0].render();
         assert_eq!(
             text,
-            "Host a\r\n\tUser=x\r\n\tIdentityFile \"C:/my keys/id\"\r\n\tProxyCommand ssh -W %h:%p jump\r\n\tForwardAgent yes"
+            "Host a\r\n\tUser=x\r\n\tIdentityFile=\"C:/my keys/id\"\r\n\tProxyCommand=ssh -W %h:%p jump\r\n\tForwardAgent yes"
         );
         let again = Doc::parse("x".into(), &text);
         assert_eq!(again.host_fields(&again.blocks()[0]), f);
+    }
+
+    #[test]
+    fn new_keys_follow_the_separator_style() {
+        let (_d, _p, mut s) = setup("Host a\n  User = x\n");
+        s.add_host(0, &host("b", "h")).unwrap();
+        assert_eq!(s.docs[0].render(), "Host a\n  User = x\n\nHost b\n  HostName = h\n");
     }
 
     #[test]
@@ -685,6 +774,27 @@ mod tests {
     }
 
     #[test]
+    fn move_takes_the_comments_above_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work.conf");
+        std::fs::write(&work, "").unwrap();
+        let main = dir.path().join("config");
+        let inc = format!("Include {}\n", work.display().to_string().replace('\\', "/"));
+        std::fs::write(&main, format!("{inc}\n# the db box\n# (ask ops)\nHost a\n  User x\n\nHost b\n")).unwrap();
+        let mut s = ConfigSet::load(&main).unwrap();
+        s.move_host("a", 1).unwrap();
+        assert_eq!(s.docs[0].render(), format!("{inc}\nHost b\n"));
+        assert_eq!(s.docs[1].render(), "# the db box\n# (ask ops)\nHost a\n  User x\n");
+    }
+
+    #[test]
+    fn add_after_puts_the_copy_next_to_the_original() {
+        let (_d, _p, mut s) = setup("Host a\n  User x\n# defaults\nHost *\n  User y\n");
+        s.add_host_after("a", &host("a-copy", "h")).unwrap();
+        assert_eq!(s.docs[0].render(), "Host a\n  User x\n\nHost a-copy\n  HostName h\n\n# defaults\nHost *\n  User y\n");
+    }
+
+    #[test]
     fn shared_and_duplicate_hosts_are_read_only() {
         let (_d, _p, s) = setup("Host a b\n  User x\nHost c\n  User y\nHost c\n  Port 2\nHost d\n");
         match s.locate("a") {
@@ -713,6 +823,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "Host a\n  Port 13\n");
         assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 10);
         assert!(!s.docs[0].is_dirty());
+    }
+
+    #[test]
+    fn backups_of_same_named_files_rotate_separately() {
+        let d = tempfile::tempdir().unwrap();
+        let backups = d.path().join("backups");
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        for dir in [&a, &b] {
+            std::fs::create_dir(dir).unwrap();
+            std::fs::write(dir.join("config"), "Host x\n").unwrap();
+        }
+        for _ in 0..KEEP_BACKUPS {
+            backup(&a.join("config"), &backups).unwrap();
+        }
+        backup(&b.join("config"), &backups).unwrap();
+        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), KEEP_BACKUPS + 1, "b's backup doesn't push out a's");
     }
 
     #[test]
@@ -759,8 +885,9 @@ mod tests {
         let taken = vec!["web".to_string()];
         let check = |f: HostFields| validate(&f, &taken, None).unwrap_err();
         assert_eq!(check(host("", "h")), "Alias is required");
-        assert_eq!(check(host("a b", "h")), "Alias can't contain spaces or * ? !");
-        assert_eq!(check(host("a*", "h")), "Alias can't contain spaces or * ? !");
+        for bad in ["a b", "a*", "a=b", "a\"b", "a#b", "a,b", "a\tb"] {
+            assert_eq!(check(host(bad, "h")), "Alias can't contain spaces or * ? ! = \" # ,", "{bad}");
+        }
         assert_eq!(check(host("web", "h")), "A host named web already exists");
         assert_eq!(check(HostFields { port: "0".into(), ..host("x", "h") }), "Invalid port: 0");
         assert_eq!(check(HostFields { other: vec!["Host y".into()], ..host("x", "h") }), "Other options can't contain Host, Match or Include");

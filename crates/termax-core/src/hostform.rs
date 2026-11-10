@@ -94,15 +94,24 @@ pub struct HostForm {
     pub hidden: bool,
     /// Other ssh options, one per line (ssh config hosts only).
     pub other: String,
+    /// A new ssh config host goes right after this one (duplicates).
+    pub after: Option<String>,
 }
 
 impl HostForm {
     pub fn new_host(dest: Dest) -> HostForm {
-        HostForm { dest, editing: Editing::New, values: Default::default(), hidden: false, other: String::new() }
+        HostForm { dest, editing: Editing::New, values: Default::default(), hidden: false, other: String::new(), after: None }
     }
 
     pub fn for_custom(i: usize, c: &Connection) -> HostForm {
-        HostForm { dest: Dest::Termax, editing: Editing::Custom(i), values: c.to_fields(), hidden: c.hidden, other: String::new() }
+        HostForm {
+            dest: Dest::Termax,
+            editing: Editing::Custom(i),
+            values: c.to_fields(),
+            hidden: c.hidden,
+            other: String::new(),
+            after: None,
+        }
     }
 
     pub fn for_ssh(doc: usize, alias: &str, f: &HostFields) -> HostForm {
@@ -126,7 +135,10 @@ impl HostForm {
     /// The form for host `h`, or why it can't be edited.
     pub fn for_entry(h: &HostEntry, cfg: &Config, set: &ConfigSet) -> Result<HostForm, String> {
         match h.source {
-            Source::Custom(i) => Ok(HostForm::for_custom(i, &cfg.connections[i])),
+            Source::Custom(_) => {
+                let i = custom_index(h, cfg)?;
+                Ok(HostForm::for_custom(i, &cfg.connections[i]))
+            }
             Source::SshConfig => match set.locate(&h.name) {
                 Locate::Editable { doc, .. } => Ok(HostForm::for_ssh(doc, &h.name, &set.fields(&h.name).expect("editable"))),
                 Locate::ReadOnly(why) => Err(why),
@@ -151,6 +163,16 @@ impl HostForm {
     /// The destination can change only while adding.
     pub fn can_change_dest(&self) -> bool {
         self.editing == Editing::New
+    }
+
+    /// The name of the host this form edits, as it was before any change
+    /// (`None` for a new host). Call it before [`HostForm::save`].
+    pub fn original_name(&self, cfg: &Config) -> Option<String> {
+        match &self.editing {
+            Editing::New => None,
+            Editing::Custom(i) => cfg.connections.get(*i).map(|c| c.name.clone()),
+            Editing::Ssh(a) => Some(a.clone()),
+        }
     }
 
     fn current_name(&self) -> Option<&str> {
@@ -203,14 +225,26 @@ impl HostForm {
                 let f = self.host_fields();
                 let existing = self.current_name().and_then(|a| set.fields(a)).map(|h| h.other).unwrap_or_default();
                 validate_with(&f, taken, self.current_name(), &existing)?;
-                match self.current_name() {
-                    Some(alias) => set.update_host(alias, &f)?,
-                    None => set.add_host(doc, &f)?,
+                match (self.current_name(), &self.after) {
+                    (Some(alias), _) => set.update_host(alias, &f)?,
+                    (None, Some(after)) => set.add_host_after(after, &f)?,
+                    (None, None) => set.add_host(doc, &f)?,
                 }
                 Ok(Saved::Ssh(f.alias))
             }
         }
     }
+}
+
+/// After host `old` was renamed to `new`: points saved `[[forward]]`s at
+/// the new name. Returns whether any changed (config.toml then needs saving).
+pub fn rename_forwards(cfg: &mut Config, old: &str, new: &str) -> bool {
+    let mut changed = false;
+    for f in cfg.forwards.iter_mut().filter(|f| f.host == old) {
+        f.host = new.to_string();
+        changed = true;
+    }
+    changed
 }
 
 pub fn split_tags(s: &str) -> Vec<String> {
@@ -220,6 +254,16 @@ pub fn split_tags(s: &str) -> Vec<String> {
 /// Every host name in use.
 pub fn taken_names(hosts: &[HostEntry]) -> Vec<String> {
     hosts.iter().map(|h| h.name.clone()).collect()
+}
+
+/// Where custom host `h` is in `cfg.connections` now. The entry's index is
+/// from when the host list was built; if the list is stale, it could point
+/// at another connection, so the name decides.
+fn custom_index(h: &HostEntry, cfg: &Config) -> Result<usize, String> {
+    match h.source {
+        Source::Custom(i) if cfg.connections.get(i).is_some_and(|c| c.name == h.name) => Ok(i),
+        _ => cfg.connections.iter().position(|c| c.name == h.name).ok_or_else(|| format!("{} is gone — reload", h.name)),
+    }
 }
 
 /// Hides or shows host `h`.
@@ -233,11 +277,10 @@ pub fn set_hidden(h: &HostEntry, hidden: bool, cfg: &mut Config, set: &mut Confi
 /// Removes host `h`.
 pub fn delete(h: &HostEntry, cfg: &mut Config, set: &mut ConfigSet) -> Result<Saved, String> {
     match h.source {
-        Source::Custom(i) if i < cfg.connections.len() => {
-            let c = cfg.connections.remove(i);
+        Source::Custom(_) => {
+            let c = cfg.connections.remove(custom_index(h, cfg)?);
             Ok(Saved::Termax(c.name))
         }
-        Source::Custom(_) => Err("That connection is gone — reload".into()),
         Source::SshConfig => {
             set.delete_host(&h.name)?;
             Ok(Saved::Ssh(h.name.clone()))
@@ -257,6 +300,9 @@ pub fn duplicate_name(name: &str, taken: &[String]) -> String {
 /// A new form pre-filled from host `h`, named [`duplicate_name`].
 pub fn duplicate(h: &HostEntry, cfg: &Config, set: &ConfigSet, taken: &[String]) -> Result<HostForm, String> {
     let mut form = HostForm::for_entry(h, cfg, set)?;
+    if let Editing::Ssh(alias) = &form.editing {
+        form.after = Some(alias.clone());
+    }
     form.editing = Editing::New;
     *form.get_mut(Field::Name) = duplicate_name(&h.name, taken);
     Ok(form)
@@ -271,6 +317,48 @@ mod tests {
         let taken = vec!["web".to_string(), "web-copy".to_string()];
         assert_eq!(duplicate_name("db", &taken), "db-copy");
         assert_eq!(duplicate_name("web", &taken), "web-copy-2");
+    }
+
+    #[test]
+    fn ssh_duplicate_goes_after_the_original() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("config");
+        std::fs::write(&p, "Host a\n    User x\nHost *\n    User y\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.settings.ssh_config_path = Some(p.display().to_string());
+        let hosts = crate::hosts::collect(&cfg).0;
+        let mut set = ConfigSet::load(&p).unwrap();
+        let taken = taken_names(&hosts);
+        let a = hosts.iter().find(|h| h.name == "a").unwrap();
+        duplicate(a, &cfg, &set, &taken).unwrap().save(&mut cfg, &mut set, &taken).unwrap();
+        assert_eq!(set.docs[0].render(), "Host a\n    User x\n\nHost a-copy\n    User x\n\nHost *\n    User y\n");
+    }
+
+    #[test]
+    fn stale_custom_index_never_touches_another_connection() {
+        let mut cfg = Config::default();
+        cfg.settings.load_ssh_config = false;
+        let conn = |n: &str| Connection { name: n.into(), host: "h".into(), ..Default::default() };
+        cfg.connections = vec![conn("a"), conn("b")];
+        let b = crate::hosts::collect(&cfg).0.remove(1);
+        cfg.connections.insert(0, conn("new"));
+        let mut set = ConfigSet::default();
+        assert_eq!(delete(&b, &mut cfg, &mut set), Ok(Saved::Termax("b".into())));
+        assert_eq!(cfg.connections.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["new", "a"]);
+        assert!(delete(&b, &mut cfg, &mut set).is_err());
+    }
+
+    #[test]
+    fn rename_points_forwards_at_the_new_name() {
+        let mut cfg = Config::default();
+        cfg.connections.push(Connection { name: "old".into(), host: "h".into(), ..Default::default() });
+        let fwd = |host: &str| crate::forward::Forward { host: host.into(), listen: 1, ..Default::default() };
+        cfg.forwards = vec![fwd("old"), fwd("other")];
+        let form = HostForm::for_custom(0, &cfg.connections[0]);
+        assert_eq!(form.original_name(&cfg).as_deref(), Some("old"));
+        assert!(rename_forwards(&mut cfg, "old", "new"));
+        assert_eq!(cfg.forwards, [fwd("new"), fwd("other")]);
+        assert!(!rename_forwards(&mut cfg, "old", "new"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Works out where a status check for a host should connect, in-process
-//! (never `ssh -G`). Conservative: anything that might send the connection
-//! through a proxy, or that this resolver can't evaluate, is `Unknown`.
+//! (never `ssh -G`). Conservative: a `ProxyCommand`, or anything this
+//! resolver can't evaluate, is `Unknown`. A `ProxyJump` host is checked by
+//! connecting to its first jump host only (TCP and banner, never a login).
 
 use super::edit::ConfigSet;
 use super::{MAX_INCLUDE_DEPTH, glob_match, resolve_include, split_kv, unquote};
@@ -9,11 +10,17 @@ use super::{MAX_INCLUDE_DEPTH, glob_match, resolve_include, split_kv, unquote};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Probe {
     Direct { host: String, port: u16 },
+    /// The host is reached through jump host `jump` (as written in
+    /// `ProxyJump`); only the jump host, at `host:port`, is checked.
+    Via { jump: String, host: String, port: u16 },
     /// Not probed; the reason is shown to the user.
     Unknown(String),
 }
 
 pub const VIA_PROXY: &str = "via proxy";
+
+/// How many jump hosts deep `ProxyJump` chains are followed.
+const MAX_JUMP_DEPTH: usize = 8;
 
 /// True when `alias` matches a `Host` line's patterns (`!` negates).
 pub fn host_matches(patterns: &[String], alias: &str) -> bool {
@@ -34,7 +41,8 @@ pub fn host_matches(patterns: &[String], alias: &str) -> bool {
 struct Found {
     hostname: Option<String>,
     port: Option<String>,
-    proxy: Option<String>,
+    /// The first `ProxyJump` or `ProxyCommand` value, and whether it was a jump.
+    proxy: Option<(bool, String)>,
     /// A `Match` block sets something this resolver can't evaluate.
     match_blocks: bool,
 }
@@ -81,7 +89,7 @@ fn walk(set: &ConfigSet, di: usize, alias: &str, mut active: bool, mut in_match:
                 found.port.get_or_insert_with(|| unquote(v).to_string());
             }
             "proxyjump" | "proxycommand" => {
-                found.proxy.get_or_insert_with(|| unquote(v).to_string());
+                found.proxy.get_or_insert_with(|| (key == "proxyjump", unquote(v).to_string()));
             }
             _ => {}
         }
@@ -96,6 +104,10 @@ pub fn probe_target(set: &ConfigSet, alias: &str) -> Probe {
 /// Like [`probe_target`] over several config files read in order (the
 /// user's, then the system-wide one): the first value wins across them.
 pub fn probe_target_all(sets: &[ConfigSet], alias: &str) -> Probe {
+    probe_at_depth(sets, alias, 0)
+}
+
+fn probe_at_depth(sets: &[ConfigSet], alias: &str, depth: usize) -> Probe {
     let mut f = Found::default();
     for set in sets.iter().filter(|s| !s.docs.is_empty()) {
         walk(set, 0, alias, true, false, 0, &mut f);
@@ -103,8 +115,14 @@ pub fn probe_target_all(sets: &[ConfigSet], alias: &str) -> Probe {
     if f.match_blocks {
         return Probe::Unknown("Match rules".into());
     }
-    if f.proxy.as_deref().is_some_and(|p| !p.eq_ignore_ascii_case("none")) {
-        return Probe::Unknown(VIA_PROXY.into());
+    match f.proxy {
+        Some((_, p)) if p.eq_ignore_ascii_case("none") => {}
+        // ssh ignores a ProxyJump that points at the host itself (the usual
+        // `Host *` + `ProxyJump bastion` setup, as seen from bastion).
+        Some((true, jump)) if first_hop(&jump).is_some_and(|(h, _)| h.eq_ignore_ascii_case(alias)) => {}
+        Some((true, jump)) => return jump_at_depth(sets, &jump, depth + 1),
+        Some((false, _)) => return Probe::Unknown(VIA_PROXY.into()),
+        None => {}
     }
     let host = f.hostname.unwrap_or_else(|| alias.to_string());
     let host = host.replace("%h", alias);
@@ -119,6 +137,49 @@ pub fn probe_target_all(sets: &[ConfigSet], alias: &str) -> Probe {
         },
     };
     Probe::Direct { host, port }
+}
+
+/// Splits the first hop of a `ProxyJump` / `-J` value
+/// (`[user@]host[:port]` or `ssh://[user@]host[:port]`) into host and port.
+fn first_hop(spec: &str) -> Option<(String, Option<u16>)> {
+    let hop = spec.split(',').next()?.trim();
+    let hop = hop.strip_prefix("ssh://").unwrap_or(hop);
+    let hop = hop.rsplit_once('@').map_or(hop, |(_, h)| h);
+    let (host, port) = if let Some(rest) = hop.strip_prefix('[') {
+        let (h, after) = rest.split_once(']')?;
+        (h, after.strip_prefix(':'))
+    } else {
+        match hop.split_once(':') {
+            Some((h, p)) if !p.contains(':') => (h, Some(p)),
+            _ => (hop, None),
+        }
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let port = match port {
+        None => None,
+        Some(p) => Some(p.parse::<u16>().ok().filter(|p| *p > 0)?),
+    };
+    Some((host.to_string(), port))
+}
+
+/// Where to check a host reached with `ProxyJump` value `spec`: its first
+/// jump host, resolved through the ssh config like any host (a jump host
+/// that itself jumps is followed to the first network hop).
+pub fn jump_probe(sets: &[ConfigSet], spec: &str) -> Probe {
+    jump_at_depth(sets, spec, 1)
+}
+
+fn jump_at_depth(sets: &[ConfigSet], spec: &str, depth: usize) -> Probe {
+    if depth > MAX_JUMP_DEPTH {
+        return Probe::Unknown("jump hosts loop".into());
+    }
+    let Some((jump, port)) = first_hop(spec) else { return Probe::Unknown(format!("jump host {spec}")) };
+    match probe_at_depth(sets, &jump, depth) {
+        Probe::Direct { host, port: p } => Probe::Via { jump, host, port: port.unwrap_or(p) },
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -145,9 +206,17 @@ mod tests {
     }
 
     #[test]
-    fn inherited_proxy_is_unknown() {
-        assert!(matches!(probe("Host web\n HostName x\nHost *\n ProxyJump bastion\n", "web"), Probe::Unknown(_)));
+    fn proxy_command_is_unknown_and_jumps_probe_the_first_hop() {
         assert!(matches!(probe("Host web\n ProxyCommand nc %h 22\n", "web"), Probe::Unknown(_)));
+        let via = |jump: &str, h: &str, port| Probe::Via { jump: jump.into(), host: h.into(), port };
+        let cfg = "Host web\n HostName x\nHost bastion\n HostName 10.0.0.1\n Port 2222\n ProxyJump none\nHost *\n ProxyJump bastion\n";
+        assert_eq!(probe(cfg, "web"), via("bastion", "10.0.0.1", 2222));
+        assert_eq!(probe("Host web\n ProxyJump me@b1:2200,b2\n", "web"), via("b1", "b1", 2200));
+        assert_eq!(probe("Host web\n ProxyJump ssh://[::1]:23\n", "web"), via("::1", "::1", 23));
+        assert_eq!(probe("Host web\n ProxyJump a\nHost a\n ProxyJump b\n", "web"), via("b", "b", 22));
+        assert!(matches!(probe("Host web\n ProxyJump a\nHost a\n ProxyJump web\n", "web"), Probe::Unknown(_)));
+        assert_eq!(probe("Host *\n ProxyJump bastion\n", "web"), via("bastion", "bastion", 22));
+        assert!(matches!(probe("Host web\n ProxyJump a\nHost a\n ProxyCommand nc\n", "web"), Probe::Unknown(_)));
     }
 
     #[test]

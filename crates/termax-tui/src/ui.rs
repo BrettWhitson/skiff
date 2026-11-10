@@ -922,6 +922,8 @@ fn status_symbol(t: &Theme, s: Option<&HostStatus>) -> (&'static str, Style) {
             Some(HostStatus::NotSsh) => "not ssh",
             Some(HostStatus::Checking) => "checking",
             Some(HostStatus::Unknown(_)) => "unknown",
+            Some(HostStatus::Via(_, s)) if matches!(**s, HostStatus::Online { .. }) => "via jump",
+            Some(HostStatus::Via(..)) => "jump down",
             Some(HostStatus::Unchecked) | None => "-",
         };
         return (word, t.muted());
@@ -932,6 +934,9 @@ fn status_symbol(t: &Theme, s: Option<&HostStatus>) -> (&'static str, Style) {
         Some(HostStatus::NotSsh) => ("!", Style::new().fg(t.warning)),
         Some(HostStatus::Checking) => ("…", t.muted()),
         Some(HostStatus::Unknown(_)) => ("?", t.muted()),
+        // Only the jump host was checked: a hollow mark, not the solid dot.
+        Some(HostStatus::Via(_, s)) if matches!(**s, HostStatus::Online { .. }) => ("○", Style::new().fg(t.success)),
+        Some(HostStatus::Via(..)) => ("✕", Style::new().fg(t.warning)),
         Some(HostStatus::Unchecked) | None => ("·", t.muted()),
     }
 }

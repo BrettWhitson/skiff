@@ -1,6 +1,9 @@
 //! Opt-in reachability checks: TCP connect, then read the server's first
-//! line and expect an `SSH-` banner. Never authenticates, never goes
-//! through a proxy.
+//! line and expect an `SSH-` banner. Never authenticates and never runs
+//! ssh: a host behind a jump host is reported by checking the jump host.
+
+use std::future::Future;
+use std::net::SocketAddr;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,6 +31,9 @@ pub enum Status {
     NotSsh,
     Offline(String),
     Unknown(String),
+    /// The host is reached through jump host `.0`; `.1` is that jump
+    /// host's own status (the host behind it isn't checked).
+    Via(String, Box<Status>),
 }
 
 impl Status {
@@ -40,6 +46,10 @@ impl Status {
             Status::NotSsh => "not SSH".into(),
             Status::Offline(r) => format!("offline: {r}"),
             Status::Unknown(r) => format!("unknown: {r}"),
+            Status::Via(jump, s) => match &**s {
+                Status::Online { ms } => format!("via {jump}: reachable, {ms} ms"),
+                s => format!("via {jump}: {}", s.label()),
+            },
         }
     }
 }
@@ -55,33 +65,62 @@ fn reason(e: &std::io::Error) -> String {
     }
 }
 
-/// Checks one host.
-pub async fn check(probe: Probe, timeout: Duration) -> Status {
-    let (host, port) = match probe {
-        Probe::Unknown(r) => return Status::Unknown(r),
-        Probe::Direct { host, port } => (host, port),
-    };
-    let start = Instant::now();
-    let connect = async {
-        let addrs: Vec<_> = match tokio::net::lookup_host((host.as_str(), port)).await {
-            Ok(a) => a.collect(),
-            Err(_) => return Err("name not found".to_string()),
-        };
-        let mut last = "name not found".to_string();
-        for a in addrs {
-            match TcpStream::connect(a).await {
-                Ok(s) => return Ok(s),
-                Err(e) => last = reason(&e),
-            }
+/// Tries `addrs` in order until one connects, all within `budget`: each
+/// address gets an equal share of what is left, so one address that never
+/// answers can't use up the whole check. Returns the stream and how long
+/// the successful connect took (name lookup and failed tries not counted).
+async fn connect_any<S, F, Fut>(addrs: Vec<SocketAddr>, budget: Duration, mut connect: F) -> Result<(S, Duration), String>
+where
+    F: FnMut(SocketAddr) -> Fut,
+    Fut: Future<Output = std::io::Result<S>>,
+{
+    let deadline = Instant::now() + budget;
+    let mut last = "name not found".to_string();
+    let n = addrs.len();
+    for (i, a) in addrs.into_iter().enumerate() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            last = "timed out".into();
+            break;
         }
-        Err(last)
+        let share = left / (n - i) as u32;
+        let start = Instant::now();
+        match tokio::time::timeout(share, connect(a)).await {
+            Ok(Ok(s)) => return Ok((s, start.elapsed())),
+            Ok(Err(e)) => last = reason(&e),
+            Err(_) => last = "timed out".into(),
+        }
+    }
+    Err(last)
+}
+
+/// Checks one host (or, for a host behind a jump host, the jump host).
+pub async fn check(probe: Probe, timeout: Duration) -> Status {
+    let (host, port, via) = match probe {
+        Probe::Unknown(r) => return Status::Unknown(r),
+        Probe::Direct { host, port } => (host, port, None),
+        Probe::Via { jump, host, port } => (host, port, Some(jump)),
     };
-    let mut stream = match tokio::time::timeout(timeout, connect).await {
-        Err(_) => return Status::Offline("timed out".into()),
-        Ok(Err(r)) => return Status::Offline(r),
-        Ok(Ok(s)) => s,
+    let status = check_direct(&host, port, timeout).await;
+    match via {
+        Some(jump) => Status::Via(jump, Box::new(status)),
+        None => status,
+    }
+}
+
+async fn check_direct(host: &str, port: u16, timeout: Duration) -> Status {
+    let start = Instant::now();
+    let addrs: Vec<SocketAddr> = match tokio::time::timeout(timeout, tokio::net::lookup_host((host, port))).await {
+        Err(_) => return Status::Offline("name lookup timed out".into()),
+        Ok(Err(_)) => return Status::Offline("name not found".into()),
+        Ok(Ok(a)) => a.collect(),
     };
-    let ms = start.elapsed().as_millis().min(u32::MAX as u128) as u32;
+    let left = timeout.saturating_sub(start.elapsed());
+    let (mut stream, took) = match connect_any(addrs, left, TcpStream::connect).await {
+        Err(r) => return Status::Offline(r),
+        Ok(s) => s,
+    };
+    let ms = took.as_millis().min(u32::MAX as u128) as u32;
     // The first line must start with `SSH-`; decide as soon as 4 bytes are in.
     let banner = async {
         let mut buf = [0u8; 255];
@@ -156,6 +195,40 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(1)).await;
         });
         assert_eq!(check(local(port), T).await, Status::NotSsh);
+    }
+
+    #[tokio::test]
+    async fn dead_address_gets_only_its_share() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let live = l.local_addr().unwrap();
+        let dead: SocketAddr = "127.0.0.2:9".parse().unwrap();
+        let start = Instant::now();
+        // The first address never answers (a blackholed route).
+        let res = connect_any(vec![dead, live], Duration::from_secs(2), |a| async move {
+            if a == dead {
+                std::future::pending::<()>().await;
+            }
+            TcpStream::connect(a).await
+        })
+        .await;
+        let (_s, took) = res.unwrap();
+        assert!(start.elapsed() < Duration::from_millis(1900), "{:?}", start.elapsed());
+        assert!(took < Duration::from_millis(500), "only the good connect is timed: {took:?}");
+    }
+
+    #[tokio::test]
+    async fn via_checks_the_jump_host() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut c, _) = l.accept().await.unwrap();
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut c, b"SSH-2.0-jump\r\n").await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let via = Probe::Via { jump: "bastion".into(), host: "127.0.0.1".into(), port };
+        let s = check(via, T).await;
+        assert!(matches!(&s, Status::Via(j, inner) if j == "bastion" && matches!(**inner, Status::Online { .. })), "{s:?}");
+        assert!(s.label().starts_with("via bastion: reachable, "), "{}", s.label());
     }
 
     #[tokio::test]

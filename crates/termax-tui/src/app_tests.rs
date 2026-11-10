@@ -232,6 +232,8 @@ fn forwards_panel_shows_state_stop_and_edit() {
     }
     let state = t.app.forward_state(0);
     assert!(state.starts_with("failed: "), "{state}");
+    t.app.drain_messages();
+    assert!(!t.app.history.hosts.contains_key("loop"), "a forward that never came up isn't history");
     t.app.active = 0; // back to the host list
     t.key(KeyCode::Char('F'));
     t.key(KeyCode::Enter);
@@ -573,4 +575,23 @@ fn tui_mouse_always_clicks_tabs_scrolls_and_copies() {
         Some("alpha"),
         "a drag copies"
     );
+}
+
+#[test]
+fn rename_carries_forwards_and_history() {
+    use termax_core::forward::{Forward, ForwardKind};
+    let mut t = T::new("Host web\n    HostName 10.0.0.5\n");
+    t.app.cfg.forwards.push(Forward { host: "web".into(), kind: ForwardKind::Dynamic, listen: 47312, ..Default::default() });
+    t.app.save_config();
+    t.app.record("web", ConnKind::Terminal);
+    t.key(KeyCode::Char('e'));
+    t.ctrl('u');
+    t.typed("web2");
+    t.ctrl('s');
+    assert!(t.app.modal.is_none(), "{:?}", t.app.status);
+    assert!(t.ssh_text().contains("Host web2"));
+    assert_eq!(t.app.cfg.forwards[0].host, "web2");
+    assert!(std::fs::read_to_string(t.dir.path().join("config.toml")).unwrap().contains("host = \"web2\""));
+    let hist = termax_core::history::History::load(&t.dir.path().join("history.toml"));
+    assert_eq!(hist.recent(5), ["web2"]);
 }

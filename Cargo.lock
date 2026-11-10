@@ -4403,6 +4403,7 @@ dependencies = [
  "crossterm",
  "directories",
  "interprocess",
+ "libc",
  "portable-pty",
  "russh-sftp",
  "serde",
@@ -4415,6 +4416,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "vt100",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
