@@ -76,7 +76,8 @@ pub fn scan_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// How deep `scan_fonts` looks below each folder.
+/// How many subfolder levels `scan_all` (and so `scan_fonts`, which calls
+/// it) descends below each folder it is given.
 const SCAN_DEPTH: usize = 4;
 
 /// `(name, path, monospace)` of the fonts (`.ttf`, `.otf`, and the first
