@@ -421,6 +421,32 @@ fn shift_f10_opens_host_menu() {
     assert!(f.try_find("Open terminal").is_some(), "{:?}", f.texts());
 }
 
+/// The sidebar divider is a named splitter that F6 reaches and the arrow
+/// keys (or a screen reader's increment) resize.
+#[test]
+fn sidebar_divider_is_keyboard_accessible() {
+    use skiff_ui::a11y::{A11yAction, Role};
+    let mut f = Fixture::new();
+    let div = f.h.tree().find("Sidebar width").map(|n| (n.role, n.id));
+    let Some((Role::Splitter, id)) = div else { panic!("no splitter: {div:?}") };
+    let f6 = Event::KeyDown { key: Key::F(6), mods: Modifiers::NONE, text: None };
+    let mut reached = false;
+    for _ in 0..6 {
+        f.frame(vec![f6.clone()]);
+        f.frame(vec![]);
+        reached |= f.h.state.focused() == Some(id);
+        if reached {
+            break;
+        }
+    }
+    assert!(reached, "F6 reaches the sidebar divider");
+    let before = f.app.geometry.sidebar_width;
+    f.frame(vec![Event::KeyDown { key: Key::Right, mods: Modifiers::NONE, text: None }]);
+    assert_eq!(f.app.geometry.sidebar_width, before + 16.0);
+    f.frame(vec![Event::A11y { target: id, action: A11yAction::Decrement }]);
+    assert_eq!(f.app.geometry.sidebar_width, before);
+}
+
 /// Host rows are list items named with host, status and target, inside a Hosts region.
 #[test]
 fn sidebar_tree_names_hosts() {

@@ -1132,7 +1132,12 @@ impl GuiApp {
             body
         } else {
             let before = self.geometry.sidebar_width;
-            let (side, main) = splitter_h(ui, Id::new("sidebar-split"), body, &mut self.geometry.sidebar_width, 160.0, 600.0);
+            // The divider is its own F6 stop (just before Hosts when cycling
+            // round), so the keyboard can resize the sidebar.
+            let width = &mut self.geometry.sidebar_width;
+            let (side, main) = ui.region(Id::new("region-sidebar-divider"), "Sidebar divider", |ui| {
+                splitter_h(ui, Id::new("sidebar-split"), body, width, 160.0, 600.0, "Sidebar width")
+            });
             if self.geometry.sidebar_width != before {
                 self.geometry_changed();
             }

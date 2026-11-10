@@ -217,7 +217,7 @@ fn splitter_drag_respects_min_max() {
     let panes = Cell::new((Rect::default(), Rect::default()));
     let mut f = |ui: &mut Ui| {
         let mut w = width.get();
-        panes.set(splitter_h(ui, Id::new("sp"), Rect::new(0, 0, 800, 400), &mut w, 150.0, 500.0));
+        panes.set(splitter_h(ui, Id::new("sp"), Rect::new(0, 0, 800, 400), &mut w, 150.0, 500.0, "Divider"));
         width.set(w);
     };
     h.frame(vec![], &mut f);
@@ -390,7 +390,7 @@ fn splitter_width_survives_shrink_and_restore() {
     let mut f = |ui: &mut Ui| {
         let mut w = width.get();
         let r = ui.window_rect();
-        splitter_h(ui, Id::new("sp"), r, &mut w, 160.0, 600.0);
+        splitter_h(ui, Id::new("sp"), r, &mut w, 160.0, 600.0, "Divider");
         width.set(w);
     };
     h.frame(vec![], &mut f);

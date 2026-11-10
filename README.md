@@ -267,10 +267,11 @@ Keyboard navigation (no mouse needed):
 
 | Key | Does |
 |---|---|
-| `F6` / `Shift+F6` | Next / previous area: hosts, tabs, content; each split pane, then the pane dividers |
+| `F6` / `Shift+F6` | Next / previous area: sidebar divider, hosts, tabs, content; each split pane, then the pane dividers |
 | `Tab` / `Shift+Tab` | Next / previous control within the area |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move in lists; `←` `→` switch tabs on the tab strip |
 | Arrow keys on a pane divider | Move the divider to the next snap point (25 / 33 / 50 / 67 / 75%, then 5% per press) |
+| `←` `→` on the sidebar divider | Narrow / widen the sidebar |
 | `Enter` / `Space` | Open the selected row; press buttons and checkboxes |
 | `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
 | `Delete` | Delete the selected host (asks first) |

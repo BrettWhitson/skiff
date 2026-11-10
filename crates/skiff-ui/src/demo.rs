@@ -81,7 +81,7 @@ impl Demo {
         let p = ui.style().palette;
         let win = ui.window_rect();
         let rows = ui.split_v(win, &[L::Fill, L::Px(26)], 0);
-        let (side, main) = splitter_h(ui, Id::new("split"), rows[0], &mut self.sidebar, 160.0, 600.0);
+        let (side, main) = splitter_h(ui, Id::new("split"), rows[0], &mut self.sidebar, 160.0, 600.0, "Sidebar width");
 
         // Sidebar: filter + list.
         ui.painter().rect(side, p.surface, 0.0);

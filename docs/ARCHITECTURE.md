@@ -176,9 +176,12 @@ is built only while an assistive technology is connected; `a11y_kit`
 converts it into AccessKit updates for Narrator/NVDA/JAWS, VoiceOver and
 Orca, and AccessKit actions come back as ordinary `Event::A11y` input the
 next frame. Keyboard access follows the same model: `Tab` cycles controls
-within a focus region, `F6` moves between regions (sidebar, tab strip,
-content, each split pane, dividers), and a focus ring plus a list focus bar
-show focus without relying on color. The GUI's terminal announces new
+within a focus region, `F6` moves between regions (sidebar divider, hosts,
+tab strip, content, each split pane, pane dividers), and a focus ring plus a
+list focus bar show focus without relying on color. Every divider, the
+sidebar's `splitter_h` included, is a focusable `Splitter` node whose value
+is the first side's share; the arrow keys and the screen reader's
+increment / decrement move it. The GUI's terminal announces new
 output politely and rate-limited (`term/announce.rs`), skipping the echo of
 typed keys. `skiff-gui/src/theme.rs` nudges theme colors to meet WCAG
 contrast, and `os.rs` follows Windows high contrast, animation and text size.

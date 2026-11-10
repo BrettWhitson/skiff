@@ -7,7 +7,7 @@ use crate::geom::Rect;
 use crate::input::{Event, Key, Modifiers};
 use crate::ui::Id;
 use crate::ui::testing::Harness;
-use crate::widgets::{TextInputOpts, button, checkbox, list_named, text_input};
+use crate::widgets::{TextInputOpts, button, checkbox, list_named, splitter_h, text_input};
 
 /// A key press with no modifiers.
 fn key(k: Key) -> Event {
@@ -50,6 +50,32 @@ fn password_value_hidden() {
     let n = h.tree().find("Password").expect("password node");
     assert_eq!(n.role, Role::PasswordInput);
     assert_eq!(n.value, None);
+}
+
+/// The splitter is a named, focusable Splitter whose value is the first
+/// pane's share; arrow keys and screen-reader increment/decrement resize it.
+#[test]
+fn splitter_is_accessible_and_keyboard_resizable() {
+    let mut h = Harness::new(1000, 300, 1.0);
+    let width = std::cell::Cell::new(300.0f32);
+    let mut f = |ui: &mut crate::ui::Ui| {
+        let mut w = width.get();
+        splitter_h(ui, Id::new("sp"), Rect::new(0, 0, 1000, 300), &mut w, 160.0, 600.0, "Sidebar width");
+        width.set(w);
+    };
+    h.frame(vec![], &mut f);
+    let n = h.tree().find("Sidebar width").expect("splitter node");
+    assert_eq!(n.role, Role::Splitter);
+    assert_eq!(n.value.as_deref(), Some("30%"));
+    h.frame(vec![key(Key::Tab)], &mut f);
+    h.frame(vec![key(Key::Right)], &mut f);
+    h.frame(vec![], &mut f);
+    assert_eq!(h.tree().focus, Some(Id::new("sp")));
+    assert_eq!(width.get(), 316.0);
+    h.frame(vec![key(Key::Left), key(Key::Left)], &mut f);
+    assert_eq!(width.get(), 284.0);
+    h.frame(vec![Event::A11y { target: Id::new("sp"), action: A11yAction::Increment }], &mut f);
+    assert_eq!(width.get(), 300.0);
 }
 
 /// Screen-reader Click presses a button and SetValue replaces a text input's text.
