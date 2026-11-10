@@ -15,7 +15,7 @@ pub const KEEP_BACKUPS: usize = 10;
 const FIELD_NAMES: [&str; 6] = ["HostName", "User", "Port", "IdentityFile", "ProxyJump", "ProxyCommand"];
 
 /// The main ssh config file and every file it includes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigSet {
     /// The main file first, then included files in include order.
     pub docs: Vec<Doc>,
@@ -55,6 +55,12 @@ fn is_wildcard(p: &str) -> bool {
 /// Checks a host form. `taken` lists every host name in use (ssh config and
 /// custom); `editing` is the host's current name when editing.
 pub fn validate(f: &HostFields, taken: &[String], editing: Option<&str>) -> Result<(), String> {
+    validate_with(f, taken, editing, &[])
+}
+
+/// [`validate`], allowing `existing` "other" lines (already in the block)
+/// to stay as they are.
+pub fn validate_with(f: &HostFields, taken: &[String], editing: Option<&str>, existing: &[String]) -> Result<(), String> {
     let alias = f.alias.trim();
     if alias.is_empty() {
         return Err("Alias is required".into());
@@ -81,7 +87,8 @@ pub fn validate(f: &HostFields, taken: &[String], editing: Option<&str>) -> Resu
             return Err("Values can't contain line breaks (or , ; in tags)".into());
         }
         let key = split_kv(line.trim()).map(|(k, _)| k.to_ascii_lowercase()).unwrap_or_default();
-        if matches!(key.as_str(), "host" | "match" | "include") {
+        let kept = existing.iter().any(|e| e.trim() == line.trim());
+        if !kept && matches!(key.as_str(), "host" | "match" | "include") {
             return Err("Other options can't contain Host, Match or Include".into());
         }
     }
@@ -304,7 +311,8 @@ impl ConfigSet {
 
     /// Rewrites host `alias` to match `f`, touching only lines that change.
     pub fn update_host(&mut self, alias: &str, f: &HostFields) -> Result<(), String> {
-        validate(f, &self.aliases(), Some(alias))?;
+        let existing = self.fields(alias).map(|h| h.other).unwrap_or_default();
+        validate_with(f, &self.aliases(), Some(alias), &existing)?;
         let (di, b) = self.editable(alias)?;
         let doc = &mut self.docs[di];
         let indent = doc.lines[b.start + 1..b.end]
@@ -443,7 +451,17 @@ impl ConfigSet {
                 bail!("{} changed on disk — reopen to see the new version.", display_path(&d.path));
             }
         }
-        for d in self.docs.iter_mut().filter(|d| d.dirty) {
+        // A move adds to one file and removes from another: write the one
+        // that gains first, so a failed write can't lose the host from both.
+        let hosts_in = |text: &str| Doc::parse(PathBuf::new(), text).blocks().iter().filter(|b| b.kind == BlockKind::Host).count();
+        let mut order: Vec<usize> = (0..self.docs.len()).filter(|&i| self.docs[i].dirty).collect();
+        order.sort_by_key(|&i| {
+            let d = &self.docs[i];
+            let on_disk = std::fs::read_to_string(&d.path).unwrap_or_default();
+            hosts_in(&d.render()) < hosts_in(&on_disk)
+        });
+        for i in order {
+            let d = &mut self.docs[i];
             let text = d.render();
             if d.path.is_file() {
                 backup(&d.path, backups)?;
@@ -545,6 +563,13 @@ fn write_private(path: &Path, bytes: &[u8], mode: Option<u32>) -> anyhow::Result
 
 /// Replaces `path` with `text` via a temp file in the same directory.
 fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
+    // A symlinked config (dotfile managers) is updated at its target, so the
+    // link stays a link.
+    let real = match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path).with_context(|| format!("resolving {}", path.display()))?,
+        _ => path.to_path_buf(),
+    };
+    let path = real.as_path();
     let dir = path.parent().context("config path has no directory")?;
     create_private_dir(dir)?;
     #[cfg(unix)]
@@ -740,5 +765,133 @@ mod tests {
         assert_eq!(check(HostFields { port: "0".into(), ..host("x", "h") }), "Invalid port: 0");
         assert_eq!(check(HostFields { other: vec!["Host y".into()], ..host("x", "h") }), "Other options can't contain Host, Match or Include");
         assert!(validate(&host("web", "h"), &taken, Some("web")).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    fn setup(text: &str) -> (tempfile::TempDir, PathBuf, ConfigSet) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config");
+        std::fs::write(&p, text).unwrap();
+        let set = ConfigSet::load(&p).unwrap();
+        (dir, p, set)
+    }
+
+    fn set_hidden(p: &Path, alias: &str, hidden: bool) -> ConfigSet {
+        let mut s = ConfigSet::load(p).unwrap();
+        let mut f = s.fields(alias).unwrap();
+        f.hidden = hidden;
+        s.update_host(alias, &f).unwrap();
+        s
+    }
+
+    #[test]
+    fn bare_host_hide_unhide_delete() {
+        let (d, p, _) = setup("Host a\n    HostName 1.1.1.1\n\nHost bare\n");
+        let b = d.path().join("backups");
+        set_hidden(&p, "bare", true).save(&b).unwrap();
+        assert!(ConfigSet::load(&p).unwrap().fields("bare").unwrap().hidden, "the editor sees the comment");
+        set_hidden(&p, "bare", false).save(&b).unwrap();
+        assert!(!std::fs::read_to_string(&p).unwrap().contains("termax"));
+        let mut s = set_hidden(&p, "bare", true);
+        s.delete_host("bare").unwrap();
+        s.save(&b).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(text, "Host a\n    HostName 1.1.1.1\n");
+    }
+
+    #[test]
+    fn name_only_host_keeps_tags() {
+        let (d, p, mut s) = setup("");
+        let f = HostFields { alias: "n".into(), tags: vec!["prod".into()], ..Default::default() };
+        s.add_host(0, &f).unwrap();
+        s.save(&d.path().join("backups")).unwrap();
+        assert_eq!(ConfigSet::load(&p).unwrap().fields("n").unwrap().tags, ["prod"]);
+    }
+
+    #[test]
+    fn existing_include_line_survives_update() {
+        let (_d, p, _) = setup("Host web\n    HostName 1.1.1.1\n    Include extra.conf\n");
+        let s = set_hidden(&p, "web", true);
+        assert!(s.docs[0].render().contains("    Include extra.conf\n"));
+        let mut f = s.fields("web").unwrap();
+        f.other.push("Include more.conf".into());
+        assert!(validate_update(&s, "web", &f).is_err(), "a newly typed Include is still refused");
+    }
+
+    fn validate_update(s: &ConfigSet, alias: &str, f: &HostFields) -> Result<(), String> {
+        s.clone().update_host(alias, f)
+    }
+
+    #[test]
+    fn failed_move_keeps_host_in_source() {
+        let (d, p, _) = setup("");
+        let sub = d.path().join("work");
+        std::fs::write(&sub, "Host other\n    HostName 2.2.2.2\n").unwrap();
+        let inc = sub.display().to_string().replace('\\', "/");
+        std::fs::write(&p, format!("Include \"{inc}\"\n\nHost web\n    HostName 1.1.1.1\n")).unwrap();
+        let mut s = ConfigSet::load(&p).unwrap();
+        s.move_host("web", 1).unwrap();
+        let lock = || {
+            #[cfg(windows)]
+            {
+                let mut perm = std::fs::metadata(&sub).unwrap().permissions();
+                perm.set_readonly(true);
+                std::fs::set_permissions(&sub, perm).unwrap();
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o400)).unwrap();
+            }
+        };
+        // Make the target unwritable; on Unix the file mode alone can't stop a
+        // rename, so the write is refused through the directory instead.
+        lock();
+        #[cfg(unix)]
+        let locked_dir = {
+            use std::os::unix::fs::PermissionsExt;
+            let sd = d.path().join("locked");
+            std::fs::create_dir(&sd).unwrap();
+            let target = sd.join("work");
+            std::fs::copy(&sub, &target).unwrap();
+            s.docs[1].path = target;
+            std::fs::set_permissions(&sd, std::fs::Permissions::from_mode(0o500)).unwrap();
+            sd
+        };
+        assert!(s.save(&d.path().join("backups")).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let mut perm = std::fs::metadata(&sub).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perm.set_readonly(false);
+            std::fs::set_permissions(&sub, perm).unwrap();
+        }
+        assert!(std::fs::read_to_string(&p).unwrap().contains("Host web"), "source untouched when the target write fails");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_through_symlink_keeps_link() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("dotfiles-config");
+        std::fs::write(&real, "Host a\n    HostName 1.1.1.1\n").unwrap();
+        let link = d.path().join("config");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut s = ConfigSet::load(&link).unwrap();
+        let mut f = s.fields("a").unwrap();
+        f.user = "root".into();
+        s.update_host("a", &f).unwrap();
+        s.save(&d.path().join("backups")).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(std::fs::read_to_string(&real).unwrap().contains("User root"));
     }
 }

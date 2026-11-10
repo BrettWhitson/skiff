@@ -92,3 +92,23 @@ fn forward_form_validation_inline() {
     assert!(f.texts().iter().any(|t| t == "Listen port must be 1\u{2013}65535"), "{:?}", f.texts());
     assert!(f.app.cfg.forwards.is_empty());
 }
+
+#[cfg(windows)]
+#[test]
+fn failed_save_can_be_retried() {
+    let (mut f, ssh) = with_ssh("Host web\n    HostName 10.0.0.5\n");
+    let ro = |on: bool| {
+        let mut perm = std::fs::metadata(&ssh).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perm.set_readonly(on);
+        std::fs::set_permissions(&ssh, perm).unwrap();
+    };
+    f.right_click_text("web");
+    f.click_text("Edit");
+    set_field(&mut f, "Name", "web2");
+    ro(true);
+    f.click_text("Save");
+    ro(false);
+    f.click_text("Save");
+    assert!(std::fs::read_to_string(&ssh).unwrap().contains("Host web2"));
+}

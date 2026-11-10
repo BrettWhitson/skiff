@@ -380,9 +380,9 @@ impl GuiApp {
         match hosts::ssh_config_path(&self.cfg) {
             Some(p) => ConfigSet::load(&p).unwrap_or_else(|e| {
                 self.warn(format!("{e:#}"));
-                ConfigSet { docs: vec![] }
+                ConfigSet::default()
             }),
-            None => ConfigSet { docs: vec![] },
+            None => ConfigSet::default(),
         }
     }
 
@@ -455,14 +455,13 @@ impl GuiApp {
     /// Checks host `only`, or every listed host. Never runs on its own
     /// unless `status_checks = "on_start"`.
     pub fn check_status(&mut self, only: Option<usize>) {
-        let set = self.load_set();
-        let set = (!set.docs.is_empty()).then_some(set);
+        let sets = hosts::probe_sets(&self.cfg);
         let idx: Vec<usize> = match only {
             Some(i) => vec![i],
             None => hosts::visible(&self.hosts, self.geometry.show_hidden),
         };
         let items: Vec<(String, hosts::Probe)> =
-            idx.into_iter().filter_map(|i| self.hosts.get(i)).map(|h| (h.name.clone(), h.probe(set.as_ref()))).collect();
+            idx.into_iter().filter_map(|i| self.hosts.get(i)).map(|h| (h.name.clone(), h.probe(sets.as_deref()))).collect();
         for (n, _) in &items {
             self.statuses.insert(n.clone(), Status::Checking);
         }

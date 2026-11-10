@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::config::{Config, Connection};
 use crate::sshconfig::edit::ConfigSet;
 pub use crate::sshconfig::resolve::Probe;
-use crate::sshconfig::resolve::{VIA_PROXY, probe_target};
+use crate::sshconfig::resolve::{VIA_PROXY, probe_target_all};
 use crate::sshconfig::{self, SshHost};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,19 +125,22 @@ impl HostEntry {
 
     /// Where a status check connects. `set` is the loaded ssh config, which
     /// also applies to custom connections (ssh reads it for every host).
-    pub fn probe(&self, set: Option<&ConfigSet>) -> Probe {
+    /// `sets` is `None` when a config file couldn't be read: the host might
+    /// be proxied, so it isn't probed.
+    pub fn probe(&self, sets: Option<&[ConfigSet]>) -> Probe {
         let proxy_opt = |a: &String| {
             let a = a.to_ascii_lowercase();
-            a == "-j" || a.contains("proxyjump") || a.contains("proxycommand")
+            a.starts_with("-j") || a.contains("proxyjump") || a.contains("proxycommand")
         };
         let has = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
         if has(&self.proxy_jump) || has(&self.proxy_command) || self.options.iter().any(proxy_opt) {
             return Probe::Unknown(VIA_PROXY.into());
         }
         let dest = self.destination.rsplit('@').next().unwrap_or(&self.destination);
-        let probe = match set {
-            Some(set) => probe_target(set, dest),
-            None => Probe::Direct { host: self.hostname.clone(), port: self.port.unwrap_or(22) },
+        let probe = match sets {
+            None => return Probe::Unknown("ssh config unreadable".into()),
+            Some([]) => Probe::Direct { host: self.hostname.clone(), port: self.port.unwrap_or(22) },
+            Some(sets) => probe_target_all(sets, dest),
         };
         // `-p` on the command line (the port field or extra args) beats the config.
         let arg_port = self.options.windows(2).filter(|w| w[0] == "-p").filter_map(|w| w[1].parse::<u16>().ok()).next_back();
@@ -184,6 +187,19 @@ pub fn ssh_config_path(cfg: &Config) -> Option<PathBuf> {
         return None;
     }
     cfg.settings.ssh_config_path.as_deref().map(sshconfig::expand_tilde).or_else(sshconfig::default_path)
+}
+
+/// The ssh config files a status check consults — the user's and the
+/// system-wide one — since ssh reads them for every host, whether or not
+/// termax lists their hosts. `None` when one exists but can't be read.
+pub fn probe_sets(cfg: &Config) -> Option<Vec<ConfigSet>> {
+    let user = cfg.settings.ssh_config_path.as_deref().map(sshconfig::expand_tilde).or_else(sshconfig::default_path);
+    let system = if cfg!(windows) {
+        std::env::var_os("PROGRAMDATA").map(|d| PathBuf::from(d).join("ssh").join("ssh_config"))
+    } else {
+        Some(PathBuf::from("/etc/ssh/ssh_config"))
+    };
+    user.into_iter().chain(system).map(|p| ConfigSet::load(&p).ok()).collect()
 }
 
 /// Builds the combined list: custom connections first, then OpenSSH hosts.
@@ -282,9 +298,9 @@ mod tests {
         assert_eq!(h.shell_args(), ["-o", "ProxyCommand=nc %h %p", "10.0.0.9"]);
         assert!(matches!(h.probe(None), Probe::Unknown(_)));
         let c = Connection { name: "d".into(), host: "10.0.0.9".into(), port: Some(2222), ..Default::default() };
-        assert_eq!(HostEntry::from_custom(0, &c).probe(None), Probe::Direct { host: "10.0.0.9".into(), port: 2222 });
+        assert_eq!(HostEntry::from_custom(0, &c).probe(Some(&[])), Probe::Direct { host: "10.0.0.9".into(), port: 2222 });
         let p = Connection { extra_args: vec!["-p".into(), "2200".into()], port: None, ..c.clone() };
-        assert_eq!(HostEntry::from_custom(0, &p).probe(None), Probe::Direct { host: "10.0.0.9".into(), port: 2200 });
+        assert_eq!(HostEntry::from_custom(0, &p).probe(Some(&[])), Probe::Direct { host: "10.0.0.9".into(), port: 2200 });
         let c = Connection { extra_args: vec!["-J".into(), "b".into()], ..c };
         assert!(matches!(HostEntry::from_custom(0, &c).probe(None), Probe::Unknown(_)));
     }
@@ -305,5 +321,46 @@ mod tests {
         assert!(fuzzy_score("lab", &h).unwrap() > fuzzy_score("l1", &h).unwrap());
         assert!(fuzzy_score("home", &h).is_some());
         assert!(fuzzy_score("zzz", &h).is_none());
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use crate::config::Connection;
+
+    fn conn(extra: &[&str]) -> HostEntry {
+        let c = Connection {
+            name: "d".into(),
+            host: "10.0.0.9".into(),
+            extra_args: extra.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        HostEntry::from_custom(0, &c)
+    }
+
+    #[test]
+    fn unreadable_ssh_config_is_unknown() {
+        assert!(matches!(conn(&[]).probe(None), Probe::Unknown(_)));
+        assert_eq!(conn(&[]).probe(Some(&[])), Probe::Direct { host: "10.0.0.9".into(), port: 22 });
+    }
+
+    #[test]
+    fn attached_dash_j_is_a_proxy() {
+        assert!(matches!(conn(&["-Jbastion"]).probe(Some(&[])), Probe::Unknown(_)));
+    }
+
+    #[test]
+    fn probe_sets_read_ssh_config_even_when_not_listed() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("config");
+        std::fs::write(&p, "Host *\n    ProxyJump bastion\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.settings.load_ssh_config = false;
+        cfg.settings.ssh_config_path = Some(p.display().to_string());
+        let sets = probe_sets(&cfg).expect("readable");
+        assert!(matches!(conn(&[]).probe(Some(&sets)), Probe::Unknown(_)));
+        std::fs::write(&p, b"Host a\n    User \xe9\n").unwrap();
+        assert!(probe_sets(&cfg).is_none(), "an unreadable file is reported, not skipped");
     }
 }

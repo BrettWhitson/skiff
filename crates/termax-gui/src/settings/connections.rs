@@ -231,9 +231,12 @@ fn save(form: &mut Form, app: &mut GuiApp) -> Result<String, String> {
         };
     }
     let taken = hostform::taken_names(&app.hosts);
-    let saved = form.form.save(&mut app.cfg, &mut form.set, &taken)?;
+    // Edit a copy: if the write fails, the form can be saved again as is.
+    let mut set = form.set.clone();
+    let saved = form.form.save(&mut app.cfg, &mut set, &taken)?;
     let name = saved.name().to_string();
-    app.apply_saved(saved, &mut form.set)?;
+    app.apply_saved(saved, &mut set)?;
+    form.set = set;
     form.dirty = false;
     form.editing = Some(name.clone());
     Ok(name)

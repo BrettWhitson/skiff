@@ -137,3 +137,32 @@ fn new_dialogs_render_on_a_small_screen() {
     t.keys(KeyCode::Up, 1); // wraps to the last "Other options" line
     term.draw(|f| crate::ui::draw(f, &mut t.app)).unwrap();
 }
+
+/// Windows only: a read-only file can't be replaced there, which stands in
+/// for an editor or antivirus holding the file.
+#[cfg(windows)]
+fn set_readonly(p: &std::path::Path, ro: bool) {
+    let mut perm = std::fs::metadata(p).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perm.set_readonly(ro);
+    std::fs::set_permissions(p, perm).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_save_can_be_retried() {
+    let mut t = T::new("Host web\n    HostName a\n");
+    let ssh = t.dir.path().join("ssh_config");
+    t.key(KeyCode::Char('n'));
+    t.key(KeyCode::Down);
+    t.typed("db");
+    t.key(KeyCode::Down);
+    t.typed("10.0.0.9");
+    set_readonly(&ssh, true);
+    t.ctrl('s');
+    assert!(t.app.modal.is_some(), "the form stays open after a failed write");
+    set_readonly(&ssh, false);
+    t.ctrl('s');
+    assert!(t.app.modal.is_none(), "{:?}", t.app.status);
+    assert!(t.ssh_text().contains("Host db"));
+}

@@ -278,18 +278,17 @@ impl App {
         match hosts::ssh_config_path(&self.cfg) {
             Some(p) => ConfigSet::load(&p).unwrap_or_else(|e| {
                 self.set_error(format!("{e:#}"));
-                ConfigSet { docs: vec![] }
+                ConfigSet::default()
             }),
-            None => ConfigSet { docs: vec![] },
+            None => ConfigSet::default(),
         }
     }
 
     /// Checks every listed host (opt-in: never runs unless asked or `on_start`).
     pub fn check_status(&mut self) {
-        let set = self.load_set();
-        let set = (!set.docs.is_empty()).then_some(set);
+        let sets = hosts::probe_sets(&self.cfg);
         let items: Vec<(String, hosts::Probe)> =
-            self.filtered.iter().map(|&i| (self.hosts[i].name.clone(), self.hosts[i].probe(set.as_ref()))).collect();
+            self.filtered.iter().map(|&i| (self.hosts[i].name.clone(), self.hosts[i].probe(sets.as_deref()))).collect();
         for (n, _) in &items {
             self.statuses.insert(n.clone(), HostStatus::Checking);
         }
@@ -839,7 +838,9 @@ impl App {
     /// Returns the modal to keep showing (with an error) or `None` on success.
     fn save_editor(&mut self, mut ed: Editor) -> Option<Modal> {
         let taken = hostform::taken_names(&self.hosts);
-        let saved = match ed.form.save(&mut self.cfg, &mut ed.set, &taken) {
+        // Edit a copy: if the write fails, the form can be saved again as is.
+        let mut set = ed.set.clone();
+        let saved = match ed.form.save(&mut self.cfg, &mut set, &taken) {
             Ok(s) => s,
             Err(e) => {
                 ed.error = Some(e);
@@ -847,7 +848,7 @@ impl App {
             }
         };
         let name = saved.name().to_string();
-        if let Err(e) = self.after_host_change(saved, &mut ed.set) {
+        if let Err(e) = self.after_host_change(saved, &mut set) {
             ed.error = Some(e);
             return Some(Modal::Editor(ed));
         }
