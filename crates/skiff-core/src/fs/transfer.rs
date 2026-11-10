@@ -167,8 +167,9 @@ pub enum TransferEvent {
     Done { id: u64, result: Result<TransferSummary, String> },
 }
 
-/// Lets the front-end cancel a running transfer.
-#[derive(Clone)]
+/// Lets the front-end cancel a running transfer. The default handle belongs
+/// to no transfer (for front-end tests that show transfer rows).
+#[derive(Clone, Default)]
 pub struct TransferHandle {
     token: CancellationToken,
 }

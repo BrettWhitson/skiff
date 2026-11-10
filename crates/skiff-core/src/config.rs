@@ -131,6 +131,12 @@ pub struct Settings {
     pub confirm_multiline_paste: bool,
     /// When the TUI takes the mouse from the terminal it runs in.
     pub tui_mouse: TuiMouse,
+    /// TUI borders drawn with `+ - |` (and ASCII marks) for fonts or
+    /// terminals without box-drawing characters.
+    pub tui_ascii_borders: bool,
+    /// How long the TUI waits after the prefix key before listing the keys
+    /// that can follow it, in milliseconds (0: at once).
+    pub which_key_delay_ms: u64,
 }
 
 /// `tui_mouse`: `"auto"` captures the mouse only while a program in the
@@ -174,6 +180,8 @@ impl Default for Settings {
             tui_plain: false,
             confirm_multiline_paste: true,
             tui_mouse: TuiMouse::Auto,
+            tui_ascii_borders: false,
+            which_key_delay_ms: 300,
         }
     }
 }

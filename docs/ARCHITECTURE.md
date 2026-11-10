@@ -69,8 +69,9 @@ the smallest pane (`MIN_COLS` x `MIN_ROWS` = 10 x 3 cells). A ratio is
 always the first (left / top) side's share.
 
 - **TUI**: at most two panes per tab, a direction and one ratio. `ui.rs`
-  lays them out (keeping each above the minimum, border cells included) and
-  maps a mouse drag on the border to a ratio that snaps within one cell
+  lays them out (keeping each above the minimum, the divider column or
+  title rule included) and maps a mouse drag on the divider to a ratio that
+  snaps within one cell
   unless `Alt` is held; `app.rs` handles swap, resize (`step_ratio`) and
   equalize.
 - **GUI** (`skiff-gui/src/term/split.rs`): a terminal tab is a `TermSplit`
@@ -240,7 +241,7 @@ contrast, and `os.rs` follows Windows high contrast, animation and text size.
 | SFTP and transfers | `skiff-core/src/fs/{connect,endpoint,path,transfer}.rs` |
 | Askpass | `skiff-core/src/{askpass,sshver}.rs`, `skiff-core/src/bin/askpass-shim.rs` (tests) |
 | Forwards, status | `skiff-core/src/{forward,status}.rs` |
-| TUI | `skiff-tui/src/{main,app,ui,keys,forms,input,sftp_tab}.rs` |
+| TUI | `skiff-tui/src/{main,app,ui,widgets,keys,forms,input,sftp_tab}.rs` |
 | GUI app | `skiff-gui/src/{main,app,engine,sidebar,switcher,forwards,keys,gear,os}.rs` |
 | GUI terminals | `skiff-gui/src/term/` (render, input, mouse, select, search, split, announce) |
 | GUI files, settings | `skiff-gui/src/files/`, `skiff-gui/src/settings/` |

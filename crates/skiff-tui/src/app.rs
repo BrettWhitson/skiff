@@ -191,6 +191,13 @@ pub enum ConfirmAction {
     },
 }
 
+impl ConfirmAction {
+    /// Deletes something: the dialog is drawn in the error color.
+    pub fn is_destructive(&self) -> bool {
+        matches!(self, ConfirmAction::DeleteHost(_) | ConfirmAction::DeleteForward(_) | ConfirmAction::DeleteFile { .. })
+    }
+}
+
 /// The dialog over the screen, if any (one at a time); it takes all keys.
 /// `Confirm` is a yes/no question that runs its `ConfirmAction` on yes.
 pub enum Modal {
@@ -275,6 +282,8 @@ pub struct App {
     pub theme: Theme,
     /// Plain mode (`--plain` or `settings.tui_plain`).
     pub plain: bool,
+    /// Monochrome: `NO_COLOR` is set.
+    pub mono: bool,
     /// Every known host (ssh config and `config.toml`).
     pub hosts: Vec<HostEntry>,
     /// Indexes into `hosts` in display order, after hiding, sorting and filtering.
@@ -330,6 +339,9 @@ pub struct App {
     pub keys: Keymap,
     /// The prefix chord was pressed: the next key picks a shortcut.
     pub prefix_pending: bool,
+    /// When the pending prefix was pressed (the key list pops up after
+    /// `which_key_delay_ms`).
+    pub prefix_at: Option<Instant>,
     /// Problems in `[tui_keys]` (shown in the help).
     pub key_errors: Vec<String>,
     /// Answers ssh's questions for SFTP connections (see `enable_askpass`).
@@ -370,6 +382,7 @@ impl App {
             ui_state,
             theme: Theme::from_def(&theme::builtin()[0]).expect("builtin theme"),
             plain: cfg.settings.tui_plain,
+            mono: false,
             cfg_saved: cfg.clone(),
             cfg,
             cfg_path,
@@ -397,6 +410,7 @@ impl App {
             paste_bursts: cfg!(windows),
             keys: Keymap::default(),
             prefix_pending: false,
+            prefix_at: None,
             key_errors: vec![],
             askpass: None,
             ssh_version: None,
@@ -1527,11 +1541,19 @@ impl App {
         match self.keys.match_key(&key) {
             Some(Action::Prefix) => {
                 self.prefix_pending = true;
+                self.prefix_at = Some(Instant::now());
                 true
             }
             Some(action) => self.run_action(action),
             None => false,
         }
+    }
+
+    /// The which-key list shows: the prefix has been pending for at least
+    /// `which_key_delay_ms` at `now`.
+    pub fn which_key_due(&self, now: Instant) -> bool {
+        let delay = Duration::from_millis(self.cfg.settings.which_key_delay_ms);
+        self.prefix_pending && self.prefix_at.is_some_and(|at| now.saturating_duration_since(at) >= delay)
     }
 
     /// Runs a shortcut's action. False when it doesn't apply here (a

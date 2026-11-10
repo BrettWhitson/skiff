@@ -84,6 +84,8 @@ Shared by both front-ends.
 | `tui_plain` | `false` | TUI without borders, and with words instead of status symbols (for screen readers). `skiff --plain` does the same for one run. |
 | `confirm_multiline_paste` | `true` | Ask before pasting text with a line break into a program that hasn't turned on bracketed paste. |
 | `tui_mouse` | `"auto"` | TUI only. `"auto"`: take the mouse only while a program in the active terminal asks for it. `"always"`: always take it (tab clicks, wheel scrollback, Skiff's own selection copied over OSC 52). |
+| `tui_ascii_borders` | `false` | TUI only. Draw boxes with `+ - \|` and plain ASCII marks (`*` connected, `x` failed, `>` selected) for fonts or terminals without box-drawing characters. |
+| `which_key_delay_ms` | `300` | TUI only. How long after the prefix (`Alt+O`) the box listing the keys that can follow appears, in milliseconds; `0` shows it at once. The footer's `PREFIX` badge always shows at once. |
 
 ```toml
 [settings]
@@ -99,7 +101,15 @@ status_checks = "manual"
 tui_plain = false
 confirm_multiline_paste = true
 tui_mouse = "auto"
+tui_ascii_borders = false
+which_key_delay_ms = 300
 ```
+
+The TUI also honours [`NO_COLOR`](https://no-color.org): when it is set to
+any non-empty value, Skiff's own screens use no colors at all, only bold and
+reverse video (programs in a terminal tab keep theirs). The default
+`terminal` theme uses the 16 ANSI colors, so it follows your terminal's
+color scheme.
 
 ## `[gui]`
 

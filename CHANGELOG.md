@@ -38,6 +38,21 @@ First release under the name Skiff (formerly termax).
 
 ### Added
 
+- **TUI refresh.** Rounded borders with the focused panel in the accent
+  color and titles (counts, sort, status) in the borders; a two-group
+  footer (the tab's keys, then the keys after the prefix behind an
+  `Alt+O ▸` badge) that drops the least used hints on narrow screens but
+  always keeps `? help`; a `PREFIX` badge and, after `which_key_delay_ms`
+  (300 ms, `0` for at once), a which-key box with the keys that can follow;
+  dialogs over a dimmed screen with their keys on the bottom border and
+  deletes in red; a grouped, scrollable help with the config path on its
+  bottom border; host details that wrap between items and elide long paths
+  in the middle; empty states with the keys that help; borderless
+  terminals (split panes get a thin title rule); SFTP column headers,
+  elided path titles and a one-line transfer strip with a progress bar;
+  status marks `●` up, `◌` connecting, `✗` failed, `○` unknown.
+- `NO_COLOR` support (bold and reverse only) and `tui_ascii_borders` for
+  fonts without box drawing.
 - Split panes in both front-ends: drag panes and tabs to split, swap, join
   and pop out (GUI), divider snapping, keyboard move / resize / equalize.
 - Settings gear at the end of the GUI tab strip; Snippets page in Settings.
