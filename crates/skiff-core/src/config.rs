@@ -243,12 +243,24 @@ pub struct GuiSettings {
     pub announce_output: Announce,
     /// Blinking text and terminal cursors.
     pub cursor_blink: bool,
+    /// Split panes without focus are dimmed a little (never in the
+    /// high-contrast themes).
+    pub dim_inactive_panes: bool,
 }
 
-/// 14 pt terminal font, 100% scale, all output announced, blinking on.
+/// 14 pt terminal font, 100% scale, all output announced, blinking on,
+/// inactive panes dimmed.
 impl Default for GuiSettings {
     fn default() -> Self {
-        Self { font_path: None, ui_font_path: None, font_size: 14.0, ui_scale: 1.0, announce_output: Announce::All, cursor_blink: true }
+        Self {
+            font_path: None,
+            ui_font_path: None,
+            font_size: 14.0,
+            ui_scale: 1.0,
+            announce_output: Announce::All,
+            cursor_blink: true,
+            dim_inactive_panes: true,
+        }
     }
 }
 
