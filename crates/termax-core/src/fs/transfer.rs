@@ -183,6 +183,11 @@ impl Job {
                 }
                 if !self.should_overwrite(&d).await? {
                     self.summary.skipped += 1;
+                    // Cancelled while asking: say so even when this was the last file.
+                    if self.token.is_cancelled() {
+                        self.summary.cancelled = true;
+                        break;
+                    }
                     continue;
                 }
             }

@@ -232,6 +232,9 @@ pub struct Config {
     /// Action name → key chord (e.g. `quick_switcher = "Ctrl+Shift+K"`). Parsed by the GUI.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, String>,
+    /// Action name → key chord for the terminal UI (e.g. `close_tab = "alt+x"`). Parsed by the TUI.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tui_keys: BTreeMap<String, String>,
     #[serde(rename = "forward", skip_serializing_if = "Vec::is_empty")]
     pub forwards: Vec<crate::forward::Forward>,
     /// Saved commands (`[[snippet]]`).
@@ -326,7 +329,7 @@ impl Config {
         let new_doc: DocumentMut = toml::to_string(self)?.parse()?;
         let section = |v: &toml::Value, k: &str| v.get(k).and_then(|t| t.as_table()).cloned().unwrap_or_default();
 
-        for name in ["settings", "gui", "keys"] {
+        for name in ["settings", "gui", "keys", "tui_keys"] {
             let (old_t, new_t) = (section(&old, name), section(&new, name));
             if old_t == new_t {
                 continue;
@@ -539,6 +542,7 @@ tui_mouse = \"sometimes\"
         let mut cfg = base.clone();
         cfg.connections.push(Connection { name: "a".into(), host: "h".into(), port: Some(2), ..Default::default() });
         cfg.keys.insert("quick_switcher".into(), "Ctrl+Shift+K".into());
+        cfg.tui_keys.insert("close_tab".into(), "alt+x".into());
         cfg.gui.font_size = 16.0;
         cfg.save(&base, &path).unwrap();
         assert_eq!(Config::load_or_create(&path).unwrap(), cfg);
