@@ -1,4 +1,4 @@
-//! The settings tab: connections, appearance, keybindings, general.
+//! The settings tab: connections, appearance, keybindings, snippets, general.
 //!
 //! Every form saves through `GuiApp::save_config` (comments in
 //! `config.toml` survive). A form the user has not edited follows the
@@ -8,7 +8,7 @@
 use termax_ui::geom::Rect;
 use termax_ui::layout::Size as L;
 use termax_ui::ui::{Id, Ui};
-use termax_ui::widgets::{TextInputOpts, button, label, text_input};
+use termax_ui::widgets::{TextInputOpts, button, dropdown_labeled, label, text_input};
 
 use crate::app::GuiApp;
 
@@ -16,6 +16,7 @@ pub mod appearance;
 pub mod connections;
 pub mod general;
 pub mod keys;
+pub mod snippets;
 
 /// Width of the label column of a form row, logical px.
 pub const LABEL_W: i32 = 150;
@@ -28,17 +29,19 @@ pub enum Section {
     Connections,
     Appearance,
     Keybindings,
+    Snippets,
     General,
 }
 
 impl Section {
-    const ALL: [Section; 4] = [Section::Connections, Section::Appearance, Section::Keybindings, Section::General];
+    const ALL: [Section; 5] = [Section::Connections, Section::Appearance, Section::Keybindings, Section::Snippets, Section::General];
 
     fn label(self) -> &'static str {
         match self {
             Section::Connections => "Connections",
             Section::Appearance => "Appearance",
             Section::Keybindings => "Keybindings",
+            Section::Snippets => "Snippets",
             Section::General => "General",
         }
     }
@@ -50,6 +53,7 @@ pub struct SettingsState {
     pub conn: connections::ConnState,
     pub look: appearance::AppearanceState,
     pub keys: keys::KeysState,
+    pub snippets: snippets::SnippetsState,
     pub general: general::GeneralState,
 }
 
@@ -83,6 +87,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         Section::Connections => connections::view(ui, body, &mut st.conn, app),
         Section::Appearance => appearance::view(ui, body, &mut st.look, app),
         Section::Keybindings => keys::view(ui, body, &mut st.keys, app),
+        Section::Snippets => snippets::view(ui, body, &mut st.snippets, app),
         Section::General => general::view(ui, body, &mut st.general, app),
     }
     app.settings = st;
@@ -121,6 +126,13 @@ pub fn field(ui: &mut Ui, id: Id, row: Rect, text: &str, value: &mut String) -> 
     let (l, c) = split_row(ui, row);
     label(ui, l, text, None);
     text_input(ui, id, c, value, TextInputOpts { label: text, ..Default::default() }).changed
+}
+
+/// A labelled dropdown (named by its label for screen readers); true when changed.
+pub fn labeled_dropdown(ui: &mut Ui, id: Id, row: Rect, text: &str, options: &[&str], selected: &mut usize) -> bool {
+    let (l, c) = split_row(ui, row);
+    label(ui, l, text, None);
+    dropdown_labeled(ui, id, c, text, options, selected)
 }
 
 /// An inline error (or nothing).
