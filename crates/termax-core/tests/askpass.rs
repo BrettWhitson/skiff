@@ -149,3 +149,29 @@ async fn retire_cancels_pending_prompt() {
     assert!(started.elapsed() < Duration::from_secs(15), "took {:?}", started.elapsed());
     watcher.abort();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn touch_notice_is_not_a_prompt_and_closes_with_the_helper() {
+    let (b, mut rx) = Broker::start(&tokio::runtime::Handle::current(), helper()).unwrap();
+    let spawn = |hint: &str| {
+        let mut cmd = std::process::Command::new(helper());
+        cmd.envs(b.env("t")).env("SSH_ASKPASS_PROMPT", hint).arg("Confirm user presence for key ED25519-SK");
+        cmd.spawn().unwrap()
+    };
+    let next = async |rx: &mut tokio::sync::mpsc::UnboundedReceiver<_>| {
+        tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap().unwrap()
+    };
+    let mut confirm = spawn("confirm");
+    let req: termax_core::askpass::AskRequest = next(&mut rx).await;
+    assert_eq!(req.kind, AskKind::Confirm);
+    let _ = req.reply.send(Some("yes".into()));
+    assert!(tokio::task::spawn_blocking(move || confirm.wait()).await.unwrap().unwrap().success());
+
+    // ssh kills the helper once the key is touched: the notice goes away.
+    let mut notice = spawn("none");
+    let req: termax_core::askpass::AskRequest = next(&mut rx).await;
+    assert_eq!(req.kind, AskKind::Notice);
+    notice.kill().unwrap();
+    let _ = notice.wait();
+    tokio::time::timeout(Duration::from_secs(5), req.cancelled.cancelled()).await.expect("notice withdrawn when the helper exits");
+}
