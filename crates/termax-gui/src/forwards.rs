@@ -11,7 +11,7 @@ use termax_ui::ui::{Id, Ui};
 use termax_ui::widgets::{TextInputOpts, button, dropdown_labeled, label, text_input};
 
 use crate::app::GuiApp;
-use crate::settings::{Rows, error_line, field, split_row};
+use crate::settings::{PendingDiscard, Rows, discard_prompt, error_line, field, split_row};
 
 /// Askpass tags of forwards start with this (file panes use `<tab>:<side>`).
 pub const TAG_PREFIX: &str = "fwd:";
@@ -36,6 +36,8 @@ pub struct FwdForm {
     pub listen: String,
     pub target: String,
     pub error: Option<String>,
+    /// Edited since it was opened.
+    pub dirty: bool,
 }
 
 pub struct FwdPrompt {
@@ -69,6 +71,8 @@ pub struct ForwardsState {
     pub confirm_delete: Option<Forward>,
     /// The delete question just appeared: focus goes to Cancel.
     confirm_new: bool,
+    /// Another form waiting for "Discard unsaved changes?" to be answered.
+    confirm_discard: Option<PendingDiscard<FwdForm>>,
     next_tag: u64,
 }
 
@@ -112,7 +116,17 @@ impl ForwardsState {
 
     /// The form for a new forward on host `host`.
     pub fn new_form(&mut self, host: &str) {
-        self.form = Some(FwdForm { host: host.to_string(), target: "localhost:".into(), ..Default::default() });
+        self.open_form(FwdForm { host: host.to_string(), target: "localhost:".into(), ..Default::default() });
+    }
+
+    /// Shows `form`, asking first when the open one has unsaved edits.
+    pub fn open_form(&mut self, form: FwdForm) {
+        if self.form.as_ref().is_some_and(|f| f.dirty) {
+            self.confirm_discard = Some(PendingDiscard::new(form));
+        } else {
+            self.form = Some(form);
+            self.confirm_discard = None;
+        }
     }
 }
 
@@ -225,7 +239,14 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     let mut host_names: Vec<String> = app.hosts.iter().map(|h| h.name.clone()).collect();
     let mut save = None;
     let mut cancel = false;
-    if let Some(form) = &mut st.form {
+    if let Some(p) = &mut st.confirm_discard {
+        let what = if st.form.as_ref().is_some_and(|f| f.editing.is_some()) { "this forward" } else { "the new forward" };
+        match discard_prompt(ui, &mut rows, "fwd", what, p) {
+            Some(true) => st.form = st.confirm_discard.take().map(|p| p.to),
+            Some(false) => st.confirm_discard = None,
+            None => {}
+        }
+    } else if let Some(form) = &mut st.form {
         // A host no longer listed stays the form's host (and a choice) until changed.
         if !form.host.is_empty() && !host_names.contains(&form.host) {
             host_names.push(form.host.clone());
@@ -238,6 +259,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
             && let Some(h) = host_names.get(hi)
         {
             form.host = h.clone();
+            form.dirty = true;
         }
         if form.host.is_empty()
             && let Some(h) = host_names.get(hi)
@@ -247,15 +269,15 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         let (l, c) = split_row(ui, rows.next(ui));
         label(ui, l, "Kind", None);
         let kinds: Vec<&str> = ForwardKind::ALL.iter().map(|k| k.label()).collect();
-        dropdown_labeled(ui, Id::new("fwd-kind"), c, "Kind", &kinds, &mut form.kind);
+        form.dirty |= dropdown_labeled(ui, Id::new("fwd-kind"), c, "Kind", &kinds, &mut form.kind);
         let kind = ForwardKind::ALL[form.kind.min(2)];
         let (_, c) = split_row(ui, rows.next_h(ui, 40));
         label(ui, c, kind.explain(), Some(p.muted));
-        field(ui, Id::new("fwd-name"), rows.next(ui), "Name", &mut form.name);
-        field(ui, Id::new("fwd-bind"), rows.next(ui), "Bind address", &mut form.bind);
-        field(ui, Id::new("fwd-listen"), rows.next(ui), "Listen port", &mut form.listen);
+        form.dirty |= field(ui, Id::new("fwd-name"), rows.next(ui), "Name", &mut form.name);
+        form.dirty |= field(ui, Id::new("fwd-bind"), rows.next(ui), "Bind address", &mut form.bind);
+        form.dirty |= field(ui, Id::new("fwd-listen"), rows.next(ui), "Listen port", &mut form.listen);
         if kind != ForwardKind::Dynamic {
-            field(ui, Id::new("fwd-target"), rows.next(ui), "Target", &mut form.target);
+            form.dirty |= field(ui, Id::new("fwd-target"), rows.next(ui), "Target", &mut form.target);
         }
         let (_, c) = split_row(ui, rows.next(ui));
         let b = ui.split_h(c, &[L::Px(80), L::Px(140), L::Px(90)], 8);
@@ -344,7 +366,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
             "start" => app.start_forward(&mut st, &f),
             "stop" => st.stop(&f),
             "edit" => {
-                st.form = Some(FwdForm {
+                st.open_form(FwdForm {
                     editing: Some(f.clone()),
                     host: f.host.clone(),
                     kind: ForwardKind::ALL.iter().position(|k| *k == f.kind).unwrap_or(0),
@@ -353,6 +375,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
                     listen: f.listen.to_string(),
                     target: f.target.clone().unwrap_or_default(),
                     error: None,
+                    dirty: false,
                 });
             }
             _ => {

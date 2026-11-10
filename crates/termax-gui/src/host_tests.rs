@@ -247,3 +247,21 @@ fn forward_save_refuses_deleted_and_duplicate() {
     assert_eq!(f.app.cfg.forwards.len(), 1, "no duplicate");
     assert!(f.texts().iter().any(|t| t == "This forward is already saved"), "{:?}", f.texts());
 }
+
+#[test]
+fn forward_form_asks_before_discarding_edits() {
+    let mut f = Fixture::with_config(FWD_CONFIG);
+    f.app.open_forwards();
+    f.frame(vec![]);
+    f.click_text("Edit");
+    set_field(&mut f, "Listen port", "47395");
+    f.click_text("New forward");
+    assert!(f.try_find("Discard unsaved changes to this forward?").is_some(), "{:?}", f.texts());
+    f.click_text("Keep editing");
+    assert_eq!(f.app.forwards.form.as_ref().map(|x| x.listen.as_str()), Some("47395"));
+    f.right_click_text("alpha");
+    f.click_text("Port forward\u{2026}");
+    f.click_text("Discard");
+    let form = f.app.forwards.form.as_ref().unwrap();
+    assert!(form.editing.is_none() && form.listen.is_empty());
+}

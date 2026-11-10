@@ -299,12 +299,12 @@ impl GuiApp {
         if let Some(name) = self.edit_target.take() {
             let mut st = std::mem::take(&mut self.settings);
             st.section = crate::settings::Section::Connections;
-            st.conn.edit_host(&name, self);
+            st.conn.switch(Some(name), self);
             self.settings = st;
         } else if std::mem::take(&mut self.new_connection) {
             let mut st = std::mem::take(&mut self.settings);
             st.section = crate::settings::Section::Connections;
-            st.conn.new_form(self);
+            st.conn.switch(None, self);
             self.settings = st;
         }
         match self.tabs.iter().position(|t| matches!(t.kind, TabKind::Settings)) {

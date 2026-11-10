@@ -143,5 +143,41 @@ pub fn error_line(ui: &mut Ui, row: Rect, err: &Option<String>) {
     }
 }
 
+/// A switch away from a form with unsaved edits (to `to`), waiting for
+/// "Discard …?" to be answered.
+pub struct PendingDiscard<T> {
+    pub to: T,
+    first: bool,
+}
+
+impl<T> PendingDiscard<T> {
+    pub fn new(to: T) -> Self {
+        PendingDiscard { to, first: true }
+    }
+}
+
+/// Asks "Discard unsaved changes to `what`?" with Discard / Keep editing
+/// (ids `<ids>-discard-yes` / `-no`). Focus starts on Keep editing, so a
+/// reflexive Enter keeps the edits; Esc keeps them too. `Some(true)`:
+/// discard, `Some(false)`: keep; `None` while unanswered.
+pub fn discard_prompt<T>(ui: &mut Ui, rows: &mut Rows, ids: &str, what: &str, p: &mut PendingDiscard<T>) -> Option<bool> {
+    label(ui, rows.next(ui), &format!("Discard unsaved changes to {what}?"), None);
+    let r = rows.next(ui);
+    let b = ui.split_h(Rect::new(r.x, r.y, ui.px(260), r.h), &[L::Frac(0.45), L::Frac(0.55)], 8);
+    let (yes, no) = (Id::new(format!("{ids}-discard-yes")), Id::new(format!("{ids}-discard-no")));
+    if std::mem::take(&mut p.first) {
+        ui.request_focus(no);
+    }
+    let esc = (ui.has_focus(yes) || ui.has_focus(no))
+        && ui.input_mut().take_key(&termax_ui::input::Key::Escape, termax_ui::input::Modifiers::NONE);
+    if button(ui, yes, b[0], "Discard").clicked {
+        Some(true)
+    } else if button(ui, no, b[1], "Keep editing").clicked || esc {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests;

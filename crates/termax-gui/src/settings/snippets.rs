@@ -8,7 +8,7 @@ use termax_ui::layout::Size as L;
 use termax_ui::ui::{Id, Ui};
 use termax_ui::widgets::{TextInputOpts, button, checkbox, label, list_named, text_input};
 
-use super::{LABEL_W, Rows, error_line, field, labeled_dropdown, split_row};
+use super::{LABEL_W, PendingDiscard, Rows, discard_prompt, error_line, field, labeled_dropdown, split_row};
 use crate::app::GuiApp;
 
 /// The form's text, as typed.
@@ -67,9 +67,9 @@ pub struct SnippetsState {
     pub error: Option<String>,
     /// Asking "Delete snippet …?"; the first frame moves focus to Cancel.
     confirm_delete: Option<bool>,
-    /// Another row was picked while the form had unsaved edits: asking
-    /// "Discard …?" before switching to it; the first frame focuses Keep.
-    confirm_discard: Option<(usize, bool)>,
+    /// Another row (or Add, `None`) was picked while the form had unsaved
+    /// edits: asking "Discard …?" before switching.
+    confirm_discard: Option<PendingDiscard<Option<usize>>>,
     selected: Option<usize>,
     /// A stable id per command line input (so focus and cursor stay with a
     /// line when one above it is removed), parallel to `form.lines`.
@@ -83,6 +83,31 @@ impl SnippetsState {
         self.error = None;
         self.confirm_delete = None;
         self.confirm_discard = None;
+    }
+
+    fn new_form(&mut self, ui: &mut Ui) {
+        self.form = Some(SnippetForm::new());
+        self.error = None;
+        self.confirm_delete = None;
+        self.confirm_discard = None;
+        ui.request_focus(Id::new("settings-snip-name"));
+    }
+
+    /// Switches to row `to` (`None`: a new snippet), asking first when the
+    /// form has unsaved edits.
+    fn switch(&mut self, ui: &mut Ui, to: Option<usize>, app: &GuiApp) {
+        if self.form.as_ref().is_some_and(|f| f.dirty) {
+            self.confirm_discard = Some(PendingDiscard::new(to));
+            self.confirm_delete = None;
+            return;
+        }
+        match to {
+            Some(i) => match app.cfg.snippets.get(i).cloned() {
+                Some(s) => self.select(&s),
+                None => self.confirm_discard = None,
+            },
+            None => self.new_form(ui),
+        }
     }
 
     fn new_line_id(&mut self) -> u64 {
@@ -138,20 +163,12 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     if st.selected != before
         && let Some(i) = st.selected
     {
-        if st.form.as_ref().is_some_and(|f| f.dirty) {
-            st.confirm_discard = Some((i, true));
-            st.confirm_delete = None;
-            st.selected = before;
-        } else if let Some(s) = app.cfg.snippets.get(i).cloned() {
-            st.select(&s);
-        }
+        st.selected = before; // until the switch happens
+        st.switch(ui, Some(i), app);
     }
     let btns = ui.split_h(left[1], &[L::Frac(0.5), L::Frac(0.5)], 4);
     if button(ui, Id::new("settings-snip-add"), btns[0], "Add").clicked {
-        st.form = Some(SnippetForm::new());
-        st.error = None;
-        st.confirm_delete = None;
-        ui.request_focus(Id::new("settings-snip-name"));
+        st.switch(ui, None, app);
     }
     let del_key = ui.has_focus(list_id) && ui.input_mut().take_key(&Key::Delete, Modifiers::NONE);
     if (button(ui, Id::new("settings-snip-del"), btns[1], "Delete").clicked || del_key) && st.selected.is_some() {
@@ -159,26 +176,22 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     }
 
     let mut rows = Rows::new(cols[1]);
-    if let Some((target, first)) = st.confirm_discard {
+    if let Some(p) = &mut st.confirm_discard {
         let what = st.form.as_ref().and_then(|f| f.editing.clone()).unwrap_or_else(|| "the new snippet".to_string());
-        label(ui, rows.next(ui), &format!("Discard unsaved changes to {what}?"), None);
-        let r = rows.next(ui);
-        let b = ui.split_h(Rect::new(r.x, r.y, ui.px(240), r.h), &[L::Frac(0.5), L::Frac(0.5)], 8);
-        let (yes, no) = (Id::new("settings-snip-discard-yes"), Id::new("settings-snip-discard-no"));
-        if first {
-            ui.request_focus(no); // a reflexive Enter keeps the edits
-            st.confirm_discard = Some((target, false));
-        }
-        let esc = (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE);
-        if button(ui, yes, b[0], "Discard").clicked {
-            match app.cfg.snippets.get(target).cloned() {
-                Some(s) => st.select(&s),
-                None => st.confirm_discard = None,
+        match discard_prompt(ui, &mut rows, "settings-snip", &what, p) {
+            Some(true) => {
+                let to = p.to;
+                st.form = None;
+                st.switch(ui, to, app);
+                if to.is_some() {
+                    ui.request_focus(list_id);
+                }
             }
-            ui.request_focus(list_id);
-        } else if button(ui, no, b[1], "Keep editing").clicked || esc {
-            st.confirm_discard = None;
-            ui.request_focus(list_id);
+            Some(false) => {
+                st.confirm_discard = None;
+                ui.request_focus(list_id);
+            }
+            None => {}
         }
         return;
     }

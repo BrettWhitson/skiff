@@ -10,7 +10,7 @@ use termax_ui::layout::Size as L;
 use termax_ui::ui::{Id, Ui};
 use termax_ui::widgets::{TextInputOpts, button, checkbox, dropdown_labeled, label, list_named, text_input};
 
-use super::{Rows, error_line, field, split_row};
+use super::{PendingDiscard, Rows, discard_prompt, error_line, field, split_row};
 use crate::app::GuiApp;
 
 pub struct Form {
@@ -33,6 +33,9 @@ pub struct ConnState {
     pub readonly: Option<(String, String)>,
     pub error: Option<String>,
     pub confirm_delete: bool,
+    /// A switch to another host (`None`: a new one) waiting for "Discard
+    /// unsaved changes?".
+    confirm_discard: Option<PendingDiscard<Option<String>>>,
     /// The list's highlighted row.
     selected: Option<usize>,
 }
@@ -44,6 +47,22 @@ impl ConnState {
         self.readonly = None;
         self.error = None;
         self.confirm_delete = false;
+        self.confirm_discard = None;
+    }
+
+    /// Opens host `to` (`None`: a new host), asking first when the form
+    /// has unsaved edits.
+    pub fn switch(&mut self, to: Option<String>, app: &mut GuiApp) {
+        if self.form.as_ref().is_some_and(|f| f.dirty) {
+            self.confirm_discard = Some(PendingDiscard::new(to));
+            self.confirm_delete = false;
+            return;
+        }
+        self.confirm_discard = None;
+        match to {
+            Some(name) => self.edit_host(&name, app),
+            None => self.new_form(app),
+        }
     }
 
     /// Opens host `name` for editing (or shows why it can't be).
@@ -104,19 +123,19 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     if st.selected != before
         && let Some(i) = st.selected
     {
-        let name = names[i].0.clone();
-        st.edit_host(&name, app);
+        st.selected = before; // until the switch happens
+        st.switch(Some(names[i].0.clone()), app);
     }
     let btns = ui.split_h(left[1], &[L::Frac(0.28), L::Frac(0.44), L::Frac(0.28)], 4);
     if button(ui, Id::new("settings-conn-add"), btns[0], "Add").clicked {
-        st.new_form(app);
+        st.switch(None, app);
     }
     let current = st.form.as_ref().and_then(|f| f.editing.clone()).and_then(|n| app.hosts.iter().position(|h| h.name == n));
     if button(ui, Id::new("settings-conn-dup"), btns[1], "Duplicate").clicked
         && let Some(i) = current
     {
         match app.duplicate_host(&app.hosts[i].name.clone()) {
-            Ok(name) => st.edit_host(&name, app),
+            Ok(name) => st.switch(Some(name), app),
             Err(e) => st.error = Some(e),
         }
     }
@@ -125,6 +144,22 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     }
 
     let mut rows = Rows::new(cols[1]);
+    if let Some(p) = &mut st.confirm_discard {
+        let what = st.form.as_ref().and_then(|f| f.editing.clone()).unwrap_or_else(|| "the new host".to_string());
+        match discard_prompt(ui, &mut rows, "settings-conn", &what, p) {
+            Some(true) => {
+                let to = p.to.clone();
+                st.form = None;
+                st.switch(to, app);
+            }
+            Some(false) => st.confirm_discard = None,
+            None => {}
+        }
+        if st.confirm_discard.is_none() {
+            ui.request_focus(Id::new("settings-conn-list"));
+        }
+        return;
+    }
     if st.confirm_delete
         && let Some(i) = current
     {
