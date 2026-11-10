@@ -393,14 +393,28 @@ cargo run -p skiff-gui --release
   open a terminal or file transfer, forward a port, check its status, edit,
   duplicate, move it to another ssh config file, hide or delete it.
 - **Tabs** hold terminals, file transfers and settings. Drag a tab to move it.
-- **Split panes**: `Ctrl+Shift+D` splits a terminal tab side by side and
+- **Split panes**: `Ctrl+Shift+D` splits the focused pane side by side and
   `Ctrl+Shift+E` one above the other (also in the terminal's right-click
-  menu); each pane is its own session to the same host, with its own find
-  bar, selection and paste prompt. Click a pane, press `F6`, or
+  menu), as often as you like; each pane is its own session, with its own
+  find bar, selection and paste prompt. Click a pane, press `F6`, or
   `Ctrl+Shift+O` to move between panes; `Ctrl+Shift+X` closes the focused
-  pane (the last one closes the tab). Drag a divider to resize, or focus it
-  (`F6` reaches it) and use the arrow keys. Copy, paste, find, zoom and
-  snippets go to the focused pane, which has an accent outline.
+  pane (the last one closes the tab). Copy, paste, find, zoom and snippets go
+  to the focused pane, which has an accent outline.
+  - *Resize*: drag a divider; it snaps to 25 / 33 / 50 / 67 / 75% when
+    close (the share shows by the pointer), hold `Alt` to place it freely,
+    and double-click it to share the space equally. A focused divider (`F6`
+    reaches it) moves with the arrow keys from snap point to snap point;
+    `Alt+Shift+arrows` move the divider next to the focused pane the same
+    way, and `Alt+Shift+=` equalizes all panes. No pane gets smaller than
+    10 columns by 3 rows.
+  - *Rearrange*: drag a pane by its grip (the dots at its top centre) or with
+    `Alt`+drag onto another pane. A highlight shows where it lands: the
+    left, right, top or bottom half splits that pane there, the centre swaps
+    the two. Drop it on the tab strip to give it a tab of its own.
+    `Ctrl+Alt+Shift+arrows` swap the focused pane with its neighbour.
+  - *Join tabs*: drag a terminal tab off the tab strip onto a pane's edge to
+    move its session(s) into that tab (the centre just switches to it).
+  Sessions keep running through every move; `Esc` cancels a drag.
 - **File transfer** shows two panes; each can be Local or any host, so
   remote↔remote copies work too. Drag files between panes (or from Explorer /
   Finder onto a pane), or select and press `F5` / `Copy →`. Transfers list
@@ -433,6 +447,9 @@ cargo run -p skiff-gui --release
 | Split pane right / down | `Ctrl+Shift+D` / `Ctrl+Shift+E` | `Cmd+D` / `Cmd+Shift+D` |
 | Next pane | `Ctrl+Shift+O` (or `F6`) | `Cmd+]` (or `F6`) |
 | Close pane | `Ctrl+Shift+X` | `Cmd+Alt+W` |
+| Swap focused pane with its neighbour | `Ctrl+Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+Shift+←` `→` `↑` `↓` |
+| Move the divider next to the focused pane (to the next snap point) | `Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+←` `→` `↑` `↓` |
+| Equalize panes | `Alt+Shift+=` | `Cmd+Ctrl+=` |
 
 \* Plain `Ctrl`+letter belongs to the shell inside a terminal tab, so `Ctrl+K`
 opens the switcher only outside terminals.
@@ -452,8 +469,11 @@ cursor_blink = true                           # blinking terminal cursor
 # action = "chord" or "chord1, chord2"; actions: quick_switcher, new_tab,
 # close_tab, next_tab, prev_tab, copy, paste, find, zoom_in, zoom_out,
 # zoom_reset, toggle_sidebar, settings, ui_scale_up, ui_scale_down,
-# ui_scale_reset, split_right, split_down, focus_next_pane, close_pane
+# ui_scale_reset, split_right, split_down, focus_next_pane, close_pane,
+# move_pane_left/right/up/down, resize_pane_left/right/up/down,
+# equalize_panes
 close_tab = "ctrl+shift+q"
+resize_pane_up = ""   # an empty value unbinds: Alt+Shift+Up goes to the shell
 ```
 
 Window size and sidebar width are kept in `state.toml` next to `config.toml`.
@@ -501,7 +521,8 @@ politely: at most once every half second, the last 20 lines (2,000 characters),
 without the echo of what you typed. `announce_output = "focused"` limits that to
 the focused tab and `false` turns it off. The panes of a split tab are
 regions named "Pane 1 of 2: web" whose terminals are "Terminal: web, pane 1 of
-2"; dividers are splitters whose value is the first pane's share. A repeated message (the same
+2" (numbered in reading order, renumbered after a move); dividers are
+splitters whose value is the first pane's share. A repeated message (the same
 warning twice, identical output) is read again. A host opens with the screen
 reader's default action (or Enter) on its row; a mouse click only selects it.
 The tree is only built while a screen reader is connected. Tested with the offscreen tree here; please report
@@ -512,7 +533,7 @@ anything a screen reader gets wrong.
 | Key | Does |
 |---|---|
 | `F6` / `Shift+F6` | Next / previous area: hosts, tabs, content (also out of a terminal); each pane of a split terminal is its own area, then the pane dividers |
-| `←` `→` / `↑` `↓` on a pane divider | Move the divider (5% per press) |
+| `←` `→` / `↑` `↓` on a pane divider | Move the divider to the next snap point (25 / 33 / 50 / 67 / 75%, then 5% per press) |
 | `Tab` / `Shift+Tab` | Next / previous control within the area (wraps around) |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move in lists; `←` `→` switch tabs on the tab strip |
 | `Enter` | Open the selected row; `Enter` / `Space` press buttons and checkboxes, and edit a file pane's path |

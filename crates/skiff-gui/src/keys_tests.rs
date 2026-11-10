@@ -83,7 +83,15 @@ fn default_chords_are_unique_and_leave_shell_keys_alone() {
                 seen.push((c.clone(), a));
             }
         }
-        for a in [Action::SplitRight, Action::SplitDown, Action::FocusNextPane, Action::ClosePane] {
+        for a in [
+            Action::SplitRight,
+            Action::SplitDown,
+            Action::FocusNextPane,
+            Action::ClosePane,
+            Action::MovePaneLeft,
+            Action::ResizePaneUp,
+            Action::EqualizePanes,
+        ] {
             let c = &km.chords(a)[0];
             assert!(!c.shell_owned(), "{c}");
             assert_eq!(km.match_key(&c.key, c.mods, true), Some(a), "{} works in a terminal", a.config_name());

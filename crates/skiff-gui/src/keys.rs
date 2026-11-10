@@ -33,10 +33,22 @@ pub enum Action {
     SplitDown,
     FocusNextPane,
     ClosePane,
+    /// Swap the focused pane with its neighbor on that side.
+    MovePaneLeft,
+    MovePaneRight,
+    MovePaneUp,
+    MovePaneDown,
+    /// Move the divider beside the focused pane to the next snap point.
+    ResizePaneLeft,
+    ResizePaneRight,
+    ResizePaneUp,
+    ResizePaneDown,
+    /// Give the panes of a row the same size.
+    EqualizePanes,
 }
 
 impl Action {
-    pub const ALL: [Action; 20] = [
+    pub const ALL: [Action; 29] = [
         Action::QuickSwitcher,
         Action::NewTab,
         Action::CloseTab,
@@ -57,6 +69,15 @@ impl Action {
         Action::SplitDown,
         Action::FocusNextPane,
         Action::ClosePane,
+        Action::MovePaneLeft,
+        Action::MovePaneRight,
+        Action::MovePaneUp,
+        Action::MovePaneDown,
+        Action::ResizePaneLeft,
+        Action::ResizePaneRight,
+        Action::ResizePaneUp,
+        Action::ResizePaneDown,
+        Action::EqualizePanes,
     ];
 
     /// The name used in the `[keys]` table.
@@ -82,6 +103,15 @@ impl Action {
             Action::SplitDown => "split_down",
             Action::FocusNextPane => "focus_next_pane",
             Action::ClosePane => "close_pane",
+            Action::MovePaneLeft => "move_pane_left",
+            Action::MovePaneRight => "move_pane_right",
+            Action::MovePaneUp => "move_pane_up",
+            Action::MovePaneDown => "move_pane_down",
+            Action::ResizePaneLeft => "resize_pane_left",
+            Action::ResizePaneRight => "resize_pane_right",
+            Action::ResizePaneUp => "resize_pane_up",
+            Action::ResizePaneDown => "resize_pane_down",
+            Action::EqualizePanes => "equalize_panes",
         }
     }
 
@@ -107,6 +137,15 @@ impl Action {
             Action::SplitDown => "Split pane down",
             Action::FocusNextPane => "Next pane",
             Action::ClosePane => "Close pane",
+            Action::MovePaneLeft => "Move pane left",
+            Action::MovePaneRight => "Move pane right",
+            Action::MovePaneUp => "Move pane up",
+            Action::MovePaneDown => "Move pane down",
+            Action::ResizePaneLeft => "Move divider left",
+            Action::ResizePaneRight => "Move divider right",
+            Action::ResizePaneUp => "Move divider up",
+            Action::ResizePaneDown => "Move divider down",
+            Action::EqualizePanes => "Equalize panes",
         }
     }
 
@@ -139,6 +178,15 @@ impl Action {
                 SplitDown => &["cmd+shift+d"],
                 FocusNextPane => &["cmd+]"],
                 ClosePane => &["cmd+alt+w"],
+                MovePaneLeft => &["cmd+ctrl+shift+left"],
+                MovePaneRight => &["cmd+ctrl+shift+right"],
+                MovePaneUp => &["cmd+ctrl+shift+up"],
+                MovePaneDown => &["cmd+ctrl+shift+down"],
+                ResizePaneLeft => &["cmd+ctrl+left"],
+                ResizePaneRight => &["cmd+ctrl+right"],
+                ResizePaneUp => &["cmd+ctrl+up"],
+                ResizePaneDown => &["cmd+ctrl+down"],
+                EqualizePanes => &["cmd+ctrl+="],
             };
         }
         match self {
@@ -162,6 +210,15 @@ impl Action {
             SplitDown => &["ctrl+shift+e"],
             FocusNextPane => &["ctrl+shift+o"],
             ClosePane => &["ctrl+shift+x"],
+            MovePaneLeft => &["ctrl+alt+shift+left"],
+            MovePaneRight => &["ctrl+alt+shift+right"],
+            MovePaneUp => &["ctrl+alt+shift+up"],
+            MovePaneDown => &["ctrl+alt+shift+down"],
+            ResizePaneLeft => &["alt+shift+left"],
+            ResizePaneRight => &["alt+shift+right"],
+            ResizePaneUp => &["alt+shift+up"],
+            ResizePaneDown => &["alt+shift+down"],
+            EqualizePanes => &["alt+shift+="],
         }
     }
 }
