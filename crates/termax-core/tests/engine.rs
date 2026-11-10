@@ -135,6 +135,31 @@ async fn cancel_mid_transfer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn cancelled_overwrite_keeps_original_and_completed_one_replaces() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    std::fs::write(fx.root().join("huge.bin"), "original").unwrap();
+    let local = tempfile::tempdir().unwrap();
+    std::fs::write(local.path().join("huge.bin"), data(40 * 1024 * 1024, 5)).unwrap();
+    let up = || req(&Endpoint::Local, &p(&local.path().join("huge.bin")), &r, "/");
+
+    let (res, _) = run_transfer(up(), OverwritePolicy::Overwrite, |_| panic!(), |h| h.cancel()).await;
+    assert!(res.unwrap().cancelled);
+    assert_eq!(std::fs::read_to_string(fx.root().join("huge.bin")).unwrap(), "original");
+    let names: Vec<String> = std::fs::read_dir(fx.root()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into()).collect();
+    assert_eq!(names, ["huge.bin"], "temp file left behind");
+
+    // Downloading over an existing local file replaces it once complete.
+    std::fs::write(fx.root().join("small.txt"), "new").unwrap();
+    std::fs::write(local.path().join("small.txt"), "old").unwrap();
+    let (res, _) =
+        run_transfer(req(&r, "/small.txt", &Endpoint::Local, &p(local.path())), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    assert_eq!(res.unwrap().files, 1);
+    assert_eq!(std::fs::read_to_string(local.path().join("small.txt")).unwrap(), "new");
+    assert!(!local.path().join(".small.txt.termax-part").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn overwrite_ask_skip_and_all() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
     let r = remote(&fx).await;
