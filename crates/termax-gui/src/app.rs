@@ -175,6 +175,7 @@ impl GuiApp {
         let style = style_for(&theme, &cfg);
         let (keymap, mut warnings) = Keymap::platform(&cfg.keys);
         warnings.extend(host_warning);
+        warnings.extend(theme.warning.clone());
         let geometry_path = state::UiState::path_for(&cfg_path);
         let cfg_start = cfg.settings.local_start_dir.clone();
         let geometry = state::UiState::load(&geometry_path);
@@ -298,12 +299,12 @@ impl GuiApp {
         if let Some(name) = self.edit_target.take() {
             let mut st = std::mem::take(&mut self.settings);
             st.section = crate::settings::Section::Connections;
-            st.conn.edit_host(&name, self);
+            st.conn.switch(Some(name), self);
             self.settings = st;
         } else if std::mem::take(&mut self.new_connection) {
             let mut st = std::mem::take(&mut self.settings);
             st.section = crate::settings::Section::Connections;
-            st.conn.new_form(self);
+            st.conn.switch(None, self);
             self.settings = st;
         }
         match self.tabs.iter().position(|t| matches!(t.kind, TabKind::Settings)) {
@@ -656,7 +657,12 @@ impl GuiApp {
     /// Re-picks the configured theme (for the OS high-contrast mode now).
     fn pick_theme(&mut self) {
         self.os_prefs = (crate::os::high_contrast(), crate::os::text_scale());
-        self.theme = from_def(&find_theme(&self.cfg));
+        let theme = from_def(&find_theme(&self.cfg));
+        // Once per change, not on every re-pick of the same theme.
+        if let Some(w) = theme.warning.clone().filter(|w| self.theme.warning.as_ref() != Some(w)) {
+            self.warn(w);
+        }
+        self.theme = theme;
         self.style = style_for(&self.theme, &self.cfg);
     }
 
@@ -989,7 +995,8 @@ impl GuiApp {
         if win.w <= 0 || win.h <= 0 {
             return;
         }
-        let s = ui.scale();
+        // DPI-only logical px: main.rs restores it as a winit LogicalSize.
+        let s = ui.dpi_scale();
         let logical = ((win.w as f32 / s).round() as u32, (win.h as f32 / s).round() as u32);
         if self.geometry.window_size != Some(logical) {
             let first = self.geometry.window_size.is_none();

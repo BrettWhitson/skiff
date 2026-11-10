@@ -229,3 +229,39 @@ fn sidebar_delete_key_focuses_cancel_and_esc_cancels() {
     assert_eq!(f.app.cfg.connections.len(), 2);
     assert_eq!(f.h.state.focused(), Some(termax_ui::ui::Id::new("sidebar-list")), "back on the list");
 }
+
+#[test]
+fn forward_save_refuses_deleted_and_duplicate() {
+    let mut f = Fixture::with_config(FWD_CONFIG);
+    f.app.open_forwards();
+    f.frame(vec![]);
+    f.click_text("Edit");
+    let saved = f.app.cfg.forwards.remove(0); // deleted while the form is open
+    f.click_text("Save");
+    assert!(f.app.cfg.forwards.is_empty(), "not brought back");
+    assert!(f.texts().iter().any(|t| t.starts_with("This forward was deleted")), "{:?}", f.texts());
+    f.app.cfg.forwards.push(saved);
+    f.app.forwards.form = Some(crate::forwards::FwdForm { host: "alpha".into(), kind: 2, listen: "47390".into(), ..Default::default() });
+    f.frame(vec![]);
+    f.click_text("Save");
+    assert_eq!(f.app.cfg.forwards.len(), 1, "no duplicate");
+    assert!(f.texts().iter().any(|t| t == "This forward is already saved"), "{:?}", f.texts());
+}
+
+#[test]
+fn forward_form_asks_before_discarding_edits() {
+    let mut f = Fixture::with_config(FWD_CONFIG);
+    f.app.open_forwards();
+    f.frame(vec![]);
+    f.click_text("Edit");
+    set_field(&mut f, "Listen port", "47395");
+    f.click_text("New forward");
+    assert!(f.try_find("Discard unsaved changes to this forward?").is_some(), "{:?}", f.texts());
+    f.click_text("Keep editing");
+    assert_eq!(f.app.forwards.form.as_ref().map(|x| x.listen.as_str()), Some("47395"));
+    f.right_click_text("alpha");
+    f.click_text("Port forward\u{2026}");
+    f.click_text("Discard");
+    let form = f.app.forwards.form.as_ref().unwrap();
+    assert!(form.editing.is_none() && form.listen.is_empty());
+}

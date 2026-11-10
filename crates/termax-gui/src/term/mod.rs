@@ -257,7 +257,9 @@ pub fn view(
     if r.pressed {
         ui.request_focus(id);
     }
-    let scale = ui.scale();
+    // DPI only: the interface zoom leaves terminal text (`font_size`) and
+    // wheel lines alone.
+    let scale = ui.dpi_scale();
     let default_px = ui.mono_px() / scale;
     let mut todo = std::mem::take(&mut tab.queued);
     todo.append(actions);

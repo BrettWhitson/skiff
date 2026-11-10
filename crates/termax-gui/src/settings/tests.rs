@@ -284,3 +284,63 @@ fn keybindings_scroll_to_the_focused_row() {
     let b = f.h.tree().by_id(id).expect("close pane row").bounds;
     assert!(b.h > 0 && b.bottom() <= 800 - 24, "fully above the status bar: {b:?}");
 }
+
+const TWO_SNIPPETS: &str = r#"
+[[snippet]]
+name = "greet"
+command = "ls -l"
+
+[[snippet]]
+name = "other"
+command = "ls"
+"#;
+
+#[test]
+fn switching_snippets_asks_before_discarding_edits() {
+    let mut f = snippets_page(TWO_SNIPPETS);
+    f.click_text("greet");
+    set_field(&mut f, "Name", "greet2");
+    f.click_text("other");
+    assert!(f.try_find("Discard unsaved changes to greet?").is_some(), "{:?}", f.texts());
+    assert_eq!(f.h.state.focused(), Some(termax_ui::ui::Id::new("settings-snip-discard-no")), "focus on Keep");
+    f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    let form = f.app.settings.snippets.form.as_ref().unwrap();
+    assert_eq!((form.editing.as_deref(), form.name.as_str()), (Some("greet"), "greet2"), "edits kept");
+    f.click_text("Add");
+    assert!(f.try_find("Discard unsaved changes to greet?").is_some(), "Add asks too: {:?}", f.texts());
+    f.click_text("Keep editing");
+    f.click_text("other");
+    f.click_text("Discard");
+    assert_eq!(f.app.settings.snippets.form.as_ref().unwrap().name, "other");
+}
+
+#[test]
+fn snippet_line_inputs_keep_their_ids() {
+    let mut f = snippets_page(SNIPPET);
+    f.click_text("greet");
+    let id_of = |f: &Fixture, v: &str| f.h.tree().nodes.iter().find(|n| n.value.as_deref() == Some(v)).map(|n| n.id);
+    let before = id_of(&f, "echo two").expect("line 2");
+    f.click_text("\u{2715}"); // removes line 1
+    assert_eq!(f.app.settings.snippets.form.as_ref().unwrap().lines, vec!["echo two"]);
+    assert_eq!(id_of(&f, "echo two"), Some(before), "its input (focus, cursor) stays with the line");
+}
+
+#[test]
+fn connection_form_asks_before_discarding_edits() {
+    let mut f = Fixture::new();
+    f.right_click_text("beta");
+    f.click_text("Edit");
+    set_field(&mut f, "Port", "3333"); // unsaved edit
+    f.right_click_text("alpha");
+    f.click_text("Edit"); // from the sidebar
+    assert!(f.try_find("Discard unsaved changes to beta?").is_some(), "{:?}", f.texts());
+    assert_eq!(f.h.state.focused(), Some(termax_ui::ui::Id::new("settings-conn-discard-no")), "focus on Keep");
+    f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert!(f.texts().iter().any(|t| t == "3333"), "edits kept: {:?}", f.texts());
+    f.click_text("Add");
+    assert!(f.try_find("Discard unsaved changes to beta?").is_some(), "{:?}", f.texts());
+    f.click_text("Discard");
+    assert!(f.try_find("New host").is_some(), "{:?}", f.texts());
+}

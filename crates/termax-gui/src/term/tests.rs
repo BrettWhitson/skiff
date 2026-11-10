@@ -11,7 +11,7 @@ use termax_ui::ui::testing::Harness;
 use super::input::route;
 use super::render::{draw_screen, screen_rows};
 use super::*;
-use crate::keys::Keymap;
+use crate::keys::{Action, Keymap};
 use crate::theme::{from_def, xterm_256};
 
 fn theme() -> GuiTheme {
@@ -219,4 +219,25 @@ fn context_menu_paste_reaches_the_terminal() {
     );
     frame(&mut h, &mut tab, vec![]);
     assert_eq!(tab.pending_paste.as_ref().map(|p| p.1), Some(2), "the menu's Paste asks about the two lines");
+}
+
+#[test]
+fn interface_zoom_keeps_terminal_font() {
+    let (km, _) = Keymap::new(&BTreeMap::new(), false);
+    let t = theme();
+    let cfg =
+        termax_core::config::Config::parse("[settings]\nload_ssh_config=false\n[[connection]]\nname=\"x\"\nhost=\"127.0.0.1\"\n").unwrap();
+    let host = termax_core::hosts::collect(&cfg).0.remove(0);
+    let font_at = |zoom: f32| {
+        let mut tab = TermTab::with_command(host.clone(), "termax-test-no-such-ssh".into(), vec![], 100);
+        let mut h = Harness::new(800, 600, 1.0);
+        // As `style_for` does: mono_px * zoom is the configured font size.
+        h.style.zoom = zoom;
+        h.style.mono_px = 14.0 / zoom;
+        h.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), &mut tab, &t, &km, None, &mut vec![Action::ZoomIn; 4]));
+        h.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), &mut tab, &t, &km, None, &mut vec![]));
+        tab.font_px
+    };
+    assert_eq!(font_at(2.0), 18.0, "terminal zoom steps from font_size at any ui_scale");
+    assert_eq!(font_at(1.0), 18.0);
 }
