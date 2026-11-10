@@ -408,7 +408,8 @@ cargo run -p skiff-gui --release
 - **Passwords** are asked for inline in the pane that needs them and are never
   stored. This uses `SSH_ASKPASS_REQUIRE`, so it needs OpenSSH 8.4 or newer;
   with an older `ssh`, use keys or an agent.
-- **Settings** (`Ctrl+Shift+,`) edits connections, theme, fonts, keybindings,
+- **Settings** (`Ctrl+Shift+,`, or the gear button at the right end of the tab
+  strip, there even with the sidebar hidden) edits connections, theme, fonts, keybindings,
   snippets and general options. The Snippets page lists the snippets; each has
   a name (unique), a command (one input per line), an optional host it is
   limited to and whether Enter is pressed after it. `Delete` (or the Delete

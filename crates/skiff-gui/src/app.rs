@@ -1024,13 +1024,22 @@ impl GuiApp {
         let titles: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
         let tt: Vec<TabTitle> = titles.iter().map(|t| TabTitle { text: t, closable: true }).collect();
         // The close question sits over the strip, in its region (Tab reaches it).
-        let r = ui.region(Id::new("region-tabs"), "Tabs", |ui| {
-            let r = tabs(ui, Id::new("tabs"), strip, &tt, &mut self.active);
+        // The Settings gear ends the strip: always there, sidebar or not.
+        let side = strip.h;
+        let tab_strip = Rect::new(strip.x, strip.y, (strip.w - side).max(0), strip.h);
+        let gear_rect = Rect::new(strip.right() - side, strip.y, side, strip.h);
+        let tip = crate::gear::tip(self.keymap.chords(Action::Settings).first().map(|c| c.to_string()));
+        let (r, gear) = ui.region(Id::new("region-tabs"), "Tabs", |ui| {
+            let r = tabs(ui, Id::new("tabs"), tab_strip, &tt, &mut self.active);
+            let gear = crate::gear::button(ui, gear_rect, &tip);
             if let Some(id) = self.closing {
                 self.close_confirm(ui, strip, id);
             }
-            r
+            (r, gear)
         });
+        if gear {
+            self.open_settings();
+        }
         if let Some((from, to)) = r.moved
             && from < self.tabs.len()
             && to < self.tabs.len()

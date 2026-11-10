@@ -527,3 +527,30 @@ error = \"red\"
     let n = f.app.warnings.iter().filter(|w| w.contains("theme grey")).count();
     assert_eq!(n, 1, "{:?}", f.app.warnings);
 }
+
+#[test]
+fn settings_gear_opens_settings_even_with_sidebar_collapsed() {
+    let mut f = Fixture::new();
+    f.app.do_action(Action::ToggleSidebar);
+    f.frame(vec![]);
+    let gear = f.h.tree().find("Settings").expect("gear button");
+    assert_eq!(gear.role, skiff_ui::a11y::Role::Button);
+    let at = gear.bounds.center();
+    f.frame(vec![Event::MouseMove(at)]);
+    assert!(f.try_find("Settings (Ctrl+Shift+,)").is_some(), "tooltip names the shortcut: {:?}", f.texts());
+    f.frame(vec![Event::MouseDown(MouseButton::Left, at), Event::MouseUp(MouseButton::Left, at)]);
+    f.frame(vec![]);
+    assert!(matches!(f.app.tabs[f.app.active].kind, TabKind::Settings));
+
+    // Keyboard: focus it, Enter focuses the existing Settings tab again.
+    f.app.do_action(Action::NewTab);
+    f.app.switcher_open = false;
+    f.app.open_terminal(&f.app.hosts[0].clone());
+    f.frame(vec![]);
+    let id = crate::gear::id();
+    f.frame(vec![Event::A11y { target: id, action: skiff_ui::a11y::A11yAction::Focus }]);
+    f.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert_eq!(f.app.tabs.iter().filter(|t| matches!(t.kind, TabKind::Settings)).count(), 1);
+    assert!(matches!(f.app.tabs[f.app.active].kind, TabKind::Settings));
+}
