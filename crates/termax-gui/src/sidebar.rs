@@ -156,7 +156,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let mut action = None;
 
     let head = ui.split_h(head_r, &[L::Fill, L::Px(84), L::Px(30)], 4);
-    let fr = text_input(ui, Id::new("sidebar-filter"), head[0], &mut sb.filter, TextInputOpts { password: false, placeholder: "Filter hosts" });
+    let fr = text_input(ui, Id::new("sidebar-filter"), head[0], &mut sb.filter, TextInputOpts { password: false, placeholder: "Filter hosts", ..Default::default() });
     if fr.changed {
         sb.selected = None;
     }

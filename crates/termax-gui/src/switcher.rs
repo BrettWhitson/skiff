@@ -181,7 +181,7 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
         }
         ui.interact(Id::new("switcher-panel"), panel, Sense::hover());
         let input = Rect::new(panel.x + pad, panel.y + pad, panel.w - 2 * pad, input_h);
-        let r = text_input(ui, input_id, input, &mut st.query, TextInputOpts { password: false, placeholder: "Search hosts, tabs, themes, commands" });
+        let r = text_input(ui, input_id, input, &mut st.query, TextInputOpts { password: false, placeholder: "Search hosts, tabs, themes, commands", ..Default::default() });
         if r.changed {
             st.sel = 0;
         }

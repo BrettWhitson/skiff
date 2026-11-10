@@ -141,7 +141,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
                 done = Some(None);
             }
         } else {
-            let t = text_input(ui, Id::new("fwd-ask-input"), parts[0], &mut pr.input, TextInputOpts { password: true, placeholder: "Password" });
+            let t = text_input(ui, Id::new("fwd-ask-input"), parts[0], &mut pr.input, TextInputOpts { password: true, placeholder: "Password", ..Default::default() });
             if button(ui, Id::new("fwd-ask-ok"), parts[1], "OK").clicked || t.submitted {
                 done = Some(Some(std::mem::take(&mut pr.input)));
             }

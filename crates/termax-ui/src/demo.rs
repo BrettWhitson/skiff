@@ -79,7 +79,7 @@ impl Demo {
             Id::new("filter"),
             parts[0],
             &mut self.filter,
-            TextInputOpts { password: false, placeholder: "Filter hosts…" },
+            TextInputOpts { password: false, placeholder: "Filter hosts…", ..Default::default() },
         );
         if f.changed {
             let needle = self.filter.to_lowercase();
@@ -168,7 +168,7 @@ impl Demo {
         label_with(ui, rows[0], &format!("{title} — new connection"), FontKind::Ui, accent);
         let field = |ui: &mut Ui, r: usize, name: &str, v: &mut String, password: bool| {
             label(ui, rows[r], name, None);
-            text_input(ui, Id::new(name), rows[r + 1], v, TextInputOpts { password, placeholder: name })
+            text_input(ui, Id::new(name), rows[r + 1], v, TextInputOpts { password, placeholder: name, ..Default::default() })
         };
         field(ui, 1, "Host", &mut self.host, false);
         field(ui, 3, "User", &mut self.user, false);

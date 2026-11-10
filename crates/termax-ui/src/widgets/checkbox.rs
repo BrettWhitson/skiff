@@ -1,3 +1,4 @@
+use crate::a11y::Role;
 use crate::geom::Rect;
 use crate::input::CursorIcon;
 use crate::ui::{Id, Response, Sense, Ui};
@@ -11,6 +12,9 @@ pub fn checkbox(ui: &mut Ui, id: Id, rect: Rect, value: &mut bool, text: &str) -
     keyboard_activate(ui, id, &mut r);
     if r.clicked {
         *value = !*value;
+    }
+    if let Some(n) = ui.a11y_node(id, Role::CheckBox, text) {
+        n.checked = Some(*value);
     }
     if r.hovered {
         ui.set_cursor_icon(CursorIcon::Pointer);

@@ -5,6 +5,7 @@
 //! behind our own trait). Drawing, text layout, damage tracking, layout,
 //! focus and every widget are implemented here.
 
+pub mod a11y;
 pub mod canvas;
 pub mod clipboard;
 pub mod color;
@@ -21,3 +22,6 @@ pub mod style;
 pub mod text;
 pub mod ui;
 pub mod widgets;
+
+#[cfg(test)]
+mod a11y_tests;

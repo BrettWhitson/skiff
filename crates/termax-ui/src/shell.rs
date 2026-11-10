@@ -44,6 +44,10 @@ pub struct FrameCtx<'a> {
     /// Set to swap fonts after this frame: the shell drops cached glyphs,
     /// repaints everything and immediately runs another frame.
     pub replace_fonts: Option<Fonts>,
+    /// An assistive technology is listening: build the accessibility tree.
+    pub a11y_active: bool,
+    /// This frame's accessibility tree (set by `Ui::run` when active).
+    pub a11y_tree: Option<crate::a11y::Tree>,
 }
 
 pub trait App {
@@ -185,6 +189,8 @@ fn frame_once(
         background: Color::BLACK,
         cursor: CursorIcon::Default,
         replace_fonts: None,
+        a11y_active: false,
+        a11y_tree: None,
     };
     app.frame(&mut ctx);
     let (redraw_in, title, quit, bg, cursor, replace_fonts) =

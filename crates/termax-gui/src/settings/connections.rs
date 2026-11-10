@@ -192,7 +192,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
                 label(ui, l, "Other options", None);
             }
             let parts = ui.split_h(c, &[L::Fill, L::Px(30)], 4);
-            let opts = TextInputOpts { password: false, placeholder: "e.g. ForwardAgent yes" };
+            let opts = TextInputOpts { password: false, placeholder: "e.g. ForwardAgent yes", ..Default::default() };
             form.dirty |= text_input(ui, Id::new(("settings-conn-other", i)), parts[0], line, opts).changed;
             if button(ui, Id::new(("settings-conn-other-del", i)), parts[1], "\u{2715}").clicked {
                 remove = Some(i);

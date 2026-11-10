@@ -17,7 +17,7 @@ pub use button::button;
 pub use checkbox::checkbox;
 pub use dropdown::dropdown;
 pub use label::{elide, label, label_with};
-pub use list::{ListResponse, list};
+pub use list::{ListResponse, list, list_named};
 pub use menu::{MenuItem, close_context_menu, context_menu, menu_is_open, open_context_menu};
 pub use progress::progress_bar;
 pub use select_list::{SelectListResponse, Selection, select_list};

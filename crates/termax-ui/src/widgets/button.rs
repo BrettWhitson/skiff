@@ -1,3 +1,4 @@
+use crate::a11y::Role;
 use crate::geom::{Point, Rect};
 use crate::input::{CursorIcon, Key, Modifiers};
 use crate::text::FontKind;
@@ -20,6 +21,7 @@ pub(crate) fn keyboard_activate(ui: &mut Ui, id: Id, r: &mut Response) {
 pub fn button(ui: &mut Ui, id: Id, rect: Rect, text: &str) -> Response {
     let mut r = ui.interact(id, rect, Sense::focusable());
     keyboard_activate(ui, id, &mut r);
+    ui.a11y_node(id, Role::Button, text);
     if r.hovered {
         ui.set_cursor_icon(CursorIcon::Pointer);
     }

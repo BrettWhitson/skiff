@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
+use crate::a11y::{A11yAction, Builder, Node, Role, Tree};
 use crate::clipboard::Clipboard;
 use crate::color::Color;
 use crate::display::{DisplayList, Prim};
@@ -274,6 +275,7 @@ pub struct Ui<'a> {
     cursor: CursorIcon,
     /// The left button was released this frame (ends a drag).
     drag_released: bool,
+    a11y: Option<Builder>,
 }
 
 impl<'a> Ui<'a> {
@@ -281,7 +283,8 @@ impl<'a> Ui<'a> {
     pub fn run(state: &mut UiState, ctx: &mut FrameCtx, style: &Style, f: impl FnOnce(&mut Ui)) {
         let events = std::mem::take(&mut ctx.events);
         let (size, scale) = (ctx.size, ctx.scale);
-        let (repaint, cursor) = {
+        let a11y = ctx.a11y_active;
+        let (repaint, cursor, tree) = {
             let mut ui = Ui::begin(
                 state,
                 &mut *ctx.list,
@@ -292,10 +295,12 @@ impl<'a> Ui<'a> {
                 size,
                 scale,
                 events,
+                a11y,
             );
             f(&mut ui);
             ui.finish()
         };
+        ctx.a11y_tree = tree;
         ctx.request_redraw_in = match (ctx.request_redraw_in, repaint) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -315,6 +320,7 @@ impl<'a> Ui<'a> {
         size: Size,
         scale: f32,
         events: Vec<Event>,
+        a11y: bool,
     ) -> Ui<'a> {
         let mut frame = FrameHits::default();
         for e in &events {
@@ -376,6 +382,10 @@ impl<'a> Ui<'a> {
                     }
                 }
                 Event::KeyUp { mods, .. } | Event::Modifiers(mods) => st.mods = *mods,
+                Event::A11y { target, action: A11yAction::Click } => {
+                    frame.clicked.insert(*target);
+                }
+                Event::A11y { target, action: A11yAction::Focus } => st.focus = Some(*target),
                 Event::FocusLost => {
                     st.left = false;
                     st.right = false;
@@ -422,10 +432,11 @@ impl<'a> Ui<'a> {
             repaint_in: None,
             cursor: CursorIcon::Default,
             drag_released,
+            a11y: a11y.then(|| Builder::new("", window)),
         }
     }
 
-    fn finish(mut self) -> (Option<Duration>, CursorIcon) {
+    fn finish(mut self) -> (Option<Duration>, CursorIcon, Option<Tree>) {
         // Tab / Shift+Tab nobody took moves focus.
         let mut mv = self.focus_move;
         let captured = self.capture.is_some();
@@ -463,7 +474,65 @@ impl<'a> Ui<'a> {
         self.list.prims.extend(overlay.prims);
         self.st.prev_hits = std::mem::take(&mut self.hits);
         self.st.capture = self.next_capture;
-        (self.repaint_in, self.cursor)
+        let tree = self.a11y.take().map(|b| b.finish(self.st.focus));
+        (self.repaint_in, self.cursor, tree)
+    }
+
+    /// The accessibility tree is being built this frame.
+    pub fn a11y_on(&self) -> bool {
+        self.a11y.is_some()
+    }
+
+    /// Adds a node for `id` under the current parent, with the rect `id`
+    /// registered through `interact` this frame as its bounds. `None` while
+    /// no assistive technology is listening.
+    pub fn a11y_node(&mut self, id: Id, role: Role, name: &str) -> Option<&mut Node> {
+        let b = self.a11y.as_mut()?;
+        let mut node = Node::new(id, role, name);
+        if let Some(h) = self.hits.iter().rev().find(|h| h.id == id) {
+            node.bounds = h.rect;
+        }
+        node.focused = self.st.focus == Some(id);
+        Some(b.add(node))
+    }
+
+    /// Runs `f` with the nodes it adds placed under a new `role` node.
+    pub fn a11y_group<R>(&mut self, id: Id, role: Role, name: &str, f: impl FnOnce(&mut Ui) -> R) -> R {
+        if self.a11y_node(id, role, name).is_none() {
+            return f(self);
+        }
+        if let Some(b) = self.a11y.as_mut() {
+            b.push(id);
+        }
+        let r = f(self);
+        if let Some(b) = self.a11y.as_mut() {
+            b.pop();
+        }
+        r
+    }
+
+    /// The screen reader moves with `child` while `id` has keyboard focus
+    /// (a list announces its selected row).
+    pub fn a11y_focus_child(&mut self, id: Id, child: Id) {
+        if self.st.focus == Some(id) {
+            if let Some(b) = self.a11y.as_mut() {
+                b.focus_override = Some(child);
+            }
+        }
+    }
+
+    /// Takes a screen-reader action aimed at `id` this frame, if any.
+    pub fn take_a11y_action(&mut self, id: Id, pick: impl Fn(&A11yAction) -> bool) -> Option<A11yAction> {
+        let i = self.input.events.iter().position(|e| matches!(e, Event::A11y { target, action } if *target == id && pick(action)))?;
+        match self.input.events.remove(i) {
+            Event::A11y { action, .. } => Some(action),
+            _ => None,
+        }
+    }
+
+    /// A screen-reader Click on `id` arrived this frame.
+    pub fn a11y_clicked(&self, id: Id) -> bool {
+        self.input.events.iter().any(|e| matches!(e, Event::A11y { target, action: A11yAction::Click } if *target == id))
     }
 
     /// Registers `rect` for this frame and reports what happened to it.
@@ -727,6 +796,7 @@ pub mod testing {
         scale: f32,
         list: DisplayList,
         cache: GlyphCache,
+        tree: Tree,
     }
 
     impl Harness {
@@ -747,6 +817,7 @@ pub mod testing {
                 scale,
                 list: DisplayList::default(),
                 cache: GlyphCache::default(),
+                tree: Tree::default(),
             }
         }
 
@@ -767,8 +838,11 @@ pub mod testing {
                 background: Color::BLACK,
                 cursor: CursorIcon::Default,
                 replace_fonts: None,
+                a11y_active: true,
+                a11y_tree: None,
             };
             Ui::run(&mut self.state, &mut ctx, &self.style, |ui| f(ui));
+            self.tree = ctx.a11y_tree.take().unwrap_or_default();
             self.repaint_in = ctx.request_redraw_in;
             self.cursor = ctx.cursor;
             if let Some(fonts) = ctx.replace_fonts.take() {
@@ -779,6 +853,11 @@ pub mod testing {
 
         pub fn list(&self) -> &DisplayList {
             &self.list
+        }
+
+        /// The last frame's accessibility tree (always built offscreen).
+        pub fn tree(&self) -> &Tree {
+            &self.tree
         }
 
         pub fn scale(&self) -> f32 {
