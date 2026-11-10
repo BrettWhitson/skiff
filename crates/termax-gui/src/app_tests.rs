@@ -20,7 +20,7 @@ pub(crate) struct Fixture {
     pub h: Harness,
 }
 
-pub(crate) const CONFIG: &str = "# my hand-written comment\n[settings]\nload_ssh_config = false\ntheme = \"midnight\"\n\n[[connection]]\nname = \"alpha\"\nhost = \"127.0.0.1\"\nport = 1\n\n[[connection]]\nname = \"beta\"\nhost = \"127.0.0.2\"\nport = 1\n";
+pub(crate) const CONFIG: &str = "# my hand-written comment\n[settings]\nload_ssh_config = false\ntheme = \"midnight\"\nssh_binary = \"termax-test-no-such-ssh\"\n\n[[connection]]\nname = \"alpha\"\nhost = \"127.0.0.1\"\nport = 1\n\n[[connection]]\nname = \"beta\"\nhost = \"127.0.0.2\"\nport = 1\n";
 
 impl Fixture {
     pub fn new() -> Fixture {

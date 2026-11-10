@@ -65,6 +65,8 @@ pub struct GuiApp {
     pub view_actions: Vec<Action>,
     /// Connection the settings screen should open for editing.
     pub edit_target: Option<usize>,
+    /// The tab shown last frame (focus moves into a newly shown terminal).
+    shown_tab: Option<u64>,
     ui_state: UiState,
 }
 
@@ -116,6 +118,7 @@ impl GuiApp {
             switcher_open: false,
             view_actions: vec![],
             edit_target: None,
+            shown_tab: None,
             ui_state: UiState::default(),
         }
     }
@@ -138,7 +141,7 @@ impl GuiApp {
     }
 
     pub fn open_terminal(&mut self, host: &HostEntry) -> u64 {
-        self.push_tab(TabKind::Terminal(Box::new(TermTab::new(host.clone()))))
+        self.push_tab(TabKind::Terminal(Box::new(TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback))))
     }
 
     pub fn open_files(&mut self, left: Location, right: Location) -> u64 {
@@ -415,11 +418,23 @@ impl GuiApp {
             return;
         };
         let line = Rect::new(content.x + ui.px(16), content.y + ui.px(16), content.w - ui.px(32), ui.px(24));
+        let newly_shown = self.shown_tab != Some(tab.id);
+        self.shown_tab = Some(tab.id);
         match &mut tab.kind {
-            TabKind::Terminal(t) => label(ui, line, &format!("Terminal: {}", t.host.name), None),
-            TabKind::Files(f) => label(ui, line, &format!("Files: {} \u{2194} {}", f.locations[0].label(), f.locations[1].label()), None),
-            TabKind::Settings => label(ui, line, "Settings", None),
-        };
+            TabKind::Terminal(t) => {
+                let id = Id::new(("term", tab.id));
+                if newly_shown {
+                    ui.request_focus(id);
+                }
+                crate::term::view(ui, id, content, t, &self.theme, &self.keymap, self.engine.wake_fn());
+            }
+            TabKind::Files(f) => {
+                label(ui, line, &format!("Files: {} \u{2194} {}", f.locations[0].label(), f.locations[1].label()), None);
+            }
+            TabKind::Settings => {
+                label(ui, line, "Settings", None);
+            }
+        }
     }
 
     fn status_bar(&mut self, ui: &mut Ui, rect: Rect) {
