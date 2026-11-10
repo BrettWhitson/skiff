@@ -77,7 +77,44 @@ pub fn from_def(d: &ThemeDef) -> GuiTheme {
     };
     let mut palette = palette;
     palette.control = control_outline(&palette);
+    make_readable(&mut palette, if d.name.starts_with("high-contrast") { 7.0 } else { 4.5 });
     GuiTheme { name: d.name.clone(), palette, ansi, term_fg: fg, term_bg: bg }
+}
+
+/// How much dimmer than `fg` muted text stays (a contrast ratio).
+pub const MUTED_STEP: f32 = 1.3;
+
+/// WCAG contrast of two toolkit colours.
+fn ratio(a: Color, b: Color) -> f32 {
+    contrast((a.r, a.g, a.b), (b.r, b.g, b.b))
+}
+
+/// `c` moved toward `toward` in 5% steps until `ok`; `toward` if never.
+fn nudge(c: Color, toward: Color, ok: impl Fn(Color) -> bool) -> Color {
+    (0..=20).map(|i| c.mix(toward, i as f32 / 20.0)).find(|&c| ok(c)).unwrap_or(toward)
+}
+
+/// Adjusts a theme so text reaches `min`:1 wherever the widgets draw it:
+/// rows at rest, hovered and selected (with and without focus). The
+/// selection moves toward `bg` until `fg` and `muted` read on it and the
+/// accent (focus ring, focused row bar) stands out 3:1 from it; `muted` and
+/// the status colours move toward `fg` until they read on every background.
+fn make_readable(p: &mut Palette, min: f32) {
+    let surface = p.surface;
+    let unfocused = |s: Color| s.mix(surface, 0.5);
+    let (fg, accent) = (p.fg, p.accent);
+    let rest = [p.bg, p.surface, p.surface_alt];
+    let muted = nudge(p.muted, fg, |c| rest.iter().all(|&r| ratio(c, r) >= min));
+    // The brightest `muted` may get while still looking dimmer than `fg`.
+    let brightest =
+        (0..=20).map(|i| muted.mix(fg, i as f32 / 20.0)).take_while(|&c| ratio(c, fg) >= MUTED_STEP).last().unwrap_or(muted);
+    let reads = |s: Color| [fg, brightest].iter().all(|&t| ratio(t, s) >= min && ratio(t, unfocused(s)) >= min);
+    p.selection = nudge(p.selection, p.bg, |s| reads(s) && ratio(accent, s) >= 3.0);
+    let rows = [p.bg, p.surface, p.surface_alt, p.selection, unfocused(p.selection)];
+    p.muted = nudge(muted, fg, |c| rows.iter().all(|&r| ratio(c, r) >= min));
+    for c in [&mut p.danger, &mut p.warning, &mut p.success] {
+        *c = nudge(*c, fg, |c| rows[..3].iter().all(|&r| ratio(c, r) >= min));
+    }
 }
 
 /// The theme's border, moved toward `fg` until it stands out 3:1 from the
