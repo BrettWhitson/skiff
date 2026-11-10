@@ -96,8 +96,14 @@ fn f6_moves_between_regions_and_back() {
     h.frame(vec![key(Key::Tab)], &mut f);
     h.frame(vec![key(Key::Tab)], &mut f);
     assert_eq!(h.state.focused(), Some(Id::new("a2")));
+    h.frame(vec![key(Key::Tab)], &mut f);
+    assert_eq!(h.state.focused(), Some(Id::new("a1")), "Tab wraps within its region");
+    h.frame(vec![shift(Key::Tab)], &mut f);
+    assert_eq!(h.state.focused(), Some(Id::new("a2")));
     h.frame(vec![key(Key::F(6))], &mut f);
     assert_eq!(h.state.focused(), Some(Id::new("b1")));
+    h.frame(vec![key(Key::Tab)], &mut f);
+    assert_eq!(h.state.focused(), Some(Id::new("b1")), "a one-control region keeps Tab");
     h.frame(vec![shift(Key::F(6))], &mut f);
     assert_eq!(h.state.focused(), Some(Id::new("a2")), "a region remembers its last focus");
     assert_eq!(h.tree().find("Left").map(|n| n.role), Some(Role::Region));
@@ -118,6 +124,44 @@ fn focus_ring_drawn_for_focused_button() {
         matches!(p, Prim::Border { rect, color, width, .. } if *color == accent && *width >= 2 && rect.x < r.x && rect.right() > r.right())
     });
     assert!(ring, "a 2px accent ring outside the button");
+}
+
+#[test]
+fn focused_list_row_has_left_bar() {
+    use crate::display::Prim;
+    let mut h = Harness::new(400, 300, 1.0);
+    let mut sel = Some(1);
+    let mut f = |ui: &mut crate::ui::Ui| {
+        list_named(ui, Id::new("l"), Rect::new(0, 0, 200, 200), "L", 3, 20, &mut sel, |i| i.to_string(), |_, _, _, _| {});
+    };
+    let accent = h.style.palette.accent;
+    let bar = |h: &Harness| {
+        let is_bar = |r: &Rect| r.x == 0 && r.y == 20 && r.h == 20 && (2..10).contains(&r.w);
+        h.list().prims.iter().any(|p| matches!(p, Prim::Rect { rect, color, .. } if *color == accent && is_bar(rect)))
+    };
+    h.frame(vec![], &mut f);
+    assert!(!bar(&h), "no bar while the list is not focused");
+    h.frame(vec![key(Key::Tab)], &mut f);
+    h.frame(vec![], &mut f);
+    assert!(bar(&h), "the focused row has a left bar");
+}
+
+#[test]
+fn focus_ring_stays_below_overlays() {
+    use crate::display::Prim;
+    let mut h = Harness::new(400, 300, 1.0);
+    let menu_color = crate::color::Color::hex(0x123456);
+    let mut f = |ui: &mut crate::ui::Ui| {
+        button(ui, Id::new("b"), Rect::new(20, 20, 80, 24), "B");
+        ui.overlay(|ui| ui.painter().rect(Rect::new(0, 0, 200, 200), menu_color, 0.0));
+    };
+    h.frame(vec![key(Key::Tab)], &mut f);
+    h.frame(vec![], &mut f);
+    let accent = h.style.palette.accent;
+    let prims = &h.list().prims;
+    let ring = prims.iter().position(|p| matches!(p, Prim::Border { color, width, .. } if *color == accent && *width >= 2));
+    let menu = prims.iter().position(|p| matches!(p, Prim::Rect { color, .. } if *color == menu_color));
+    assert!(ring.expect("ring drawn") < menu.expect("menu drawn"), "the menu covers the ring");
 }
 
 #[test]
@@ -150,6 +194,8 @@ fn tab_strip_takes_focus_and_arrows() {
         active
     };
     run(&mut h, vec![key(Key::Tab)]);
+    let role = |h: &Harness, name: &str| h.tree().find(name).map(|n| n.role);
+    assert_eq!((role(&h, "New tab"), role(&h, "Close two")), (Some(Role::Button), Some(Role::Button)), "mouse-only targets are named");
     assert_eq!(run(&mut h, vec![key(Key::Right)]), 1);
     assert_eq!(run(&mut h, vec![key(Key::Left)]), 0);
 }
@@ -170,4 +216,16 @@ fn a11y_focus_on_row_keeps_list_focus() {
     run(&mut h, vec![Event::A11y { target: row, action: A11yAction::Focus }]);
     assert_eq!(h.state.focused(), Some(Id::new("l")), "a row is not a focus target");
     assert_eq!(run(&mut h, vec![key(Key::Down)]), Some(1), "arrows still move the list");
+}
+
+#[test]
+fn repeated_announcement_still_changes_the_text() {
+    use crate::a11y::{REPEAT_MARK, fresh_announcement};
+    let a = fresh_announcement("", "done".into());
+    assert_eq!(a, "done");
+    let b = fresh_announcement(&a, "done".into());
+    let c = fresh_announcement(&b, "done".into());
+    assert!(b != a && c != b, "{a:?} {b:?} {c:?}");
+    assert_eq!(b.trim_end_matches(REPEAT_MARK), "done");
+    assert_eq!(fresh_announcement(&b, "other".into()), "other");
 }

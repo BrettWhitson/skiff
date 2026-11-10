@@ -45,6 +45,7 @@ impl Fixture {
 
     pub fn frame(&mut self, events: Vec<Event>) {
         let app = &mut self.app;
+        self.h.style = app.style.clone(); // as `GuiApp::frame` does
         self.h.frame(events, &mut |ui| app.ui(ui));
     }
 
@@ -249,6 +250,7 @@ fn close_with_running_transfer_asks_first() {
     f.frame(vec![]);
     assert_eq!(f.app.tabs.len(), 1, "not closed yet");
     assert!(f.texts().iter().any(|t| t.contains("1 transfer running")), "{:?}", f.texts());
+    assert_eq!(f.h.state.focused(), Some(Id::new("close-keep")), "the question takes focus, on its safe answer");
     f.click_text("Keep");
     assert_eq!(f.app.tabs.len(), 1);
     f.app.request_close_tab(id);
@@ -365,12 +367,10 @@ fn a11y_click_opens_host() {
     let mut f = Fixture::new();
     let row = f.h.tree().find("alpha, not checked, 127.0.0.1:1").expect("row").id;
     let click = Event::A11y { target: row, action: A11yAction::Click };
-    f.frame(vec![click.clone()]);
-    f.frame(vec![]);
-    assert!(f.app.tabs.is_empty(), "the first Click selects");
     f.frame(vec![click]);
     f.frame(vec![]);
-    assert!(matches!(f.app.tabs.first().map(|t| &t.kind), Some(TabKind::Terminal(_))), "the second Click opens it");
+    assert!(matches!(f.app.tabs.first().map(|t| &t.kind), Some(TabKind::Terminal(_))), "one Click opens an unselected host");
+    assert_eq!(f.app.tabs.len(), 1);
     assert_eq!(f.h.tree().find("Terminal: alpha").map(|n| n.role), Some(termax_ui::a11y::Role::Terminal));
 }
 
@@ -434,4 +434,31 @@ fn switcher_runs_snippet() {
     f.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }]);
     f.frame(vec![]);
     wait(&mut f, "echo snippet-ran");
+}
+
+#[test]
+fn repeated_warning_is_announced_again() {
+    let mut f = Fixture::new();
+    let status = |f: &Fixture| f.h.tree().nodes.iter().find(|n| n.role == termax_ui::a11y::Role::Status && n.live).map(|n| n.name.clone());
+    f.app.warn("disk full");
+    f.frame(vec![]);
+    let first = status(&f).expect("live status");
+    f.app.warn("disk full");
+    f.frame(vec![]);
+    let second = status(&f).expect("live status");
+    assert_ne!(first, second, "the same warning twice still changes the live text");
+    assert_eq!(second.trim_end_matches(termax_ui::a11y::REPEAT_MARK), "disk full");
+}
+
+#[test]
+fn ui_scale_scales_layout_with_text() {
+    let mut f = Fixture::new();
+    let pitch = |f: &Fixture| f.find("beta").y - f.find("alpha").y;
+    let before = pitch(&f);
+    f.app.cfg.gui.ui_scale = 2.0;
+    f.app.style = style_for(&f.app.theme, &f.app.cfg);
+    f.frame(vec![]);
+    assert_eq!(pitch(&f), 2 * before, "rows grow with the text, so large text is not clipped");
+    let mono = f.app.style.mono_px * f.app.style.zoom;
+    assert!((mono - f.app.cfg.gui.font_size.clamp(6.0, 72.0)).abs() < 1e-3, "terminal text keeps its size: {mono}");
 }

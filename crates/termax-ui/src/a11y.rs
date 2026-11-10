@@ -89,6 +89,20 @@ impl Tree {
     }
 }
 
+/// Appended to a live region's text to tell a repeat from no change.
+pub const REPEAT_MARK: char = '\u{200B}';
+
+/// The new text for a live region that showed `prev`. Screen readers speak
+/// a live region only when its text changes, so when `next` reads the same
+/// as `prev` a zero-width marker is toggled on or off: the repeat is spoken
+/// and nothing audible is added.
+pub fn fresh_announcement(prev: &str, mut next: String) -> String {
+    if prev.trim_end_matches(REPEAT_MARK) == next && !prev.ends_with(REPEAT_MARK) {
+        next.push(REPEAT_MARK);
+    }
+    next
+}
+
 /// What a screen reader asks a widget to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum A11yAction {

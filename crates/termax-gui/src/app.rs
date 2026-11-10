@@ -88,6 +88,8 @@ pub struct GuiApp {
     geometry_dirty: Option<Instant>,
     /// Problems and notices for the status bar (newest last).
     pub warnings: Vec<String>,
+    /// The status bar's live text for the newest warning (a repeat differs).
+    warning_live: String,
     pub engine: Engine,
     pub tabs: Vec<Tab>,
     pub active: usize,
@@ -117,6 +119,8 @@ pub struct GuiApp {
     shown_tab: Option<u64>,
     /// A files tab whose close waits for "Close anyway" (transfers running).
     closing: Option<u64>,
+    /// The close question just appeared: focus goes to its safe answer.
+    closing_new: bool,
     /// Form state of the settings tab (kept while the tab is closed).
     pub settings: crate::settings::SettingsState,
     /// Fonts to install after this frame (set by the settings screen).
@@ -125,6 +129,8 @@ pub struct GuiApp {
     watcher: FileWatcher,
     last_poll: Instant,
     window_focused: bool,
+    /// The OS high-contrast mode and text size the theme and style are for.
+    os_prefs: (bool, f32),
     ui_state: UiState,
 }
 
@@ -152,8 +158,10 @@ pub fn local_start_dir(configured: &Option<String>) -> String {
 pub fn style_for(theme: &GuiTheme, cfg: &Config) -> Style {
     let mut s = Style::dark_default();
     s.palette = theme.palette;
-    s.font_px *= cfg.gui.ui_scale.clamp(0.5, 3.0);
-    s.mono_px = cfg.gui.font_size.clamp(6.0, 72.0);
+    // `ui_scale` on top of Windows' text size (Settings > Accessibility).
+    s.zoom = cfg.gui.ui_scale.clamp(0.5, 3.0) * crate::os::text_scale();
+    // The interface zoom leaves terminal text at its configured size.
+    s.mono_px = cfg.gui.font_size.clamp(6.0, 72.0) / s.zoom;
     s
 }
 
@@ -203,6 +211,7 @@ impl GuiApp {
             geometry_path,
             geometry_dirty: None,
             warnings,
+            warning_live: String::new(),
             engine,
             tabs: vec![],
             active: 0,
@@ -221,11 +230,13 @@ impl GuiApp {
             ssh_version: None,
             shown_tab: None,
             closing: None,
+            closing_new: false,
             settings: Default::default(),
             pending_fonts: None,
             watcher: FileWatcher::new(&cfg_path_for_watch),
             last_poll: Instant::now(),
             window_focused: true,
+            os_prefs: (crate::os::high_contrast(), crate::os::text_scale()),
             ui_state: UiState::default(),
         };
         if on_start {
@@ -235,7 +246,9 @@ impl GuiApp {
     }
 
     pub fn warn(&mut self, w: impl Into<String>) {
-        self.warnings.push(w.into());
+        let w = w.into();
+        self.warning_live = termax_ui::a11y::fresh_announcement(&self.warning_live, w.clone());
+        self.warnings.push(w);
         if self.warnings.len() > 20 {
             self.warnings.remove(0);
         }
@@ -306,6 +319,7 @@ impl GuiApp {
         };
         if running > 0 {
             self.closing = Some(id);
+            self.closing_new = true;
             if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                 self.active = i;
             }
@@ -597,9 +611,15 @@ impl GuiApp {
     /// Switches to theme `name` and saves it.
     pub fn apply_theme(&mut self, name: &str) {
         self.cfg.settings.theme = name.to_string();
+        self.pick_theme();
+        self.save_config();
+    }
+
+    /// Re-picks the configured theme (for the OS high-contrast mode now).
+    fn pick_theme(&mut self) {
+        self.os_prefs = (crate::os::high_contrast(), crate::os::text_scale());
         self.theme = from_def(&find_theme(&self.cfg));
         self.style = style_for(&self.theme, &self.cfg);
-        self.save_config();
     }
 
     /// Re-reads `config.toml` (after an outside edit, or on request).
@@ -608,8 +628,7 @@ impl GuiApp {
             Ok(cfg) => {
                 self.baseline = cfg.clone();
                 self.cfg = cfg;
-                self.theme = from_def(&find_theme(&self.cfg));
-                self.style = style_for(&self.theme, &self.cfg);
+                self.pick_theme();
                 let (km, warnings) = Keymap::platform(&self.cfg.keys);
                 self.keymap = km;
                 for w in warnings {
@@ -878,7 +897,7 @@ impl GuiApp {
                 Some(h) => {
                     self.open_terminal(&h);
                 }
-                None => self.warnings.push(format!("unknown host: {name}")),
+                None => self.warn(format!("unknown host: {name}")),
             }
         }
         if !self.settings.capturing() || !self.tabs.get(self.active).is_some_and(|t| matches!(t.kind, TabKind::Settings)) {
@@ -949,8 +968,14 @@ impl GuiApp {
         let (strip, content) = (parts[0], parts[1]);
         let titles: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
         let tt: Vec<TabTitle> = titles.iter().map(|t| TabTitle { text: t, closable: true }).collect();
-        let active = &mut self.active;
-        let r = ui.region(Id::new("region-tabs"), "Tabs", |ui| tabs(ui, Id::new("tabs"), strip, &tt, active));
+        // The close question sits over the strip, in its region (Tab reaches it).
+        let r = ui.region(Id::new("region-tabs"), "Tabs", |ui| {
+            let r = tabs(ui, Id::new("tabs"), strip, &tt, &mut self.active);
+            if let Some(id) = self.closing {
+                self.close_confirm(ui, strip, id);
+            }
+            r
+        });
         if let Some((from, to)) = r.moved
             && from < self.tabs.len()
             && to < self.tabs.len()
@@ -962,9 +987,6 @@ impl GuiApp {
             && let Some(id) = self.tabs.get(i).map(|t| t.id)
         {
             self.request_close_tab(id);
-        }
-        if let Some(id) = self.closing {
-            self.close_confirm(ui, strip, id);
         }
         if r.plus_clicked {
             self.switcher_open = true;
@@ -1040,6 +1062,7 @@ impl GuiApp {
                 Event::FocusGained => {
                     self.window_focused = true;
                     poll_now = true;
+                    crate::os::settings_changed(); // e.g. high contrast toggled meanwhile
                 }
                 _ => {}
             }
@@ -1052,6 +1075,8 @@ impl GuiApp {
             self.last_poll = Instant::now();
             if self.watcher.poll() {
                 self.reload_config();
+            } else if (crate::os::high_contrast(), crate::os::text_scale()) != self.os_prefs {
+                self.pick_theme(); // `theme = "auto"` and the text size follow the OS
             }
             ui.request_repaint_in(CONFIG_POLL);
         } else {
@@ -1075,6 +1100,12 @@ impl GuiApp {
         let parts = ui.split_h(strip.inset(ui.px(4)), &[L::Fill, L::Px(120), L::Px(72)], 6);
         let text = format!("{n} transfer{} running \u{2014} close the tab?", if n == 1 { "" } else { "s" });
         label(ui, parts[0], &text, None);
+        if let Some(n) = ui.a11y_node(Id::new("close-confirm"), termax_ui::a11y::Role::Dialog, &text) {
+            n.live = true;
+        }
+        if std::mem::take(&mut self.closing_new) {
+            ui.request_focus(Id::new("close-keep"));
+        }
         if button(ui, Id::new("close-anyway"), parts[1], "Close anyway").clicked {
             self.close_tab(id);
         } else if button(ui, Id::new("close-keep"), parts[2], "Keep").clicked {
@@ -1111,7 +1142,9 @@ impl GuiApp {
         if let Some(h) = hovered {
             label(ui, parts[1], &h, Some(p.fg));
         } else if let Some(w) = self.warnings.last().cloned() {
-            if let Some(n) = ui.a11y_node(Id::new("status-warning"), termax_ui::a11y::Role::Status, &w) {
+            let live = self.warning_live.trim_end_matches(termax_ui::a11y::REPEAT_MARK);
+            let name = if live == w { self.warning_live.as_str() } else { w.as_str() };
+            if let Some(n) = ui.a11y_node(Id::new("status-warning"), termax_ui::a11y::Role::Status, name) {
                 n.live = true;
             }
             label(ui, parts[1], &w, Some(p.warning));

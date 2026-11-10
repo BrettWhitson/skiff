@@ -145,3 +145,15 @@ fn selection_follows_names_across_refresh() {
     let names: Vec<String> = e.tab.panes[0].selected().into_iter().map(|(_, _, n)| n).collect();
     assert_eq!(names, vec!["c.log", "e.log"]);
 }
+
+#[test]
+fn path_bar_edits_from_keyboard() {
+    let d = tree();
+    let mut e = Env::new(d.path());
+    e.until("listing", |e| e.loaded(0));
+    let node = e.h.tree().nodes.iter().find(|n| n.name.starts_with("Path ")).map(|n| (n.id, n.role)).expect("path bar node");
+    assert_eq!(node.1, termax_ui::a11y::Role::Button);
+    e.frame(vec![Event::A11y { target: node.0, action: termax_ui::a11y::A11yAction::Focus }]);
+    e.key(Key::Enter, Modifiers::NONE);
+    assert!(e.tab.panes[0].path_edit.is_some(), "Enter on the focused path bar edits it");
+}

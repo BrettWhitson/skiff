@@ -39,15 +39,51 @@ fn every_builtin_maps() {
     }
 }
 
+/// Every text color on every background it is drawn on (rows at rest,
+/// hovered, selected with and without focus; buttons), WCAG 2.1 ratios:
+/// 4.5:1 for text (7:1 in the high-contrast themes) and 3:1 for outlines,
+/// the focus ring and the focused row's bar.
 #[test]
-fn control_outlines_meet_3_to_1() {
-    use termax_core::theme::{builtin, contrast};
+fn builtin_palettes_meet_contrast() {
+    use termax_core::theme::contrast;
     let rgb = |c: Color| (c.r, c.g, c.b);
+    let mut bad = vec![];
     for d in builtin() {
         let p = from_def(&d).palette;
-        for (what, on) in [("bg", p.bg), ("surface", p.surface)] {
-            let got = contrast(rgb(p.control), rgb(on));
-            assert!(got >= 3.0, "{} control/{what}: {got:.2}", d.name);
+        let text = if d.name.starts_with("high-contrast") { 7.0 } else { 4.5 };
+        let rows = [
+            ("bg", p.bg),
+            ("surface", p.surface),
+            ("hover", p.surface_alt),
+            ("selected", p.selection),
+            ("selected-unfocused", p.selection.mix(p.surface, 0.5)),
+        ];
+        let mut checks = vec![];
+        for (on, bg) in rows {
+            checks.push((format!("fg/{on}"), contrast(rgb(p.fg), rgb(bg)), text));
+            checks.push((format!("muted/{on}"), contrast(rgb(p.muted), rgb(bg)), text));
+        }
+        for (on, bg) in [("bg", p.bg), ("surface", p.surface), ("hover", p.surface_alt)] {
+            for (what, c) in [("danger", p.danger), ("warning", p.warning), ("success", p.success)] {
+                checks.push((format!("{what}/{on}"), contrast(rgb(c), rgb(bg)), text));
+            }
+        }
+        for (on, bg) in termax_ui::widgets::button_backgrounds(&p) {
+            checks.push((format!("fg/button-{on}"), contrast(rgb(p.fg), rgb(bg)), text));
+        }
+        for (on, bg) in [("bg", p.bg), ("surface", p.surface)] {
+            checks.push((format!("control/{on}"), contrast(rgb(p.control), rgb(bg)), 3.0));
+            checks.push((format!("accent/{on}"), contrast(rgb(p.accent), rgb(bg)), 3.0));
+        }
+        checks.push(("accent/selected".into(), contrast(rgb(p.accent), rgb(p.selection)), 3.0));
+        // Dimmed text still looks dimmer than normal text.
+        let step = MUTED_STEP.min(contrast(rgb(p.fg), rgb(p.bg)) / text);
+        checks.push(("fg/muted".into(), contrast(rgb(p.fg), rgb(p.muted)), step));
+        for (what, got, min) in checks {
+            if got < min {
+                bad.push(format!("{} {what}: {got:.2} < {min}", d.name));
+            }
         }
     }
+    assert!(bad.is_empty(), "{bad:#?}");
 }

@@ -13,7 +13,7 @@ mod splitter;
 mod tabs;
 mod text_input;
 
-pub use button::button;
+pub use button::{button, button_backgrounds};
 pub use checkbox::checkbox;
 pub use dropdown::dropdown;
 pub use label::{elide, label, label_with};

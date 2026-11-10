@@ -154,6 +154,9 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
         }
         if t.closable {
             let cr = ui.interact(id.with(("close", i)), close, Sense::click());
+            if ui.a11y_on() {
+                ui.a11y_node(id.with(("close", i)), Role::Button, &format!("Close {}", t.text));
+            }
             if cr.clicked {
                 out.closed = Some(i);
             }
@@ -180,6 +183,7 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
     let plus = Rect::new(strip_right + ui.px(4), rect.y, plus_w, rect.h);
     let pr = ui.interact(id.with("plus"), plus, Sense::click());
     out.plus_clicked = pr.clicked;
+    ui.a11y_node(id.with("plus"), Role::Button, "New tab");
     let pw = ui.measure("+", FontKind::Ui, px).ceil() as i32;
     let lh = ui.line_height(FontKind::Ui, px);
     let mut painter = ui.painter();

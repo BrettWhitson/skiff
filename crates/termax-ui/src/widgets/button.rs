@@ -1,7 +1,9 @@
 use crate::a11y::Role;
+use crate::color::Color;
 use crate::geom::{Point, Rect};
 use crate::input::{CursorIcon, Key, Modifiers};
 use crate::text::FontKind;
+use crate::style::Palette;
 use crate::ui::{Id, Response, Sense, Ui};
 
 use super::label::elide;
@@ -17,6 +19,11 @@ pub(crate) fn keyboard_activate(ui: &mut Ui, id: Id, r: &mut Response) {
     }
 }
 
+/// A button's fill at rest, hovered and pressed (its label is `fg`).
+pub fn button_backgrounds(p: &Palette) -> [(&'static str, Color); 3] {
+    [("rest", p.surface_alt), ("hover", p.surface_alt.mix(p.fg, 0.08)), ("pressed", p.selection)]
+}
+
 /// A push button with a centred label. Focusable; Space/Enter activate it.
 pub fn button(ui: &mut Ui, id: Id, rect: Rect, text: &str) -> Response {
     let mut r = ui.interact(id, rect, Sense::focusable());
@@ -27,12 +34,13 @@ pub fn button(ui: &mut Ui, id: Id, rect: Rect, text: &str) -> Response {
     }
     let p = ui.style().palette;
     let radius = ui.style().radius * ui.scale();
+    let [(_, rest), (_, hover), (_, pressed)] = button_backgrounds(&p);
     let bg = if r.pressed {
-        p.surface_alt.mix(p.accent, 0.35)
+        pressed
     } else if r.hovered {
-        p.surface_alt.mix(p.fg, 0.08)
+        hover
     } else {
-        p.surface_alt
+        rest
     };
     let border = if r.focused { p.accent } else { p.control };
     let bw = ui.px(1).max(1);
