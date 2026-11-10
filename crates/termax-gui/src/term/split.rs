@@ -295,6 +295,7 @@ pub fn view(
             ui.request_focus(id);
         }
         super::view(ui, id, rect, &mut p.term, theme, keymap, wake, actions);
+        run_requests(ui, split);
         return;
     }
     let gap = ui.px(GAP).max(1);
@@ -318,6 +319,7 @@ pub fn view(
     if let Some(i) = focused {
         split.focus = i;
     }
+    run_requests(ui, split);
     ui.region(Id::new(("pane-dividers", tab)), "Pane dividers", |ui| {
         for d in &dividers {
             divider(ui, Id::new(("pane-divider", tab)).with(&d.path), d, gap, &mut split.layout);
@@ -329,6 +331,23 @@ pub fn view(
         let w = ui.px(1).max(1);
         ui.painter().border(r, theme.palette.accent, w, 0.0);
     }
+}
+
+/// Runs a split or close a pane's menu asked for, on that pane.
+fn run_requests(ui: &mut Ui, split: &mut TermSplit) {
+    let Some((i, a)) = split.panes.iter_mut().enumerate().find_map(|(i, p)| p.term.pane_request.take().map(|a| (i, a))) else {
+        return;
+    };
+    split.focus = i;
+    match a {
+        Action::SplitRight => split.split(Dir::Right),
+        Action::SplitDown => split.split(Dir::Down),
+        Action::ClosePane => {
+            split.close_focused();
+        }
+        _ => {}
+    }
+    ui.request_repaint_in(std::time::Duration::ZERO);
 }
 
 /// One divider: drag it, or focus it and use the arrow keys (also the

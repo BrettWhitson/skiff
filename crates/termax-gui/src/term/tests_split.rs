@@ -3,7 +3,7 @@
 
 use termax_ui::a11y::{A11yAction, Role};
 use termax_ui::geom::{Point, Rect};
-use termax_ui::input::{Event, Key, Modifiers};
+use termax_ui::input::{Event, Key, Modifiers, MouseButton};
 
 use super::*;
 use crate::app::TabKind;
@@ -142,4 +142,20 @@ fn each_pane_gets_its_own_pty_size() {
     assert_eq!((a.0, b.0), (whole.0, whole.0), "same height");
     assert!(a.1 < whole.1 / 2 + 1 && a.1 + b.1 <= whole.1 && a.1 + b.1 >= whole.1 - 4, "{whole:?} -> {a:?} + {b:?}");
     assert_eq!(s.panes[0].term.resizes, 1, "the old pane's pty shrank to its half");
+}
+
+#[test]
+fn terminal_menu_splits_and_closes_panes() {
+    let (mut f, _) = alpha();
+    let menu_pick = |f: &mut Fixture, name: &str, item: &str| {
+        let r = f.h.tree().find(name).expect("pane").bounds;
+        let at = Point::new(r.x + 30, r.y + 80);
+        f.frame(vec![Event::MouseMove(at), Event::MouseDown(MouseButton::Right, at), Event::MouseUp(MouseButton::Right, at)]);
+        f.frame(vec![]);
+        f.click_text(item);
+    };
+    menu_pick(&mut f, "Terminal: alpha", "Split down");
+    assert_eq!(split_of(&f).panes.len(), 2);
+    menu_pick(&mut f, "Terminal: alpha, pane 1 of 2", "Close pane");
+    assert_eq!(split_of(&f).panes.iter().map(|p| p.key).collect::<Vec<_>>(), vec![1], "the pane whose menu it was");
 }
