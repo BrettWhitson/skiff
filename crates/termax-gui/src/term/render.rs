@@ -7,6 +7,8 @@ use termax_ui::ui::Ui;
 
 use crate::theme::{GuiTheme, xterm_256};
 
+use super::select::TermSelection;
+
 fn color(c: vt100::Color, theme: &GuiTheme, bold: bool) -> Option<Color> {
     match c {
         vt100::Color::Default => None,
@@ -67,11 +69,23 @@ pub fn draw_screen(
     cell: Size,
     px: f32,
     cursor: Option<CursorDraw>,
+    sel: Option<&TermSelection>,
 ) {
+    let selection = ui.style().palette.selection;
+    let offset = screen.scrollback() as i64;
     let mut painter = ui.painter();
     painter.rect(rect, theme.term_bg, 0.0);
     painter.push_clip(rect);
-    let rows = screen_rows(screen, theme);
+    let mut rows = screen_rows(screen, theme);
+    if let Some(sel) = sel {
+        for (r, cells) in rows.iter_mut().enumerate() {
+            for (c, cell) in cells.iter_mut().enumerate() {
+                if sel.contains(r as i64 - offset, c as u16) {
+                    cell.bg = selection;
+                }
+            }
+        }
+    }
     for (r, cells) in rows.iter().enumerate() {
         let origin = Point::new(rect.x, rect.y + r as i32 * cell.h);
         if origin.y >= rect.bottom() {

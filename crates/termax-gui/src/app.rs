@@ -355,6 +355,7 @@ impl GuiApp {
             main
         };
         self.main_area(ui, main);
+        self.view_actions.clear(); // only the active view may use them
         self.status_bar(ui, status);
         self.save_geometry_when_due(ui);
     }
@@ -426,7 +427,7 @@ impl GuiApp {
                 if newly_shown {
                     ui.request_focus(id);
                 }
-                crate::term::view(ui, id, content, t, &self.theme, &self.keymap, self.engine.wake_fn());
+                crate::term::view(ui, id, content, t, &self.theme, &self.keymap, self.engine.wake_fn(), &mut self.view_actions);
             }
             TabKind::Files(f) => {
                 label(ui, line, &format!("Files: {} \u{2194} {}", f.locations[0].label(), f.locations[1].label()), None);

@@ -101,7 +101,7 @@ fn terminal_view_tiny_area_no_panic() {
     let t = theme();
     for (w, h) in [(30, 20), (0, 0), (5, 3)] {
         let mut harness = Harness::new(w, h, 1.0);
-        harness.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), &mut tab, &t, &km, None));
+        harness.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), &mut tab, &t, &km, None, &mut vec![]));
         harness.render();
         assert!(tab.grid.0 >= 2 && tab.grid.1 >= 10, "{:?}", tab.grid);
     }
@@ -116,7 +116,7 @@ fn resize_only_on_cell_change() {
     let t = theme();
     let mut h = Harness::new(800, 600, 1.0);
     let frame = |h: &mut Harness, tab: &mut TermTab| {
-        h.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), tab, &t, &km, None));
+        h.frame(vec![], &mut |ui| view(ui, Id::new("t"), ui.window_rect(), tab, &t, &km, None, &mut vec![]));
     };
     frame(&mut h, &mut tab);
     frame(&mut h, &mut tab);
@@ -139,7 +139,7 @@ fn only_changed_row_damaged() {
     let mut cache = GlyphCache::default();
     let mut canvas = termax_ui::canvas::Canvas::new(800, 24 * 16);
     let mut paint = |h: &mut Harness, p: &vt100::Parser| {
-        h.frame(vec![], &mut |ui| draw_screen(ui, ui.window_rect(), p.screen(), &t, Size::new(8, 16), 14.0, None));
+        h.frame(vec![], &mut |ui| draw_screen(ui, ui.window_rect(), p.screen(), &t, Size::new(8, 16), 14.0, None, None));
         renderer.render(h.list(), &mut canvas, &h.fonts, &mut cache, Color::BLACK)
     };
     paint(&mut h, &p);
