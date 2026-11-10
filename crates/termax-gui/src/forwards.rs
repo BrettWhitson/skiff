@@ -44,6 +44,8 @@ pub struct FwdPrompt {
     pub kind: AskKind,
     pub input: String,
     reply: Option<tokio::sync::oneshot::Sender<Option<String>>>,
+    /// ssh withdrew the question (e.g. a security key was touched).
+    cancelled: tokio_util::sync::CancellationToken,
 }
 
 impl FwdPrompt {
@@ -78,7 +80,14 @@ impl ForwardsState {
     }
 
     pub fn ask(&mut self, req: AskRequest) {
-        self.prompt = Some(FwdPrompt { tag: req.tag, text: req.prompt, kind: req.kind, input: String::new(), reply: Some(req.reply) });
+        self.prompt = Some(FwdPrompt {
+            tag: req.tag,
+            text: req.prompt,
+            kind: req.kind,
+            input: String::new(),
+            reply: Some(req.reply),
+            cancelled: req.cancelled,
+        });
     }
 
     pub fn stop(&mut self, f: &Forward) {
@@ -177,13 +186,20 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         st.new_form(&h);
     }
 
+    if st.prompt.as_ref().is_some_and(|p| p.cancelled.is_cancelled()) {
+        st.prompt = None;
+    }
     if let Some(pr) = &mut st.prompt {
         let r = rows.next(ui);
         label(ui, r, &pr.text, Some(p.warning));
         let r = rows.next(ui);
         let parts = ui.split_h(r, &[L::Fill, L::Px(80), L::Px(80)], 6);
         let mut done = None;
-        if pr.kind == AskKind::Confirm {
+        if pr.kind == AskKind::Notice {
+            if button(ui, Id::new("fwd-ask-hide"), parts[2], "Hide").clicked {
+                done = Some(None);
+            }
+        } else if pr.kind == AskKind::Confirm {
             if button(ui, Id::new("fwd-ask-yes"), parts[1], "Yes").clicked {
                 done = Some(Some("yes".to_string()));
             }

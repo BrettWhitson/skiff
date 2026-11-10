@@ -32,6 +32,14 @@ fn is_same_or_inside(ep: &Endpoint, dst: &str, src: &str) -> bool {
     canon(dst).starts_with(canon(src))
 }
 
+/// The temporary sibling a file is written to before it replaces `d`.
+fn part_path(ep: &Endpoint, d: &str) -> String {
+    match super::path::parent(ep.is_remote(), d) {
+        Some((dir, name)) => ep.join(&dir, &format!(".{name}.termax-part")),
+        None => format!(".{d}.termax-part"),
+    }
+}
+
 const CHUNK: usize = 256 * 1024;
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
@@ -229,19 +237,40 @@ impl Job {
         })
     }
 
+    /// Writes into a hidden sibling (`.<name>.termax-part`) and moves it over
+    /// `d` only once complete, so a cancelled or failed copy never touches an
+    /// existing destination file; only the partial temp file is removed.
     async fn copy_file(&mut self, src: &Endpoint, s: &str, dst: &Endpoint, d: &str) -> Result<Copied> {
         self.current = d.to_string();
+        let tmp = part_path(dst, d);
+        let result = self.stream(src, s, dst, &tmp).await;
+        match result {
+            Ok(Copied::Done) => {
+                if let Err(e) = dst.replace(&tmp, d).await {
+                    // Keep the finished copy if the original is already gone.
+                    if matches!(dst.stat(d).await, Ok(Some(_))) {
+                        let _ = dst.remove(&tmp, false).await;
+                        return Err(e);
+                    }
+                    return Err(e.context(format!("the new copy was left at {tmp}")));
+                }
+                Ok(Copied::Done)
+            }
+            other => {
+                let _ = dst.remove(&tmp, false).await;
+                other
+            }
+        }
+    }
+
+    async fn stream(&mut self, src: &Endpoint, s: &str, dst: &Endpoint, tmp: &str) -> Result<Copied> {
         let mut reader = src.open_read(s).await?;
-        let mut writer = dst.create(d).await?;
+        let mut writer = dst.create(tmp).await?;
         let mut buf = vec![0u8; CHUNK];
         loop {
             let n = tokio::select! {
                 r = reader.read(&mut buf) => r?,
-                _ = self.token.cancelled() => {
-                    drop(writer);
-                    let _ = dst.remove(d, false).await;
-                    return Ok(Copied::Cancelled);
-                }
+                _ = self.token.cancelled() => return Ok(Copied::Cancelled),
             };
             if n == 0 {
                 break;

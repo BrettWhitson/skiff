@@ -179,7 +179,29 @@ impl Chord {
             KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
             c => c,
         };
-        code == self.code && (key.modifiers & MODS) == self.mods
+        // A symbol like `?` or `+` is typed with Shift on many layouts, and
+        // terminals report it: Shift only tells letters apart.
+        let mods = match code {
+            KeyCode::Char(c) if !c.is_alphabetic() => MODS - KeyModifiers::SHIFT,
+            _ => MODS,
+        };
+        code == self.code && (key.modifiers & mods) == (self.mods & mods)
+    }
+
+    /// What the shell uses this chord for, if it is one of the control keys
+    /// a terminal can't do without (interrupt, EOF, suspend, quit, Esc).
+    fn shell_key(&self) -> Option<&'static str> {
+        if self.mods - KeyModifiers::SHIFT != KeyModifiers::CONTROL {
+            return None;
+        }
+        match self.code {
+            KeyCode::Char('c') => Some("interrupt"),
+            KeyCode::Char('d') => Some("end of input"),
+            KeyCode::Char('z') => Some("suspend"),
+            KeyCode::Char('\\') => Some("quit"),
+            KeyCode::Char('[') => Some("Esc"),
+            _ => None,
+        }
     }
 }
 
@@ -235,6 +257,11 @@ impl Keymap {
                 continue;
             };
             let parsed: Result<Vec<Chord>, String> = value.split(',').filter(|s| !s.trim().is_empty()).map(Chord::parse).collect();
+            let stolen = parsed.as_ref().ok().and_then(|cs| cs.iter().find_map(|c| c.shell_key().map(|what| (*c, what))));
+            if let Some((c, what)) = stolen {
+                errors.push(format!("[tui_keys] {name}: {c} belongs to the shell ({what}), keeping the default"));
+                continue;
+            }
             match parsed {
                 Ok(chords) => {
                     binds.insert(action, chords);
@@ -340,6 +367,25 @@ mod tests {
         let (k, errors) = Keymap::new(&map(&[("find", "alt+q"), ("quit", "alt+f")]));
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(k.match_key(&key(KeyCode::Char('f'), KeyModifiers::ALT)), Some(Action::Quit));
+    }
+
+    #[test]
+    fn symbol_chords_ignore_shift_and_shell_keys_are_refused() {
+        let (k, errors) =
+            Keymap::new(&map(&[("help", "alt+?"), ("theme", "alt++"), ("quit", "ctrl+c"), ("find", "ctrl+["), ("snippets", "ctrl+alt+c")]));
+        assert_eq!(
+            errors,
+            [
+                "[tui_keys] find: Ctrl+[ belongs to the shell (Esc), keeping the default",
+                "[tui_keys] quit: Ctrl+C belongs to the shell (interrupt), keeping the default",
+            ]
+        );
+        // Terminals report Shift for symbols typed with it.
+        assert_eq!(k.match_key(&key(KeyCode::Char('?'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::Help));
+        assert_eq!(k.match_key(&key(KeyCode::Char('+'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::Theme));
+        assert_eq!(k.match_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)), None);
+        assert_eq!(k.show(Action::Quit), "Alt+Q");
+        assert_eq!(k.show(Action::Snippets), "Ctrl+Alt+C");
     }
 
     #[test]

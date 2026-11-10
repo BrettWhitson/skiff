@@ -32,7 +32,8 @@ impl T {
         edit(&mut cfg);
         cfg.save(&base, &cfg_path).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let app = App::new(cfg, cfg_path, rt.handle().clone());
+        let mut app = App::new(cfg, cfg_path, rt.handle().clone());
+        app.question_delay = Duration::ZERO; // tests answer at once
         T { dir, app, _rt: rt }
     }
 
@@ -430,6 +431,14 @@ fn tui_mouse_release_outside_reaches_the_program() {
     mouse(&mut t, K::Drag(B::Left), 5, 25); // over the status line
     mouse(&mut t, K::Up(B::Left), 5, 25);
     assert_eq!(t.app.mouse_held, None, "the release is reported at the terminal's edge");
+    // A dialog opening, or a tab change by keyboard, mid-drag releases it.
+    mouse(&mut t, K::Down(B::Left), 5, 5);
+    alt(&mut t, 'h');
+    assert_eq!(t.app.mouse_held, None, "released when a dialog opens");
+    t.key(KeyCode::Esc);
+    mouse(&mut t, K::Down(B::Left), 5, 5);
+    alt(&mut t, '1');
+    assert_eq!(t.app.mouse_held, None, "released when the tab changes");
 }
 
 #[test]
@@ -581,6 +590,44 @@ fn askpass_modal_masks_answers_and_cancels() {
     let (mut rx, _) = ask(&mut t, "sftp:999:1", "password: ");
     assert!(t.app.modal.is_none());
     assert_eq!(rx.try_recv().unwrap(), None);
+    // A security-key touch notice is shown on the status line, never as a
+    // dialog, until ssh is done with it.
+    let (reply, _nrx) = oneshot::channel();
+    let cancelled = tokio_util::sync::CancellationToken::new();
+    let prompt = "Confirm user presence for key ED25519-SK";
+    let req = AskRequest { tag: tag.clone(), prompt: prompt.into(), kind: AskKind::Notice, reply, cancelled: cancelled.clone() };
+    t.app.tx.send(Msg::Ask(req)).unwrap();
+    t.app.drain_messages();
+    assert!(t.app.modal.is_none());
+    assert!(find_text(&draw(&mut t), prompt).is_some());
+    cancelled.cancel();
+    t.app.drain_messages();
+    assert!(find_text(&draw(&mut t), prompt).is_none());
+}
+
+#[test]
+fn background_questions_wait_for_their_own_tab() {
+    let mut t = T::new("");
+    let tag = connecting_sftp_tab(&mut t);
+    let own = t.app.active;
+    t.app.active = 0; // the user works in another tab
+    let (mut rx, _) = ask(&mut t, &tag, "password: ");
+    assert!(t.app.modal.is_none(), "never shown over another tab");
+    let term = draw(&mut t);
+    assert!(find_text(&term, "web [sftp] ?").is_some(), "the tab is flagged");
+    assert!(find_text(&term, "waiting for an answer").is_some(), "the status line says where");
+    // On its own tab it shows, but ignores keys typed right as it opens.
+    t.app.question_delay = std::time::Duration::from_millis(250);
+    t.app.active = own;
+    t.app.drain_messages();
+    assert!(matches!(t.app.modal, Some(Modal::Ask { .. })));
+    t.typed("ls");
+    t.key(KeyCode::Enter);
+    assert!(rx.try_recv().is_err(), "keys right after it opened are ignored");
+    t.app.question_shown = t.app.question_shown.map(|at| at - std::time::Duration::from_millis(300));
+    t.typed("pw");
+    t.key(KeyCode::Enter);
+    assert_eq!(rx.try_recv().unwrap().as_deref(), Some("pw"));
 }
 
 /// Runs the (current-thread) runtime and the app's message loop until `done`.
@@ -655,11 +702,14 @@ fn transfers_ask_before_overwriting_and_cancel() {
     pump(&mut t, "the cancel", |a| last_state(a) == Some(St::Cancelled));
     assert_eq!(std::fs::read_to_string(&remote).unwrap(), "new");
 
-    // Cancel a running transfer (X); nothing has run yet on this runtime.
+    // Cancel running transfers (X, then X again for the next); nothing has
+    // run yet on this runtime.
     select(&mut t, "b.txt");
     t.key(KeyCode::Char('c'));
+    t.key(KeyCode::Char('c'));
     t.key(KeyCode::Char('X'));
-    pump(&mut t, "the cancel", |a| last_state(a) == Some(St::Cancelled));
+    t.key(KeyCode::Char('X'));
+    pump(&mut t, "the cancels", |a| sftp(a).transfers.iter().rev().take(2).all(|x| x.state == St::Cancelled));
     assert!(!fx.root().join("b.txt").exists());
     t.key(KeyCode::Char('X'));
     assert!(t.app.status.as_ref().is_some_and(|s| s.1), "nothing left to cancel");

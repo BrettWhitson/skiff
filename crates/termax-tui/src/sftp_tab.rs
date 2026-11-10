@@ -85,6 +85,8 @@ pub struct Transfer {
     pub skipped: u64,
     pub state: TransferState,
     handle: TransferHandle,
+    /// Cancel was asked for; it ends at its next step.
+    cancelling: bool,
 }
 
 pub enum Status {
@@ -323,6 +325,7 @@ impl SftpTab {
             skipped: 0,
             state: TransferState::Running,
             handle,
+            cancelling: false,
         });
         let (tx, tab) = (self.tx.clone(), self.tab_id);
         self.rt.spawn(async move {
@@ -369,15 +372,18 @@ impl SftpTab {
 
     /// Cancels transfer `id` if it is still running.
     pub fn cancel_transfer(&mut self, id: u64) {
-        if let Some(t) = self.transfers.iter().find(|t| t.id == id && t.state == TransferState::Running) {
+        if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id && t.state == TransferState::Running) {
             t.handle.cancel();
+            t.cancelling = true;
         }
     }
 
-    /// Cancels the newest running transfer (the top of the list); returns its label.
+    /// Cancels the newest running transfer (the top of the list) not already
+    /// being cancelled; returns its label.
     pub fn cancel_newest_transfer(&mut self) -> Option<String> {
-        let t = self.transfers.iter().rev().find(|t| t.state == TransferState::Running)?;
+        let t = self.transfers.iter_mut().rev().find(|t| t.state == TransferState::Running && !t.cancelling)?;
         t.handle.cancel();
+        t.cancelling = true;
         Some(t.label.clone())
     }
 

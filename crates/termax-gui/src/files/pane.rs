@@ -484,6 +484,14 @@ fn prompt_card(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane) {
                 answer = Some(None);
             }
         }
+        AskKind::Notice => {
+            // Nothing to answer ("touch your security key"); it closes by
+            // itself when ssh is done, or can be hidden.
+            let parts = ui.split_h(row, &[L::Px(80), L::Fill], 6);
+            if button(ui, id.with("prompt-hide"), parts[0], "Hide").clicked {
+                answer = Some(Some(String::new()));
+            }
+        }
         AskKind::Confirm => {
             let parts = ui.split_h(row, &[L::Px(80), L::Px(80), L::Px(80), L::Fill], 6);
             if button(ui, id.with("prompt-yes"), parts[0], "Yes").clicked {

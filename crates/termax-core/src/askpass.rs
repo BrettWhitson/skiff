@@ -20,7 +20,7 @@ use interprocess::local_socket::tokio::{Stream as TokioStream, prelude::*};
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::{GenericFilePath, GenericNamespaced, ListenerOptions, Name, Stream};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
@@ -38,11 +38,28 @@ pub enum AskKind {
     Secret,
     /// A yes/no question, e.g. accepting a new host key.
     Confirm,
+    /// Information only, such as "touch your security key": nothing to
+    /// answer. Show it without blocking; it is withdrawn (`cancelled`) when
+    /// ssh is done with it.
+    Notice,
 }
+
+/// The variable ssh sets for the helper to say what kind of answer it wants.
+pub const ENV_PROMPT_HINT: &str = "SSH_ASKPASS_PROMPT";
 
 impl AskKind {
     pub fn of(prompt: &str) -> Self {
-        if prompt.contains("(yes/no") { AskKind::Confirm } else { AskKind::Secret }
+        Self::with_hint(prompt, "")
+    }
+
+    /// `hint` is ssh's `SSH_ASKPASS_PROMPT` (`confirm`, `none`, or unset).
+    pub fn with_hint(prompt: &str, hint: &str) -> Self {
+        match hint {
+            "none" => AskKind::Notice,
+            "confirm" => AskKind::Confirm,
+            _ if prompt.contains("(yes/no") => AskKind::Confirm,
+            _ => AskKind::Secret,
+        }
     }
 }
 
@@ -63,6 +80,9 @@ struct Question {
     token: String,
     tag: String,
     prompt: String,
+    /// ssh's `SSH_ASKPASS_PROMPT`, if set.
+    #[serde(default)]
+    hint: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -175,7 +195,8 @@ impl Broker {
 
 async fn serve(conn: TokioStream, tx: UnboundedSender<AskRequest>, shared: Arc<Shared>) -> Result<()> {
     let mut line = String::new();
-    TokioBufReader::new(&conn).read_line(&mut line).await?;
+    let mut read = TokioBufReader::new(&conn);
+    read.read_line(&mut line).await?;
     let mut write = &conn;
     let q: Question = serde_json::from_str(line.trim())?;
     let refused = q.token != shared.token || shared.retired.lock().unwrap().contains(&q.tag);
@@ -185,12 +206,19 @@ async fn serve(conn: TokioStream, tx: UnboundedSender<AskRequest>, shared: Arc<S
         let (reply, rx) = oneshot::channel();
         let cancelled = CancellationToken::new();
         shared.pending.lock().unwrap().entry(q.tag.clone()).or_default().push(cancelled.clone());
-        let kind = AskKind::of(&q.prompt);
+        let kind = AskKind::with_hint(&q.prompt, &q.hint);
         let tag = q.tag.clone();
         tx.send(AskRequest { tag: q.tag, prompt: q.prompt, kind, reply, cancelled: cancelled.clone() })?;
+        // The helper sends nothing more: end of input means it is gone (ssh
+        // killed it, e.g. once a security key was touched).
+        let mut rest = [0u8; 1];
         let answer = tokio::select! {
             a = rx => a.ok().flatten(),
             _ = cancelled.cancelled() => None,
+            _ = read.read(&mut rest) => {
+                cancelled.cancel();
+                None
+            }
         };
         if let Some(list) = shared.pending.lock().unwrap().get_mut(&tag) {
             list.retain(|t| !t.is_cancelled() && !std::ptr::eq(t, &cancelled));
@@ -232,8 +260,9 @@ fn run_helper() -> Result<Option<String>> {
     let tag = std::env::var(ENV_TAG).unwrap_or_default();
     let token = std::env::var(ENV_TOKEN).unwrap_or_default();
     let prompt = std::env::args().nth(1).unwrap_or_default();
+    let hint = std::env::var(ENV_PROMPT_HINT).unwrap_or_default();
     let mut conn = BufReader::new(Stream::connect(endpoint_name(&endpoint)?)?);
-    let mut q = serde_json::to_string(&Question { token, tag, prompt })?;
+    let mut q = serde_json::to_string(&Question { token, tag, prompt, hint })?;
     q.push('\n');
     conn.get_mut().write_all(q.as_bytes())?;
     let mut line = String::new();
@@ -250,5 +279,7 @@ mod tests {
     fn classifies_prompts() {
         assert_eq!(AskKind::of("tester@127.0.0.1's password: "), AskKind::Secret);
         assert_eq!(AskKind::of("Are you sure you want to continue connecting (yes/no/[fingerprint])? "), AskKind::Confirm);
+        assert_eq!(AskKind::with_hint("Allow use of key?", "confirm"), AskKind::Confirm);
+        assert_eq!(AskKind::with_hint("Confirm user presence for key", "none"), AskKind::Notice);
     }
 }

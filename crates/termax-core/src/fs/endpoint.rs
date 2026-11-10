@@ -97,6 +97,26 @@ impl Endpoint {
         }
     }
 
+    /// Moves file `from` over `to`, replacing it if it exists. Local renames
+    /// replace atomically. SFTP v3 servers (OpenSSH) refuse to rename onto an
+    /// existing file and russh-sftp has no `posix-rename`, so a remote replace
+    /// falls back to remove-then-rename: if the connection drops in between,
+    /// `to` is gone but the complete new copy remains at `from`.
+    pub async fn replace(&self, from: &str, to: &str) -> Result<()> {
+        match self {
+            Endpoint::Local => self.rename(from, to).await,
+            Endpoint::Remote(c) => {
+                if c.sftp.rename(from, to).await.is_ok() {
+                    return Ok(());
+                }
+                if c.sftp.try_exists(to).await.unwrap_or(false) {
+                    c.sftp.remove_file(to).await.with_context(|| format!("replacing {to}"))?;
+                }
+                self.rename(from, to).await
+            }
+        }
+    }
+
     /// Removes a file, or a directory (with `recursive`, including its contents).
     /// A symlink is removed itself; its target is never touched.
     pub async fn remove(&self, p: &str, recursive: bool) -> Result<()> {
