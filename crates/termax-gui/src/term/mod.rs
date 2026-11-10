@@ -47,6 +47,8 @@ pub struct TermTab {
     pub select: SelectState,
     blink_from: Instant,
     wheel_rest: f32,
+    /// The cursor blinks (`gui.cursor_blink` and the OS animation setting); set by the app.
+    pub blink: bool,
     /// Which output screen readers hear (`gui.announce_output`); set by the app.
     pub announce: termax_core::config::Announce,
     announcer: announce::Announcer,
@@ -85,6 +87,7 @@ impl TermTab {
             select: SelectState::default(),
             blink_from: Instant::now(),
             wheel_rest: 0.0,
+            blink: true,
             announce: termax_core::config::Announce::All,
             announcer: announce::Announcer::new(Instant::now()),
             last_screen: String::new(),
@@ -326,6 +329,8 @@ pub fn view(
 
     let cursor = if !focused {
         Some(CursorDraw::Hollow)
+    } else if !tab.blink {
+        Some(CursorDraw::Block)
     } else {
         let el = tab.blink_from.elapsed().as_millis();
         let left = BLINK.as_millis() - el % BLINK.as_millis();

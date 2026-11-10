@@ -727,6 +727,17 @@ impl GuiApp {
                 self.geometry_changed();
             }
             Action::Settings => self.open_settings(),
+            Action::UiScaleUp | Action::UiScaleDown | Action::UiScaleReset => {
+                let cur = self.cfg.gui.ui_scale;
+                let next = match a {
+                    Action::UiScaleUp => cur + 0.1,
+                    Action::UiScaleDown => cur - 0.1,
+                    _ => 1.0,
+                };
+                self.cfg.gui.ui_scale = ((next * 10.0).round() / 10.0).clamp(0.5, 3.0);
+                self.style = style_for(&self.theme, &self.cfg);
+                self.save_config();
+            }
             Action::Copy | Action::Paste | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
                 self.view_actions.push(a)
             }
@@ -742,6 +753,9 @@ impl GuiApp {
             .events
             .iter()
             .filter_map(|e| match e {
+                // Ctrl+Alt that produces a character is AltGr typing (e.g. `}`
+                // on a German keyboard), never a shortcut.
+                Event::KeyDown { mods, text: Some(_), .. } if mods.ctrl && mods.alt => None,
                 Event::KeyDown { key, mods, .. } => {
                     self.keymap.match_key(key, *mods, in_term).map(|a| (key.clone(), *mods, a))
                 }
@@ -960,6 +974,7 @@ impl GuiApp {
         match &mut tab.kind {
             TabKind::Terminal(t) => {
                 t.announce = self.cfg.gui.announce_output;
+                t.blink = self.cfg.gui.cursor_blink && crate::os::animations();
                 let id = Id::new(("term", tab.id));
                 if newly_shown {
                     ui.request_focus(id);

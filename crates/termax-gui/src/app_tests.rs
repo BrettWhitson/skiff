@@ -365,3 +365,19 @@ fn settings_inputs_have_labels() {
     let t = f.h.tree();
     assert_eq!(t.find("Name").map(|n| n.role), Some(termax_ui::a11y::Role::TextInput));
 }
+
+#[test]
+fn ui_scale_shortcuts_persist() {
+    let mut f = Fixture::new();
+    let ctrl_alt = Modifiers { ctrl: true, alt: true, ..Modifiers::NONE };
+    let up = Event::KeyDown { key: Key::Char('='), mods: ctrl_alt, text: None };
+    f.frame(vec![up.clone()]);
+    f.frame(vec![up]);
+    assert_eq!(f.app.cfg.gui.ui_scale, 1.2);
+    assert!(std::fs::read_to_string(&f.path).unwrap().contains("ui_scale = 1.2"));
+    // AltGr (Ctrl+Alt) that types a character is typing, not a shortcut.
+    f.frame(vec![Event::KeyDown { key: Key::Char('0'), mods: ctrl_alt, text: Some("}".into()) }]);
+    assert_eq!(f.app.cfg.gui.ui_scale, 1.2);
+    f.frame(vec![Event::KeyDown { key: Key::Char('0'), mods: ctrl_alt, text: None }]);
+    assert_eq!(f.app.cfg.gui.ui_scale, 1.0);
+}
