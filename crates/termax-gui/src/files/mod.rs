@@ -1,6 +1,10 @@
 //! File-transfer tabs: two panes, each Local or any host.
 
+use std::path::PathBuf;
+
 use termax_core::askpass::{AskRequest, Broker};
+use termax_core::fs::endpoint::Endpoint;
+use termax_core::fs::transfer::TransferEvent;
 use termax_core::fs::FileEntry;
 use termax_core::fs::connect::RemoteConn;
 use termax_core::hosts::HostEntry;
@@ -12,6 +16,9 @@ use crate::engine::Engine;
 
 pub mod ops;
 pub mod pane;
+pub mod transfers;
+
+use transfers::{Spec, TransferList};
 
 pub use pane::{Confirm, Pane, PaneState, Prompt, format_time};
 
@@ -74,15 +81,62 @@ pub struct FilesCtx<'a> {
 
 pub struct FilesTab {
     pub panes: [Pane; 2],
+    pub transfers: TransferList,
 }
 
 impl FilesTab {
     pub fn new(left: Location, right: Location) -> Self {
-        FilesTab { panes: [Pane::new(left), Pane::new(right)] }
+        FilesTab { panes: [Pane::new(left), Pane::new(right)], transfers: TransferList::default() }
     }
 
     pub fn title(&self) -> String {
         format!("\u{21C5} {} \u{2194} {}", self.panes[0].loc.label(), self.panes[1].loc.label())
+    }
+
+    pub fn on_transfer(&mut self, ev: TransferEvent, ctx: &FilesCtx) {
+        if let Some(side) = self.transfers.on_event(ev)
+            && let Some(p) = self.panes.get_mut(side)
+            && p.ep.is_some()
+        {
+            p.refresh(ctx, side);
+        }
+    }
+
+    /// Copies `items` (from pane `from`) into the other pane's folder.
+    pub fn copy(&mut self, from: usize, items: Vec<(String, bool, String)>, ctx: &FilesCtx) {
+        let to = 1 - from;
+        let (Some(src), Some(dst)) = (self.panes[from].ep.clone(), self.panes[to].ep.clone()) else { return };
+        let batch = self.transfers.new_batch();
+        for (path, _, _) in items {
+            let spec = Spec {
+                src: src.clone(),
+                src_path: path,
+                dst: dst.clone(),
+                dst_dir: self.panes[to].cwd.clone(),
+                dst_side: to,
+                src_label: self.panes[from].loc.label().to_string(),
+                dst_label: format!("{}:{}", self.panes[to].loc.label(), self.panes[to].cwd),
+            };
+            self.transfers.start(ctx, spec, batch);
+        }
+    }
+
+    /// Files dropped from the OS onto pane `to`.
+    pub fn upload(&mut self, to: usize, paths: Vec<PathBuf>, ctx: &FilesCtx) {
+        let Some(dst) = self.panes[to].ep.clone() else { return };
+        let batch = self.transfers.new_batch();
+        for p in paths {
+            let spec = Spec {
+                src: Endpoint::Local,
+                src_path: p.display().to_string(),
+                dst: dst.clone(),
+                dst_dir: self.panes[to].cwd.clone(),
+                dst_side: to,
+                src_label: "Local".into(),
+                dst_label: format!("{}:{}", self.panes[to].loc.label(), self.panes[to].cwd),
+            };
+            self.transfers.start(ctx, spec, batch);
+        }
     }
 
     pub fn on_event(&mut self, side: usize, ev: FilesEvent, ctx: &FilesCtx) {
@@ -92,13 +146,41 @@ impl FilesTab {
     }
 }
 
-/// Both panes side by side.
+/// Both panes side by side, the transfer list below.
 pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
-    let cols = ui.split_h(rect, &[L::Frac(0.5), L::Frac(0.5)], 6);
+    let list_h = transfers::wanted_height(&tab.transfers);
+    let rows = ui.split_v(rect, &[L::Fill, L::Px(list_h)], if list_h > 0 { 6 } else { 0 });
+    let cols = ui.split_h(rows[0], &[L::Frac(0.5), L::Frac(0.5)], 6);
+    let dropped: Vec<PathBuf> = ui
+        .input()
+        .events
+        .iter()
+        .filter_map(|e| if let termax_ui::input::Event::FileDropped(p) = e { Some(p.clone()) } else { None })
+        .collect();
     for side in 0..2 {
-        pane::view(ui, cols[side], &mut tab.panes[side], side, ctx);
+        let out = pane::view(ui, cols[side], &mut tab.panes[side], side, ctx);
+        if out.copy {
+            let items = tab.panes[side].selected();
+            tab.copy(side, items, ctx);
+        }
+        if let Some(d) = out.dropped
+            && d.tab == ctx.tab_id
+            && d.side != side
+        {
+            tab.copy(d.side, d.items, ctx);
+        }
     }
+    if !dropped.is_empty() {
+        // onto the pane under the pointer (the right pane if unknown)
+        let m = ui.input().mouse;
+        let to = if cols[0].contains(m) { 0 } else { 1 };
+        tab.upload(to, dropped, ctx);
+    }
+    transfers::view(ui, rows[1], &mut tab.transfers, ctx);
 }
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod tests_transfer;

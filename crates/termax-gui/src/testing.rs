@@ -61,6 +61,7 @@ impl Env {
             match m {
                 Msg::Files { side, ev, .. } => self.tab.on_event(side, ev, &ctx),
                 Msg::Ask(req) => crate::files::route_ask(&mut self.tab, 1, req),
+                Msg::Transfer { ev, .. } => self.tab.on_transfer(ev, &ctx),
                 _ => {}
             }
         }
@@ -134,6 +135,20 @@ impl Env {
 
     pub fn typed(&mut self, s: &str) {
         self.frame(vec![Event::Text(s.into())]);
+    }
+
+    /// Points pane `side` at `path`.
+    pub fn navigate(&mut self, side: usize, path: &str) {
+        let ctx = FilesCtx {
+            tab_id: 1,
+            engine: &self.engine,
+            start_dir: &self.start,
+            hosts: &self.hosts,
+            askpass: self.broker.as_ref(),
+            ssh_binary: "ssh",
+            ssh_version: self.ssh_version,
+        };
+        self.tab.panes[side].navigate(path.to_string(), &ctx, side);
     }
 
     pub fn names(&self, side: usize) -> Vec<String> {

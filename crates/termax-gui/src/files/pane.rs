@@ -20,6 +20,7 @@ use termax_ui::widgets::{
 };
 
 use super::ops::{self, Op};
+use super::transfers::FileDrag;
 use super::{FilesCtx, FilesEvent, Location};
 
 const ROW_H: i32 = 24;
@@ -299,8 +300,18 @@ impl Pane {
     }
 }
 
+/// What a pane asks its tab to do.
+#[derive(Default)]
+pub struct PaneOut {
+    /// Copy the selection to the other pane.
+    pub copy: bool,
+    /// Rows dragged from a pane were dropped here.
+    pub dropped: Option<FileDrag>,
+}
+
 /// Draws one pane and handles its input.
-pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx) {
+pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx) -> PaneOut {
+    let mut out = PaneOut::default();
     let p = ui.style().palette;
     let id = Id::new(("pane", ctx.tab_id, side));
     if pane.ep.is_none() && pane.state == PaneState::Idle {
@@ -335,7 +346,7 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
     if pane.confirm.is_some() {
         confirm_bar(ui, id, actions, pane, side, ctx);
     } else {
-        let parts = ui.split_h(actions, &[L::Px(48), L::Px(72), L::Px(96), L::Px(72), L::Px(64), L::Fill], 6);
+        let parts = ui.split_h(actions, &[L::Px(48), L::Px(72), L::Px(96), L::Px(72), L::Px(64), L::Px(80), L::Fill], 6);
         let can_up = parent(pane.is_remote(), &pane.cwd).is_some();
         if button(ui, id.with("up"), parts[0], "Up").clicked && can_up {
             pane.go_up(ctx, side);
@@ -353,7 +364,11 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
         if button(ui, id.with("delete"), parts[4], "Delete").clicked {
             pane.ask_delete();
         }
-        let hidden_r = Rect::new(parts[5].x + ui.px(8), parts[5].y, parts[5].w - ui.px(8), parts[5].h);
+        let copy_label = if side == 0 { "Copy \u{2192}" } else { "\u{2190} Copy" };
+        if button(ui, id.with("copy"), parts[5], copy_label).clicked {
+            out.copy = true;
+        }
+        let hidden_r = Rect::new(parts[6].x + ui.px(8), parts[6].y, parts[6].w - ui.px(8), parts[6].h);
         if checkbox(ui, id.with("hidden"), hidden_r, &mut pane.show_hidden, "Hidden").clicked {
             pane.sel.clear();
         }
@@ -387,8 +402,9 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
     if pane.prompt.is_some() {
         prompt_card(ui, id, list_r, pane);
     } else {
-        listing(ui, id, list_r, pane, side, ctx);
+        listing(ui, id, list_r, pane, side, ctx, &mut out);
     }
+    out
 }
 
 /// The inline ssh question: prompt text, masked input (or Yes/No), OK/Cancel.
@@ -555,7 +571,7 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
     }
 }
 
-fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx) {
+fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx, out: &mut PaneOut) {
     let p = ui.style().palette;
     let radius = ui.px(4) as f32;
     ui.painter().rect(rect, p.surface, radius);
@@ -594,6 +610,24 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
             ui.painter().text(at, &format_time(t), FontKind::Ui, px, p.muted);
         }
     });
+    if r.drag_started {
+        let items = pane.selected();
+        let label = match items.as_slice() {
+            [(_, _, name)] => name.clone(),
+            many => format!("{} items", many.len()),
+        };
+        if !items.is_empty() {
+            ui.start_drag(Box::new(FileDrag { tab: ctx.tab_id, side, items }), label);
+        }
+    }
+    let drop = ui.drop_target::<FileDrag>(rect);
+    if drop.hovered {
+        let bw = ui.px(2);
+        ui.painter().border(rect, p.accent, bw, radius);
+    }
+    if let Some(d) = drop.dropped {
+        out.dropped = Some(d);
+    }
     if let Some(i) = r.activated
         && let Some(e) = vis.get(i)
         && e.is_dir
@@ -610,6 +644,9 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
         }
         if ui.input_mut().take_key(&Key::Delete, Modifiers::NONE) {
             pane.ask_delete();
+        }
+        if ui.input_mut().take_key(&Key::F(5), Modifiers::NONE) {
+            out.copy = true;
         }
     }
     if vis.is_empty() && pane.state == PaneState::Idle {

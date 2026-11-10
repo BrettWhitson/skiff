@@ -17,6 +17,8 @@ pub enum Msg {
     Notice { tab: Option<u64>, text: String },
     /// Background file work for pane `side` of a file tab.
     Files { tab: u64, side: usize, ev: crate::files::FilesEvent },
+    /// Progress of a transfer in a file tab.
+    Transfer { tab: u64, ev: termax_core::fs::transfer::TransferEvent },
     /// ssh asks for a password / host-key answer (tag = "tab:side").
     Ask(termax_core::askpass::AskRequest),
 }
@@ -25,7 +27,7 @@ impl Msg {
     pub fn tab(&self) -> Option<u64> {
         match self {
             Msg::Notice { tab, .. } => *tab,
-            Msg::Files { tab, .. } => Some(*tab),
+            Msg::Files { tab, .. } | Msg::Transfer { tab, .. } => Some(*tab),
             Msg::Ask(req) => crate::files::parse_tag(&req.tag).map(|(t, _)| t),
         }
     }

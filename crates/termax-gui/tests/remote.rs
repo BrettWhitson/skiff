@@ -97,3 +97,22 @@ fn old_ssh_version_message() {
     assert!(msg.contains("OpenSSH 8.4"), "{msg}");
     assert!(e.tab.panes[1].prompt.is_none(), "no prompt with an old client");
 }
+
+#[test]
+fn remote_to_remote_relay_via_ui() {
+    let fa = TestFixture::new(FixtureAuth::Key).unwrap();
+    let fb = TestFixture::new(FixtureAuth::Key).unwrap();
+    std::fs::write(fa.root().join("relay.bin"), vec![7u8; 300_000]).unwrap();
+    let (ha, hb) = (host_for(&fa, "web-01"), host_for(&fb, "db-02"));
+    let d = local_dir();
+    let mut e = Env::with(d.path(), vec![ha.clone(), hb.clone()], Location::Host(ha), Location::Host(hb), None);
+    e.until("both connected", |e| e.loaded(0) && e.loaded(1));
+    let from = e.find("relay.bin");
+    e.frame(vec![termax_ui::input::Event::MouseMove(from), termax_ui::input::Event::MouseDown(termax_ui::input::MouseButton::Left, from)]);
+    e.frame(vec![termax_ui::input::Event::MouseMove(termax_ui::geom::Point::new(from.x + 12, from.y))]);
+    let to = termax_ui::geom::Point::new(900, 400);
+    e.frame(vec![termax_ui::input::Event::MouseMove(to)]);
+    e.frame(vec![termax_ui::input::Event::MouseUp(termax_ui::input::MouseButton::Left, to)]);
+    e.until("relayed", |e| e.names(1).contains(&"relay.bin".to_string()));
+    assert_eq!(std::fs::read(fb.root().join("relay.bin")).unwrap(), vec![7u8; 300_000]);
+}

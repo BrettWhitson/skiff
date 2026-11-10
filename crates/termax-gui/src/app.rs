@@ -474,6 +474,20 @@ impl GuiApp {
             }
             match m {
                 Msg::Notice { text, .. } => self.warn(text),
+                Msg::Transfer { tab, ev } => {
+                    let ctx = crate::files::FilesCtx {
+                        tab_id: tab,
+                        engine: &self.engine,
+                        start_dir: &self.start_dir,
+                        hosts: &self.hosts,
+                        askpass: self.askpass.as_ref(),
+                        ssh_binary: &self.cfg.settings.ssh_binary,
+                        ssh_version: self.ssh_version.flatten(),
+                    };
+                    if let Some(TabKind::Files(f)) = self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.kind) {
+                        f.on_transfer(ev, &ctx);
+                    }
+                }
                 Msg::Ask(req) => {
                     let tab = crate::files::parse_tag(&req.tag).map(|(t, _)| t);
                     match self.tabs.iter_mut().find(|t| Some(t.id) == tab).map(|t| &mut t.kind) {
