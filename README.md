@@ -8,6 +8,8 @@ A terminal UI for SSH and file transfer, written in Rust.
 - **Port forwards**, opt-in **reachability status**, **recent hosts**, hidden hosts
 - A **command line**: `termax web`, `termax web uptime`, `termax list --json`, shell completion
 - **Themes**, including built-in ones and your own, with live preview
+- **Accessible**: screen readers (GUI), full keyboard use, high-contrast
+  themes, interface scaling, a plain TUI mode
 
 termax drives the system OpenSSH client (`ssh`), so `ProxyJump`, agents, keys,
 `known_hosts`, `Include` and everything else in your OpenSSH setup work exactly
@@ -249,11 +251,13 @@ font_path = "C:/Windows/Fonts/consola.ttf"   # terminal font file (optional)
 ui_font_path = "C:/Windows/Fonts/segoeui.ttf" # interface font file (optional)
 font_size = 14.0                              # terminal font size
 ui_scale = 1.0                                # interface scale (0.5 - 3)
+announce_output = true                        # read new terminal output aloud: true, false or "focused"
+cursor_blink = true                           # blinking terminal cursor
 
 [keys]
 # action = "chord" or "chord1, chord2"; actions: quick_switcher, new_tab,
 # close_tab, next_tab, prev_tab, copy, paste, zoom_in, zoom_out, zoom_reset,
-# toggle_sidebar, settings
+# toggle_sidebar, settings, ui_scale_up, ui_scale_down, ui_scale_reset
 close_tab = "ctrl+shift+q"
 ```
 
@@ -290,6 +294,50 @@ Performance checks (release build):
 ```bash
 cargo test -p termax-gui --release --test perf -- --ignored --nocapture
 ```
+
+## Accessibility
+
+**Screen readers (GUI).** termax-gui exposes its interface through
+[AccessKit](https://accesskit.dev): Narrator, NVDA and JAWS on Windows,
+VoiceOver on macOS and Orca on Linux see every control with its role, name and
+state. Hosts are read as "web, online 23 ms, ops@10.0.0.5". A terminal tab is a
+terminal whose text the screen reader can read, and new output is announced
+politely: at most once every half second, the last 20 lines (2,000 characters),
+without the echo of what you typed. `announce_output = "focused"` limits that to
+the focused tab and `false` turns it off. Activating a host (the screen
+reader's default action twice, or Enter) opens it. The tree is only built while
+a screen reader is connected. Tested with the offscreen tree here; please report
+anything a screen reader gets wrong.
+
+**Keyboard.** Everything works without a mouse:
+
+| Key | Does |
+|---|---|
+| `F6` / `Shift+F6` | Next / previous area: hosts, tabs, content (also out of a terminal) |
+| `Tab` / `Shift+Tab` | Next / previous control |
+| `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move in lists; `←` `→` switch tabs on the tab strip |
+| `Enter` / `Space` | Activate |
+| `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
+| `Delete` | Delete the selected host (asks first) |
+| `Ctrl+Alt+=` / `-` / `0` | Larger / smaller / normal interface (`Cmd+Alt` on macOS) |
+| `Ctrl+Shift+F6` | Send F6 to the program in the terminal |
+
+The focused control gets a 2 px ring in the accent color while you move with
+the keyboard.
+
+**Contrast.** `theme = "high-contrast"` (black) and `"high-contrast-light"`
+(white) reach at least 7:1 for text. Every built-in theme reaches 4.5:1 for
+text (WCAG AA); a test checks this. On Windows, `theme = "auto"` (or the
+default) switches to `high-contrast` while Windows high contrast is on.
+`cursor_blink = false` (or turning off Windows animation effects) stops the
+cursor blinking.
+
+**TUI.** The TUI runs in your terminal, whose screen reader support applies.
+termax keeps the terminal cursor on the selected row of every list, so readers
+that follow the cursor read the selection; the selection is also marked with
+`›`, and messages start with `Error:` or `Info:`. `termax --plain` (or
+`tui_plain = true` under `[settings]`) drops borders and turns status symbols
+into words.
 
 ## Known limitations / next steps
 
