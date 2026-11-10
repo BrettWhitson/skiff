@@ -22,7 +22,7 @@ use skiff_ui::text::FontKind;
 use skiff_ui::ui::{Id, Ui};
 use skiff_ui::widgets::{
     ButtonKind, ButtonOpts, Dialog, DialogButton, DialogResult, Elide, EmptyState, MenuItem, TextInputOpts, Tone, badge, badge_width,
-    button_with, context_menu, dialog, dialog_dismiss, dropdown_labeled, elide_mode, empty_state, icon_button, list_named,
+    button_with, context_menu, dialog, dialog_dismiss, dropdown_labeled, elide_mode, empty_state, icon_button, list_named, menu_item_rect,
     open_context_menu, text_input,
 };
 
@@ -474,7 +474,8 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
             5 => action = Some(SidebarAction::Edit(h)),
             6 => action = Some(SidebarAction::Duplicate(h)),
             7 => {
-                let at = ui.input().mouse;
+                // Beside the chosen item (mouse or keyboard), not at the pointer.
+                let at = menu_item_rect(ui, menu, &items, 7).map_or(ui.input().mouse, |r| Point::new(r.right(), r.y));
                 open_context_menu(ui, move_menu, at);
             }
             8 => action = Some(SidebarAction::SetHidden(h, !hidden)),

@@ -80,11 +80,13 @@ struct MenuState {
     hover: Option<usize>,
     /// Opened this frame: the click that opened it must not close it.
     fresh: bool,
+    /// Where it was last drawn (kept after it closes, for submenus).
+    rect: Rect,
 }
 
 /// Opens menu `id` at `at` and routes the keyboard to it.
 pub fn open_context_menu(ui: &mut Ui, id: Id, at: Point) {
-    *ui.memory::<MenuState>(id) = MenuState { open: true, at, hover: None, fresh: true };
+    *ui.memory::<MenuState>(id) = MenuState { open: true, at, hover: None, fresh: true, rect: Rect::default() };
     ui.capture_keyboard(id);
 }
 
@@ -96,6 +98,25 @@ pub fn close_context_menu(ui: &mut Ui, id: Id) {
 /// Whether menu `id` is currently open.
 pub fn menu_is_open(ui: &mut Ui, id: Id) -> bool {
     ui.memory::<MenuState>(id).open
+}
+
+/// Where item `i` of menu `id` (drawn with `items`) was last drawn, even
+/// if the menu has closed since: anchor a submenu chosen from it there,
+/// whether it was picked by mouse or keyboard. `None` if never drawn.
+pub fn menu_item_rect(ui: &mut Ui, id: Id, items: &[MenuItem], i: usize) -> Option<Rect> {
+    let menu = ui.memory::<MenuState>(id).rect;
+    if menu.w <= 0 || i >= items.len() {
+        return None;
+    }
+    let (row_h, sep_h, edge) = item_metrics(ui);
+    let top: i32 = items[..i].iter().map(|it| if it.separator { sep_h } else { row_h }).sum();
+    let h = if items[i].separator { sep_h } else { row_h };
+    Some(Rect::new(menu.x + edge, menu.y + edge + top, menu.w - 2 * edge, h))
+}
+
+/// Row height, separator height and inner edge of a menu, in pixels.
+fn item_metrics(ui: &Ui) -> (i32, i32, i32) {
+    (ui.px(tokens::ROW_H), ui.px(tokens::SPACE_SM + 1), ui.px(tokens::SPACE_XS))
 }
 
 /// The next choosable item after `from` (or before it, going backwards),
@@ -123,9 +144,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     }
     let (font, px) = ui.text_style(TextRole::Body);
     let (sfont, spx) = ui.text_style(TextRole::Caption);
-    let row_h = ui.px(tokens::ROW_H);
-    let sep_h = ui.px(tokens::SPACE_SM + 1);
-    let edge = ui.px(tokens::SPACE_XS);
+    let (row_h, sep_h, edge) = item_metrics(ui);
     let pad = ui.px(tokens::SPACE_SM);
     let icon_px = ui.px(tokens::ICON);
     let has_icons = items.iter().any(|it| it.icon.is_some());
@@ -144,6 +163,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     let x = if st.at.x + w > win.right() { (st.at.x - w).max(0) } else { st.at.x };
     let y = if st.at.y + h > win.bottom() { (st.at.y - h).max(0) } else { st.at.y };
     let menu = Rect::new(x, y, w, h);
+    st.rect = menu;
 
     if st.hover.is_some_and(|h| h >= items.len() || !items[h].choosable()) {
         st.hover = None;

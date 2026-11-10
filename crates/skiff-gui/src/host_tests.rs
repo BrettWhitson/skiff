@@ -61,6 +61,29 @@ fn sidebar_edit_ssh_host_saves_in_place() {
     assert_eq!(f.app.hosts.iter().find(|h| h.name == "web").unwrap().port, Some(2200));
 }
 
+/// "Move to file…" chosen from the keyboard opens its submenu beside the
+/// host menu's item, not at the (unrelated) mouse pointer.
+#[test]
+fn move_submenu_opens_beside_the_host_menu() {
+    let extra = tempfile::tempdir().unwrap();
+    let extra_path = extra.path().join("extra.conf");
+    std::fs::write(&extra_path, "Host other\n    HostName 10.0.0.9\n").unwrap();
+    let inc = extra_path.display().to_string().replace('\\', "/");
+    let (mut f, _) = with_ssh(&format!("Include {inc}\n\nHost web\n    HostName 10.0.0.5\n"));
+    f.click_text("web");
+    let key = |key, shift| Event::KeyDown { key, mods: Modifiers { shift, ..Modifiers::NONE }, text: None };
+    f.frame(vec![key(Key::F(10), true)]);
+    f.frame(vec![]);
+    for _ in 0..7 {
+        f.frame(vec![key(Key::Down, false)]); // to "Move to file…"
+    }
+    let item = f.find_last("Move to file\u{2026}");
+    f.frame(vec![key(Key::Enter, false)]);
+    f.frame(vec![]);
+    let sub = f.find_last(&skiff_core::sshconfig::edit::display_path(&extra_path));
+    assert!(sub.x > item.x + 100, "submenu at {sub:?}, host menu item at {item:?}");
+}
+
 /// A host from a shared `Host a b` block opens read-only with the reason shown.
 #[test]
 fn read_only_ssh_host_shows_why() {
