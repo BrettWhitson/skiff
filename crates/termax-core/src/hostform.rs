@@ -227,8 +227,11 @@ impl HostForm {
                 validate_with(&f, taken, self.current_name(), &existing)?;
                 match (self.current_name(), &self.after) {
                     (Some(alias), _) => set.update_host(alias, &f)?,
-                    (None, Some(after)) => set.add_host_after(after, &f)?,
-                    (None, None) => set.add_host(doc, &f)?,
+                    // Next to the original only if it still saves to its file.
+                    (None, Some(after)) if matches!(set.locate(after), Locate::Editable { doc: d, .. } if d == doc) => {
+                        set.add_host_after(after, &f)?
+                    }
+                    (None, _) => set.add_host(doc, &f)?,
                 }
                 Ok(Saved::Ssh(f.alias))
             }
@@ -332,6 +335,19 @@ mod tests {
         let a = hosts.iter().find(|h| h.name == "a").unwrap();
         duplicate(a, &cfg, &set, &taken).unwrap().save(&mut cfg, &mut set, &taken).unwrap();
         assert_eq!(set.docs[0].render(), "Host a\n    User x\n\nHost a-copy\n    User x\n\nHost *\n    User y\n");
+
+        // "Save to" another file: the copy goes there, not after the original.
+        let work = d.path().join("work.conf");
+        std::fs::write(&work, "Host w\n").unwrap();
+        std::fs::write(&p, format!("Include {}\nHost a\n    User x\n", work.display().to_string().replace('\\', "/"))).unwrap();
+        let mut set = ConfigSet::load(&p).unwrap();
+        let hosts = crate::hosts::collect(&cfg).0;
+        let a = hosts.iter().find(|h| h.name == "a").unwrap();
+        let mut form = duplicate(a, &cfg, &set, &taken).unwrap();
+        form.dest = Dest::SshConfig(1);
+        form.save(&mut cfg, &mut set, &taken).unwrap();
+        assert!(!set.docs[0].render().contains("a-copy"));
+        assert!(set.docs[1].render().contains("Host a-copy"), "{}", set.docs[1].render());
     }
 
     #[test]
