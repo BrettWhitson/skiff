@@ -182,6 +182,33 @@ fn forward_save_without_start_and_delete_asks() {
     assert!(!std::fs::read_to_string(&f.path).unwrap().contains("47390"));
 }
 
+/// A forward's open overflow menu stays with that forward when an earlier
+/// one is removed meanwhile (menus are keyed by forward, not row index).
+#[test]
+fn forward_menu_follows_its_forward() {
+    let more = "
+[[forward]]
+host = \"alpha\"
+kind = \"dynamic\"
+listen = 47391
+
+[[forward]]
+host = \"alpha\"
+kind = \"dynamic\"
+listen = 47392
+";
+    let mut f = Fixture::with_config(&format!("{FWD_CONFIG}{more}"));
+    f.app.open_forwards();
+    f.frame(vec![]);
+    let b = f.app.cfg.forwards[1].clone();
+    activate(&mut f, &format!("More actions for {}", b.title()));
+    f.app.cfg.forwards.remove(0); // removed elsewhere while the menu is open
+    f.frame(vec![]);
+    let at = f.find_last("Delete");
+    f.click(at);
+    assert_eq!(f.app.forwards.confirm_delete.as_ref(), Some(&b));
+}
+
 /// A stopped forward is pruned from the running list on a later frame.
 #[test]
 fn stopped_forwards_are_dropped() {

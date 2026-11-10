@@ -15,8 +15,8 @@ use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::ui::{Id, Ui};
 use skiff_ui::widgets::{
     Align, ButtonKind, ButtonOpts, Column, EmptyState, MenuItem, Status, TextInputOpts, TextOpts, Tone, badge, badge_width, button_width,
-    button_with, context_menu, dropdown_labeled, empty_state, icon_button, open_context_menu, paragraph, paragraph_height, status_pill,
-    table_header, text, text_input,
+    button_with, context_menu, dialog_dismiss, dropdown_labeled, empty_state, icon_button, open_context_menu, paragraph, paragraph_height,
+    status_pill, table_header, text, text_input,
 };
 
 use crate::app::GuiApp;
@@ -547,7 +547,7 @@ fn table(ui: &mut Ui, at: Rect, st: &mut ForwardsState, app: &mut GuiApp, act: &
     let bw = ui.px(1).max(1);
     let mut y = at.y + hh;
     let cell = |c: Rect, y: i32, h: i32| Rect::new(c.x + pad, y, (c.w - 2 * pad).max(0), h);
-    for (i, f) in app.cfg.forwards.iter().enumerate() {
+    for f in &app.cfg.forwards {
         let state = st.state_of(f);
         let failed = match &state {
             Some(ForwardState::Failed(e)) => Some(e.clone()),
@@ -575,7 +575,7 @@ fn table(ui: &mut Ui, at: Rect, st: &mut ForwardsState, app: &mut GuiApp, act: &
         }
         let (status, label) = status_of(state.as_ref());
         let pr = cell(cols[status_col], y + (rh - bh) / 2, bh);
-        status_pill(ui, Id::new(("fwd-status", i)), pr, status, label);
+        status_pill(ui, Id::new(("fwd-status", f)), pr, status, label);
         // Actions: Start / Stop, then the overflow menu.
         let live = state.as_ref().is_some_and(|s| s.is_live());
         let ac = cols[action_col];
@@ -588,10 +588,12 @@ fn table(ui: &mut Ui, at: Rect, st: &mut ForwardsState, app: &mut GuiApp, act: &
         let name_run = format!("{run} {title}");
         let kind = if live { ButtonKind::Secondary } else { ButtonKind::Primary };
         let opts = ButtonOpts { kind, a11y_name: Some(&name_run), ..Default::default() };
-        if button_with(ui, Id::new(("fwd-run", i)), rr, run, opts).clicked {
+        if button_with(ui, Id::new(("fwd-run", f)), rr, run, opts).clicked {
             *act = Some((f.clone(), if live { "stop" } else { "start" }));
         }
-        let mid = Id::new(("fwd-more", i));
+        // Keyed by the forward, not its row: an open menu stays with its
+        // forward when another is removed meanwhile.
+        let mid = Id::new(("fwd-more", f));
         let more_name = format!("More actions for {title}");
         if icon_button(ui, mid, more, Icon::Ellipsis, &more_name, ButtonKind::Ghost).clicked {
             open_context_menu(ui, mid.with("menu"), Point::new(more.right() - ui.px(180), more.bottom() + ui.px(tokens::SPACE_XS)));
@@ -618,6 +620,7 @@ fn dialogs(ui: &mut Ui, st: &mut ForwardsState, app: &mut GuiApp) {
     if let Some(f) = st.confirm_delete.clone() {
         if !app.cfg.forwards.contains(&f) {
             st.confirm_delete = None;
+            dialog_dismiss(ui, Id::new("fwd-delete"));
         } else {
             let title = format!("Delete forward {}?", f.label());
             let running = st.state_of(&f).is_some_and(|s| s.is_live());

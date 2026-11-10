@@ -25,7 +25,7 @@ use skiff_ui::text::Fonts;
 use skiff_ui::ui::{Id, Ui, UiState};
 use skiff_ui::widgets::{
     Align, ButtonKind, Dialog, DialogButton, DialogResult, Elide, EmptyState, Status as Dot, TabTitle, TabsOpts, TextOpts, Toast,
-    ToastEvent, ToastKind, Toasts, dialog, empty_state, splitter_h, status_dot, tabs_with, text, toasts_in,
+    ToastEvent, ToastKind, Toasts, dialog, dialog_dismiss, empty_state, splitter_h, status_dot, tabs_with, text, toasts_in,
 };
 
 use crate::engine::{Engine, Msg};
@@ -1507,6 +1507,7 @@ impl GuiApp {
         };
         if n == 0 {
             self.closing = None; // finished meanwhile: close as asked
+            dialog_dismiss(ui, Id::new("close-confirm"));
             self.close_tab(id);
             return;
         }

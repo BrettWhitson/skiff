@@ -22,7 +22,8 @@ use skiff_ui::text::FontKind;
 use skiff_ui::ui::{Id, Ui};
 use skiff_ui::widgets::{
     ButtonKind, ButtonOpts, Dialog, DialogButton, DialogResult, Elide, EmptyState, MenuItem, TextInputOpts, Tone, badge, badge_width,
-    button_with, context_menu, dialog, dropdown_labeled, elide_mode, empty_state, icon_button, list_named, open_context_menu, text_input,
+    button_with, context_menu, dialog, dialog_dismiss, dropdown_labeled, elide_mode, empty_state, icon_button, list_named,
+    open_context_menu, text_input,
 };
 
 /// Height of one list row (group header or host), logical px.
@@ -494,7 +495,10 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     // disappeared meanwhile.
     if let Some(h) = sb.confirm_delete.clone() {
         match hosts.iter().find(|x| x.name == h) {
-            None => sb.confirm_delete = None,
+            None => {
+                sb.confirm_delete = None;
+                dialog_dismiss(ui, Id::new("sidebar-delete-dialog"));
+            }
             Some(host) => {
                 let title = format!("Delete {}?", host.name);
                 let body = match &host.source_file {

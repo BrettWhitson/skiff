@@ -187,6 +187,25 @@ fn delete_custom_connection_saves_config() {
     assert_eq!(f.app.hosts.len(), 1);
 }
 
+/// A delete dialog dropped because its host vanished meanwhile gives
+/// focus back to the host list.
+#[test]
+fn vanished_host_dialog_restores_focus() {
+    let mut f = Fixture::new();
+    f.click_text("beta");
+    let list = f.h.state.focused();
+    assert!(list.is_some());
+    f.frame(vec![Event::KeyDown { key: Key::Delete, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert_ne!(f.h.state.focused(), list, "the dialog has focus");
+    f.app.cfg.connections.retain(|c| c.name != "beta"); // deleted elsewhere
+    f.app.rebuild_hosts();
+    f.frame(vec![]);
+    f.frame(vec![]);
+    assert!(f.app.sidebar.confirm_delete.is_none());
+    assert_eq!(f.h.state.focused(), list);
+}
+
 /// Duplicate adds `<name>-copy` and saves it.
 #[test]
 fn duplicate_connection_gets_unique_name() {

@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use crate::hosts::HostEntry;
 
 /// Which direction a forward carries connections (ssh's `-L`, `-R` or `-D`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ForwardKind {
     #[default]
@@ -52,7 +52,7 @@ impl ForwardKind {
 }
 
 /// One saved port forward.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Forward {
     /// Optional display name; the host is shown when unset.
