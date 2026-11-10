@@ -110,7 +110,7 @@ Read only by `skiff-gui`; the TUI ignores this section.
 | `ui_scale` | `1.0` | Interface scale (clamped to 0.5–3). Windows' text-size setting is applied on top. |
 | `announce_output` | `true` | New terminal output read by screen readers: `true` (all terminals), `"focused"` (only the focused one) or `false`. |
 | `cursor_blink` | `true` | Blinking text and terminal cursors. Windows' "animation effects" off also stops blinking. |
-| `font_family` | unset | Accepted but currently unused. |
+| `font_family` | — | Retired: older configs may have it; it is accepted and ignored. Use `font_path` / `ui_font_path`. |
 
 ```toml
 [gui]

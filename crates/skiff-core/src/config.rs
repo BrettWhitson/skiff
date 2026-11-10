@@ -218,12 +218,11 @@ impl<'de> Deserialize<'de> for Announce {
     }
 }
 
-/// GUI-only settings (`[gui]`). The TUI ignores them.
+/// GUI-only settings (`[gui]`). The TUI ignores them. A `font_family` key
+/// from older configs is accepted and ignored (unknown keys are kept on save).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GuiSettings {
-    /// Font family name to use.
-    pub font_family: Option<String>,
     /// Terminal (monospace) font file to use instead of the bundled fonts.
     pub font_path: Option<String>,
     /// Interface font file to use instead of the bundled fonts.
@@ -241,15 +240,7 @@ pub struct GuiSettings {
 /// 14 pt terminal font, 100% scale, all output announced, blinking on.
 impl Default for GuiSettings {
     fn default() -> Self {
-        Self {
-            font_family: None,
-            font_path: None,
-            ui_font_path: None,
-            font_size: 14.0,
-            ui_scale: 1.0,
-            announce_output: Announce::All,
-            cursor_blink: true,
-        }
+        Self { font_path: None, ui_font_path: None, font_size: 14.0, ui_scale: 1.0, announce_output: Announce::All, cursor_blink: true }
     }
 }
 
@@ -558,6 +549,20 @@ mod tests {
         assert_eq!(cfg.gui.ui_scale, 1.0);
         assert!(cfg.themes[0].ansi.is_none());
         assert!(cfg.keys.is_empty());
+    }
+
+    /// The retired `[gui] font_family` key still loads, has no effect, and
+    /// survives a save untouched (fonts are chosen by `font_path` / `ui_font_path`).
+    #[test]
+    fn legacy_font_family_is_ignored() {
+        let (_d, path) = write_tmp("[gui]\nfont_family = \"Fira Code\"\n");
+        let base = Config::load_or_create(&path).unwrap();
+        assert_eq!(base.gui, GuiSettings::default());
+        let mut cfg = base.clone();
+        cfg.gui.font_size = 16.0;
+        cfg.save(&base, &path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("font_family = \"Fira Code\""), "{text}");
     }
 
     /// `tui_mouse` defaults to auto, accepts "always", rejects other values.
