@@ -199,17 +199,33 @@ fn tabs_close_and_reorder() {
     // The plus button.
     h.frame(click(Point::new(tr[2].right() + 15, 15)), &mut f);
     assert!(last.take().plus_clicked);
-    // Dragging tab 1 off the strip reports it once and gives the tab that
-    // was active before the press back its place.
+    // Dragging tab 1 off the strip (any side) reports it once; it stays active.
     h.frame(click(tr[0].center()), &mut f);
     let p1 = tr[1].center();
     h.frame(vec![Event::MouseMove(p1), Event::MouseDown(MouseButton::Left, p1)], &mut f);
     assert_eq!(active.get(), 1);
     h.frame(vec![Event::MouseMove(Point::new(p1.x, 70))], &mut f);
-    assert_eq!((last.take().dragged_out, active.get()), (Some(1), 0));
-    h.frame(vec![Event::MouseMove(Point::new(p1.x + 5, 75))], &mut f);
-    assert_eq!(last.take().dragged_out, None, "once per drag");
-    h.frame(vec![Event::MouseUp(MouseButton::Left, Point::new(p1.x + 5, 75))], &mut f);
+    assert_eq!((last.take().dragged_out, active.get()), (Some(1), 1));
+    h.frame(vec![Event::MouseMove(Point::new(tr[0].center().x, 15))], &mut f);
+    let r = last.take();
+    assert_eq!((r.dragged_out, r.moved), (None, None), "once per drag, and no reorder once out");
+    h.frame(vec![Event::MouseUp(MouseButton::Left, Point::new(tr[0].center().x, 15))], &mut f);
+    // Sideways out of a narrow strip counts too.
+    let mut g = |ui: &mut Ui| {
+        let mut a = 0;
+        last.set(tabs(ui, Id::new("n"), Rect::new(0, 0, 300, 30), &titles[..1], &mut a));
+    };
+    h.frame(vec![], &mut g);
+    let p = Point::new(40, 15);
+    h.frame(vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p)], &mut g);
+    h.frame(vec![Event::MouseMove(Point::new(320, 15))], &mut g);
+    assert_eq!(last.take().dragged_out, Some(0));
+    h.frame(vec![Event::MouseUp(MouseButton::Left, Point::new(320, 15))], &mut g);
+    // Shift+Right on the focused strip moves the active tab.
+    h.frame(vec![], &mut f);
+    h.frame(click(tr[0].center()), &mut f);
+    h.frame(vec![Event::KeyDown { key: Key::Right, mods: Modifiers { shift: true, ..Modifiers::NONE }, text: None }], &mut f);
+    assert_eq!((last.take().moved, active.get()), (Some((0, 1)), 1));
 }
 
 /// Dragging the splitter clamps to min/max, and the width stays logical on HiDPI.

@@ -1,10 +1,11 @@
 //! Tab strip (`tokens::TAB_H` tall): tabs with an optional status dot or
 //! icon, a middle-elided title and a close button (shown on the active,
-//! hovered or keyboard-focused tab), drag-to-reorder, drag-out, and a "+"
-//! icon button after the last tab. The active tab is raised (window
-//! background, joined to the content through the strip's bottom border)
-//! with a 2 px accent bar on top. The caller owns the tab list and the
-//! active index; `tabs` reports what the user did in a `TabsResponse`.
+//! hovered or keyboard-focused tab), drag-to-reorder (Shift+Left / Right
+//! from the keyboard), drag-out, and a "+" icon button after the last tab.
+//! The active tab is raised (window background, joined to the content
+//! through the strip's bottom border) with a 2 px accent bar on top (a
+//! quieter bar when `TabsOpts::inactive`). The caller owns the tab list and
+//! the active index; `tabs` reports what the user did in a `TabsResponse`.
 
 use crate::a11y::Role;
 use crate::geom::{Point, Rect};
@@ -42,6 +43,9 @@ impl TabTitle<'_> {
 pub struct TabsOpts<'a> {
     /// Tooltip of the "+" button (e.g. with its shortcut); "New tab" if unset.
     pub plus_tooltip: Option<&'a str>,
+    /// The strip belongs to a part of the window without focus (e.g. a
+    /// dock group): its active tab's top bar is drawn in a quieter colour.
+    pub inactive: bool,
 }
 
 /// What happened to the tab strip this frame.
@@ -49,13 +53,14 @@ pub struct TabsOpts<'a> {
 pub struct TabsResponse {
     /// The close button of this tab was clicked.
     pub closed: Option<usize>,
-    /// A tab was dragged from `.0` to `.1`; the caller reorders its tabs.
+    /// A tab was dragged (or moved with Shift+Left / Right) from `.0` to
+    /// `.1`; the caller reorders its tabs.
     pub moved: Option<(usize, usize)>,
     /// The "+" (new tab) button was clicked.
     pub plus_clicked: bool,
-    /// The dragged tab left the strip (reported once per drag): the caller
-    /// may start a drag-and-drop with it. The tab that was active before
-    /// the press is active again, so the content below is a drop target.
+    /// The dragged tab left the strip's rect on any side (reported once
+    /// per drag): the caller may start a drag-and-drop with it. It stays
+    /// the active tab.
     pub dragged_out: Option<usize>,
     /// Where each tab was drawn.
     pub tab_rects: Vec<Rect>,
@@ -66,23 +71,8 @@ pub struct TabsResponse {
 struct TabDrag {
     /// Current index of the tab being dragged (follows it as it moves).
     dragging: Option<usize>,
-    /// The tab active before the press.
-    before: Option<usize>,
     /// The drag has left the strip once.
     out: bool,
-}
-
-/// Index `b` after the item at `from` moved to `to`.
-fn index_after_move(b: usize, from: usize, to: usize) -> usize {
-    if b == from {
-        to
-    } else if from < b && to >= b {
-        b - 1
-    } else if from > b && to <= b {
-        b + 1
-    } else {
-        b
-    }
 }
 
 /// Index of the tab under x-coordinate `x`: the first tab whose right edge is
@@ -98,7 +88,7 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
     tabs_with(ui, id, rect, titles, active, TabsOpts::default())
 }
 
-/// `tabs` with options (the "+" button's tooltip).
+/// `tabs` with options (the "+" button's tooltip, a group without focus).
 pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut usize, opts: TabsOpts) -> TabsResponse {
     let mut out = TabsResponse::default();
     let n = titles.len();
@@ -161,13 +151,24 @@ pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &
             ui.a11y_focus_child(id, id.with(("tab", *active)));
         });
     }
-    // Keyboard: Left/Right move the active tab while the strip has focus.
+    // Keyboard: Left/Right choose the active tab while the strip has focus;
+    // with Shift they move it (the keyboard's drag-to-reorder).
     if sr.focused && n > 0 && ui.keys_for(id) {
         if ui.input_mut().take_key(&Key::Right, Modifiers::NONE) {
             *active = (*active + 1).min(n - 1);
         }
         if ui.input_mut().take_key(&Key::Left, Modifiers::NONE) {
             *active = active.saturating_sub(1);
+        }
+        let shift = Modifiers { shift: true, ..Modifiers::NONE };
+        let cur = (*active).min(n - 1);
+        if ui.input_mut().take_key(&Key::Right, shift) && cur + 1 < n {
+            out.moved = Some((cur, cur + 1));
+            *active = cur + 1;
+        }
+        if ui.input_mut().take_key(&Key::Left, shift) && cur > 0 {
+            out.moved = Some((cur, cur - 1));
+            *active = cur - 1;
         }
     }
     let mouse = ui.input().mouse;
@@ -176,19 +177,15 @@ pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &
     if n > 0 {
         if sr.pressed {
             match drag.dragging {
-                // Held and moved above/below the strip: report the drag-out
-                // once and restore the tab that was active before the press.
-                Some(i) if !pressed_now && (mouse.y < rect.y || mouse.y >= rect.bottom()) => {
+                // Held and moved out of the strip's rect (any side): report
+                // the drag-out once. Once out, it no longer reorders.
+                Some(i) if !pressed_now && (drag.out || !rect.contains(mouse)) => {
                     if !drag.out {
                         drag.out = true;
                         out.dragged_out = Some(i);
-                        if let Some(b) = drag.before {
-                            *active = b;
-                        }
                     }
                 }
-                // Held within the strip over another tab: report a move and
-                // re-index the dragged and "before" tabs to the new order.
+                // Held within the strip over another tab: report a move.
                 Some(i) if !pressed_now => {
                     let target = index_at(&out.tab_rects, mouse.x);
                     if target != i {
@@ -196,15 +193,14 @@ pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &
                         if *active == i {
                             *active = target;
                         }
-                        drag.before = drag.before.map(|b| index_after_move(b, i, target));
                         drag.dragging = Some(target);
                     }
                 }
                 // Fresh press (or no drag yet): start dragging the tab under
-                // the mouse and activate it, remembering the previous one.
+                // the mouse and activate it.
                 _ => {
                     let i = index_at(&out.tab_rects, mouse.x);
-                    drag = TabDrag { dragging: Some(i), before: Some(*active), out: false };
+                    drag = TabDrag { dragging: Some(i), out: false };
                     *active = i;
                 }
             }
@@ -247,7 +243,8 @@ pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &
             if is_active {
                 painter.rect(long, p.border, radius);
                 painter.rect(long.inset(bw), p.bg, (radius - bw as f32).max(0.0));
-                painter.rect(Rect::new(face.x + bw, face.y, face.w - 2 * bw, accent_h), p.accent, 0.0);
+                let bar = if opts.inactive { p.control } else { p.accent };
+                painter.rect(Rect::new(face.x + bw, face.y, face.w - 2 * bw, accent_h), bar, 0.0);
             } else if hovered {
                 painter.rect(long, p.hover, radius);
             }
