@@ -284,8 +284,9 @@ warning and that action keeps its default. Settings → Keybindings groups
 the actions, records chords, flags ones shared by two actions, marks changed
 ones with a dot and resets them to the default.
 
-The GUI's Settings apply as you go: switches, dropdowns and number steppers
-at once, text fields on `Enter` or when you leave them (a value that can't
+The GUI's Settings apply as you go: switches, dropdowns and the steppers' − / +
+buttons and arrow keys at once, text fields (and a number typed into a
+stepper) on `Enter` or when you leave them (a value that can't
 be used is refused with the reason under the field). Only the host and
 snippet editors have a Save button. The search box above the Settings pages
 finds any setting, host or snippet by name.

@@ -178,7 +178,8 @@ current one or press `Ctrl+L` to type a path), Name / Size / Modified
 column headers that sort, type-ahead (type a name to select it) and a
 footer with the item count and selection size; copies show in a
 collapsible drawer under the panes with a progress bar, rate and time left
-per file, and a summary such as "2 active · 1 failed".
+per file, and a summary such as "2 active · 1 waiting · 1 failed". An
+overwrite question opens the drawer and waits there for Overwrite or Skip.
 
 **Passwords.** SFTP and forwards have no terminal, so ssh asks Skiff
 (`SSH_ASKPASS`): a dialog in the TUI (`y` / `n` for host keys, `Esc`

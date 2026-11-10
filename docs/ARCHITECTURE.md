@@ -245,7 +245,10 @@ dots on a 16-unit grid rasterized with anti-aliasing at the drawn size and
 cached per size; overlays cast one soft shadow (`Prim::Shadow`, a cached
 falloff table). The components (button variants, icon buttons, badges and
 status dots, section and sortable table headers, steppers, empty states,
-modal dialogs with a focus trap, toasts, menus with icons and separators,
+modal dialogs with a focus trap (`dialog_dismiss` drops one unanswered and
+restores focus; while any modal is open, `Ui::modal_open` tells the app to
+hold its shortcuts), toasts, menus with icons and separators (`menu_item_rect`
+anchors a submenu),
 middle / start elision) are showcased in the toolkit demo
 (`cargo run -p skiff-ui --release --example demo`). The focus ring shows
 only after keyboard navigation; `Style::reduce_motion` (from the OS
@@ -258,8 +261,9 @@ A file pane (`files/pane.rs`) is a card: location picker, Up / Refresh and a
 breadcrumb path bar (`crumbs`), a grouped toolbar ending in Delete, a
 sortable table (`sort_entries`, folders first) with type-ahead and a footer
 (`footer_text`). The transfer drawer (`files/transfers.rs`) collapses to its
-header, whose `summary` reads like "2 active · 1 failed"; finished batches
-leave a notice (`FilesTab::take_notices`) for the app to show as a toast.
+header, whose `summary` reads like "2 active · 1 waiting · 1 failed"; an
+overwrite question re-opens it and scrolls to its row (`reveal`); finished
+batches and questions leave a notice (`FilesTab::take_notices`) for the app to show as a toast.
 Settings (`settings/mod.rs`) has a 200 px nav with a search box over an
 index of every setting (`index`, `search`; each entry knows the control to
 focus), and content at most 720 px wide (list + editor pages are wider).

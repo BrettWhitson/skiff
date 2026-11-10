@@ -103,6 +103,18 @@ First release under the name Skiff (formerly termax).
 
 ### Fixed
 
+- GUI app shortcuts wait while a dialog or the command palette is open
+  (Ctrl+Tab no longer abandons a dialog; the palette is a modal dialog to
+  screen readers), and a dialog dropped without an answer gives focus back.
+- GUI number steppers apply typed numbers on `Enter` or when you leave the
+  field, so typing `150` no longer applies `50` on the way.
+- An overwrite question opens the collapsed transfer drawer, scrolls to the
+  row, shows as "1 waiting" in its summary and is announced as a toast.
+- `[keys]` warnings are no longer repeated on every settings change.
+- "Move to file…" opens beside the host menu, also from the keyboard; a
+  narrow file pane keeps the Modified column while sorted by it; a
+  forward's open menu stays with that forward when another is removed.
+
 - The paper theme's bright terminal colours were hard to read on its light
   background; ANSI colours on light themes are now darkened to readable
   contrast.

@@ -310,7 +310,7 @@ impl TransferList {
                     None => {
                         // The copy stalls until answered: open the drawer on
                         // the question and announce it.
-                        let text = format!("{} already exists: choose Overwrite or Skip in Transfers", file_name(&path));
+                        let text = format!("{} already exists: answer in Transfers", file_name(&path));
                         row.state = RowState::Waiting(Question { path, reply: Some(reply), apply_all: false });
                         self.collapsed = false;
                         self.reveal = Some(id);
