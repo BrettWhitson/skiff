@@ -15,6 +15,8 @@
 //! - `cli`: command-line argument parsing shared by both front-ends.
 //! - `terminal`, `termx`: interactive SSH tabs and terminal helpers (search,
 //!   paste confirmation, mouse reporting).
+//! - `panes`: split-terminal divider math (snap points, keyboard steps,
+//!   minimum pane size) shared by both front-ends.
 //! - `fs`: local and SFTP file access and transfers.
 //! - `askpass`, `sshver`: answering ssh's prompts from the UI, and checking the
 //!   OpenSSH version supports it.
