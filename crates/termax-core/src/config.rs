@@ -162,6 +162,8 @@ pub struct Config {
     /// Action name → key chord (e.g. `quick_switcher = "Ctrl+Shift+K"`). Parsed by the GUI.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, String>,
+    #[serde(rename = "forward", skip_serializing_if = "Vec::is_empty")]
+    pub forwards: Vec<crate::forward::Forward>,
     #[serde(rename = "connection", skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<Connection>,
     #[serde(rename = "theme", skip_serializing_if = "Vec::is_empty")]
@@ -264,7 +266,7 @@ impl Config {
             apply_key_changes(table, &old_t, &new_t, new_table);
         }
 
-        for name in ["connection", "theme"] {
+        for name in ["connection", "theme", "forward"] {
             let list = |v: &toml::Value| -> Vec<toml::Table> {
                 v.get(name)
                     .and_then(|a| a.as_array())
@@ -273,6 +275,18 @@ impl Config {
             };
             let (old_l, new_l) = (list(&old), list(&new));
             if old_l == new_l {
+                continue;
+            }
+            // Forwards have no unique name: rewrite the whole list.
+            if name == "forward" {
+                match new_doc.get(name) {
+                    Some(item) => {
+                        doc.insert(name, item.clone());
+                    }
+                    None => {
+                        doc.remove(name);
+                    }
+                }
                 continue;
             }
             let key = |t: &toml::Table| t.get("name").and_then(|n| n.as_str()).map(str::to_string);

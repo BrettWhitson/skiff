@@ -3,6 +3,7 @@
 
 pub mod askpass;
 pub mod config;
+pub mod forward;
 pub mod fs;
 pub mod history;
 pub mod hosts;
