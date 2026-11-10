@@ -301,6 +301,19 @@ fn keyboard_moves_resizes_and_equalizes_panes() {
 }
 
 #[test]
+/// Pane shortcuts with nothing to do report it, so their keys reach the shell.
+fn pane_actions_that_do_not_apply_leave_the_key() {
+    let (mut f, _) = alpha();
+    for a in [Action::MovePaneLeft, Action::ResizePaneLeft, Action::EqualizePanes] {
+        assert!(!f.app.do_action(a), "{a:?} with one pane");
+    }
+    f.app.do_action(Action::SplitRight);
+    f.frame(vec![]);
+    assert!(!f.app.do_action(Action::MovePaneRight), "the focused (right) pane has nothing to its right");
+    assert!(f.app.do_action(Action::MovePaneLeft) && f.app.do_action(Action::EqualizePanes));
+}
+
+#[test]
 /// A tab joins another and a pane pops out to its own tab, keeping the same terminal.
 fn tabs_join_and_panes_pop_out_keeping_sessions() {
     let (mut f, a) = alpha();

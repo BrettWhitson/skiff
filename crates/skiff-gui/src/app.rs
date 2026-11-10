@@ -881,8 +881,10 @@ impl GuiApp {
     }
 
     /// Runs an app action. Copy, paste, find and zoom are queued in
-    /// `view_actions` for the active view to handle.
-    pub fn do_action(&mut self, a: Action) {
+    /// `view_actions` for the active view to handle. False when it doesn't
+    /// apply (a pane move, resize or equalize with nothing to change), so a
+    /// shortcut's key can go to the shell instead.
+    pub fn do_action(&mut self, a: Action) -> bool {
         match a {
             Action::QuickSwitcher | Action::NewTab => self.switcher_open = true,
             Action::CloseTab => {
@@ -921,16 +923,19 @@ impl GuiApp {
             | Action::ResizePaneRight
             | Action::ResizePaneUp
             | Action::ResizePaneDown
-            | Action::EqualizePanes => self.pane_action(a),
+            | Action::EqualizePanes => return self.pane_action(a),
             Action::Copy | Action::Paste | Action::Find | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => self.view_actions.push(a),
-            _ => {}
+            Action::NextTab | Action::PrevTab => return false, // no tabs
         }
+        true
     }
 
-    /// Splits, closes or moves between the active terminal's panes.
-    fn pane_action(&mut self, a: Action) {
+    /// Splits, closes or moves between the active terminal's panes. False
+    /// when there is nothing to do (no terminal tab, no pane that way, or
+    /// a single pane to equalize).
+    fn pane_action(&mut self, a: Action) -> bool {
         let Some(Tab { id, kind: TabKind::Terminal(t) }) = self.tabs.get_mut(self.active) else {
-            return;
+            return false;
         };
         let id = *id;
         match a {
@@ -939,17 +944,18 @@ impl GuiApp {
             Action::FocusNextPane => t.focus_next(true),
             // Closing the last pane closes the tab.
             Action::ClosePane if !t.close_focused() => self.request_close_tab(id),
-            Action::MovePaneLeft => _ = t.move_focused(Zone::Left),
-            Action::MovePaneRight => _ = t.move_focused(Zone::Right),
-            Action::MovePaneUp => _ = t.move_focused(Zone::Top),
-            Action::MovePaneDown => _ = t.move_focused(Zone::Bottom),
-            Action::ResizePaneLeft => _ = t.resize_focused(Zone::Left),
-            Action::ResizePaneRight => _ = t.resize_focused(Zone::Right),
-            Action::ResizePaneUp => _ = t.resize_focused(Zone::Top),
-            Action::ResizePaneDown => _ = t.resize_focused(Zone::Bottom),
-            Action::EqualizePanes => t.equalize(),
+            Action::MovePaneLeft => return t.move_focused(Zone::Left),
+            Action::MovePaneRight => return t.move_focused(Zone::Right),
+            Action::MovePaneUp => return t.move_focused(Zone::Top),
+            Action::MovePaneDown => return t.move_focused(Zone::Bottom),
+            Action::ResizePaneLeft => return t.resize_focused(Zone::Left),
+            Action::ResizePaneRight => return t.resize_focused(Zone::Right),
+            Action::ResizePaneUp => return t.resize_focused(Zone::Top),
+            Action::ResizePaneDown => return t.resize_focused(Zone::Bottom),
+            Action::EqualizePanes => return t.equalize(),
             _ => {}
         }
+        true
     }
 
     /// A terminal tab dropped onto a pane of tab `into`: on a side, its
@@ -987,7 +993,8 @@ impl GuiApp {
         }
     }
 
-    /// Takes app shortcuts out of this frame's input and runs them.
+    /// Runs the app shortcuts in this frame's input, taking out the keys of
+    /// those that applied.
     fn handle_shortcuts(&mut self, ui: &mut Ui) {
         let in_term = self.in_terminal();
         let hits: Vec<_> = ui
@@ -1001,9 +1008,11 @@ impl GuiApp {
                 _ => None,
             })
             .collect();
+        // An action that doesn't apply leaves its key for the terminal.
         for (key, mods, a) in hits {
-            ui.input_mut().take_key(&key, mods);
-            self.do_action(a);
+            if self.do_action(a) {
+                ui.input_mut().take_key(&key, mods);
+            }
         }
     }
 

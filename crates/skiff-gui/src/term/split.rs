@@ -644,9 +644,10 @@ impl TermSplit {
         true
     }
 
-    /// Gives panes in a row the same size.
-    pub fn equalize(&mut self) {
+    /// Gives panes in a row the same size; false for a single pane.
+    pub fn equalize(&mut self) -> bool {
         self.layout.equalize();
+        matches!(self.layout, Layout::Split { .. })
     }
 
     /// Moves focus to the next (or previous) pane, wrapping around.
