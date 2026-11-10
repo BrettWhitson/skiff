@@ -15,6 +15,14 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(askpass::helper_main());
     }
     let cfg_path = std::env::var_os("TERMAX_CONFIG").map(PathBuf::from).unwrap_or_else(Config::default_path);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let open = match termax_core::cli::parse_gui(&args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("termax-gui: {e}");
+            std::process::exit(2);
+        }
+    };
     let cfg = Config::load_or_create(&cfg_path)?;
     let ui_font = cfg.gui.ui_font_path.as_deref().map(Path::new);
     let mono = cfg.gui.font_path.as_deref().map(Path::new);
@@ -23,7 +31,11 @@ fn main() -> anyhow::Result<()> {
         .window_size
         .unwrap_or((1280, 800));
     run_with_waker(
-        move |waker| GuiApp::new(cfg, cfg_path, Some(waker)),
+        move |waker| {
+            let mut app = GuiApp::new(cfg, cfg_path, Some(waker));
+            app.open = open;
+            app
+        },
         WindowOptions { title: "termax".into(), size, fonts },
     )
 }

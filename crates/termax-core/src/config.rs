@@ -17,6 +17,8 @@ pub struct Connection {
     pub port: Option<u16>,
     pub identity_file: Option<String>,
     pub proxy_jump: Option<String>,
+    /// Passed as `-o ProxyCommand=…`.
+    pub proxy_command: Option<String>,
     /// Extra arguments passed to `ssh` before the destination, e.g. `["-A", "-o", "Compression=yes"]`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -24,15 +26,21 @@ pub struct Connection {
     pub remote_dir: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Left out of host lists unless "Show hidden hosts" is on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
+/// Number of text fields in the connection editor.
+pub const CONNECTION_FIELDS: usize = 10;
+
 /// Field labels of the connection editor (TUI and GUI), in order.
-pub const CONNECTION_LABELS: [&str; 9] =
-    ["Name", "Host", "User", "Port", "Identity file", "ProxyJump", "Extra ssh args", "Remote dir", "Tags"];
+pub const CONNECTION_LABELS: [&str; CONNECTION_FIELDS] =
+    ["Name", "Host", "User", "Port", "Identity file", "ProxyJump", "ProxyCommand", "Extra ssh args", "Remote dir", "Tags"];
 
 impl Connection {
     /// The editor's text fields, in `CONNECTION_LABELS` order.
-    pub fn to_fields(&self) -> [String; 9] {
+    pub fn to_fields(&self) -> [String; CONNECTION_FIELDS] {
         let o = |v: &Option<String>| v.clone().unwrap_or_default();
         [
             self.name.clone(),
@@ -41,6 +49,7 @@ impl Connection {
             self.port.map(|p| p.to_string()).unwrap_or_default(),
             o(&self.identity_file),
             o(&self.proxy_jump),
+            o(&self.proxy_command),
             shell_words::join(&self.extra_args),
             o(&self.remote_dir),
             self.tags.join(", "),
@@ -48,8 +57,8 @@ impl Connection {
     }
 
     /// Parses and validates the editor's fields (name and host required,
-    /// port 1-65535 when given).
-    pub fn from_fields(fields: &[String; 9]) -> Result<Connection, String> {
+    /// port 1-65535 when given). `hidden` is not a text field and stays false.
+    pub fn from_fields(fields: &[String; CONNECTION_FIELDS]) -> Result<Connection, String> {
         let v = |i: usize| fields[i].trim().to_string();
         let opt = |i: usize| Some(v(i)).filter(|s| !s.is_empty());
         if v(0).is_empty() {
@@ -62,7 +71,7 @@ impl Connection {
             None => None,
             Some(p) => Some(p.parse::<u16>().ok().filter(|&n| n > 0).ok_or_else(|| format!("Invalid port: {p}"))?),
         };
-        let extra_args = shell_words::split(&v(6)).map_err(|e| format!("Extra ssh args: {e}"))?;
+        let extra_args = shell_words::split(&v(7)).map_err(|e| format!("Extra ssh args: {e}"))?;
         Ok(Connection {
             name: v(0),
             host: v(1),
@@ -70,9 +79,11 @@ impl Connection {
             port,
             identity_file: opt(4),
             proxy_jump: opt(5),
+            proxy_command: opt(6),
             extra_args,
-            remote_dir: opt(7),
-            tags: v(8).split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
+            remote_dir: opt(8),
+            hidden: false,
+            tags: v(9).split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
         })
     }
 }
@@ -96,6 +107,16 @@ pub struct Settings {
     pub show_hidden_files: bool,
     /// Directory the local pane of the SFTP browser starts in (default: home).
     pub local_start_dir: Option<String>,
+    /// When host status checks run: only on request, or also at start.
+    pub status_checks: StatusChecks,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusChecks {
+    #[default]
+    Manual,
+    OnStart,
 }
 
 impl Default for Settings {
@@ -109,6 +130,7 @@ impl Default for Settings {
             sftp_batch_mode: true,
             show_hidden_files: false,
             local_start_dir: None,
+            status_checks: StatusChecks::Manual,
         }
     }
 }
@@ -140,6 +162,8 @@ pub struct Config {
     /// Action name → key chord (e.g. `quick_switcher = "Ctrl+Shift+K"`). Parsed by the GUI.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, String>,
+    #[serde(rename = "forward", skip_serializing_if = "Vec::is_empty")]
+    pub forwards: Vec<crate::forward::Forward>,
     #[serde(rename = "connection", skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<Connection>,
     #[serde(rename = "theme", skip_serializing_if = "Vec::is_empty")]
@@ -242,7 +266,7 @@ impl Config {
             apply_key_changes(table, &old_t, &new_t, new_table);
         }
 
-        for name in ["connection", "theme"] {
+        for name in ["connection", "theme", "forward"] {
             let list = |v: &toml::Value| -> Vec<toml::Table> {
                 v.get(name)
                     .and_then(|a| a.as_array())
@@ -251,6 +275,18 @@ impl Config {
             };
             let (old_l, new_l) = (list(&old), list(&new));
             if old_l == new_l {
+                continue;
+            }
+            // Forwards have no unique name: rewrite the whole list.
+            if name == "forward" {
+                match new_doc.get(name) {
+                    Some(item) => {
+                        doc.insert(name, item.clone());
+                    }
+                    None => {
+                        doc.remove(name);
+                    }
+                }
                 continue;
             }
             let key = |t: &toml::Table| t.get("name").and_then(|n| n.as_str()).map(str::to_string);

@@ -174,6 +174,6 @@ fn form_follows_its_connection_when_others_are_deleted() {
     f.click_text("Save"); // used to overwrite whatever sat at beta's old index
     f.click_text("Duplicate"); // used to index past the end
     let names: Vec<&str> = f.app.cfg.connections.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, vec!["beta", "beta (copy)"], "nothing else overwritten");
+    assert_eq!(names, vec!["beta", "beta-copy"], "nothing else overwritten");
     assert_eq!(f.app.cfg.connections[0].port, Some(3333));
 }

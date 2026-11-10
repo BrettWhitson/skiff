@@ -7,9 +7,10 @@ use ratatui::widgets::{Block, BorderType, Cell, Clear, List, ListItem, ListState
 use ratatui::Frame;
 use tui_term::widget::{Cursor, PseudoTerminal};
 
-use crate::app::{App, Modal, TabKind, EDITOR_LABELS};
-use termax_core::hosts::Source;
+use crate::app::{App, Modal, TabKind};
+use crate::forms::{ForwardForm, FwdRow, Row as EdRow};
 use crate::input::TextInput;
+use termax_core::status::Status as HostStatus;
 use crate::sftp_tab::{human_size, Pane, SftpTab, Side, Status, TransferState};
 use crate::tui_theme::Theme;
 
@@ -27,7 +28,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         TabKind::Sftp(_) => draw_sftp(f, app, body),
     }
     draw_status(f, app, status_area);
-    draw_modal(f, app, area);
+    let states: Vec<String> = match app.modal {
+        Some(Modal::Forwards { .. }) => (0..app.cfg.forwards.len()).map(|i| app.forward_state(i)).collect(),
+        _ => vec![],
+    };
+    draw_modal(f, app, area, &states);
 }
 
 fn block<'a>(t: &Theme, title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
@@ -62,7 +67,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else {
         let hints = match &app.tabs[app.active].kind {
             TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear",
-            TabKind::Hosts => "Enter ssh · s sftp · / filter · n new · e edit · d delete · t theme · ? help · q quit",
+            TabKind::Hosts => "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · ? help",
             TabKind::Terminal(_) => "Alt+1-9 tabs · Alt+←/→ cycle · Alt+W close · Shift+PgUp/PgDn scroll · Alt+H help",
             TabKind::Sftp(_) => "Tab pane · Enter open · Bksp up · c copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh",
         };
@@ -77,7 +82,10 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme.clone();
     let [left, right] = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
 
-    let title = format!(" Hosts ({}/{}) ", app.filtered.len(), app.hosts.len());
+    let mut title = format!(" Hosts ({}/{}) · sort: {} ", app.filtered.len(), app.hosts.len(), app.ui_state.sort.label());
+    if app.ui_state.show_hidden {
+        title.push_str("· hidden shown ");
+    }
     let outer = block(&t, title, true);
     let inner = outer.inner(left);
     f.render_widget(outer, left);
@@ -108,15 +116,16 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .map(|&i| {
                 let h = &app.hosts[i];
-                let badge = match h.source {
-                    Source::Custom(_) => "●",
-                    Source::SshConfig => "○",
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!(" {badge} "), t.accent()),
+                let (sym, style) = status_symbol(&t, app.statuses.get(&h.name));
+                let mut spans = vec![
+                    Span::styled(format!(" {sym} "), style),
                     Span::raw(format!("{:<name_w$}  ", h.name)),
                     Span::styled(h.target(), t.muted()),
-                ]))
+                ];
+                if h.hidden {
+                    spans.push(Span::styled("  (hidden)", t.muted()));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect();
         let mut state = ListState::default().with_offset(app.host_offset).with_selected(Some(app.host_selected));
@@ -146,10 +155,12 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
         row("Remote dir", h.remote_dir.clone().unwrap_or_else(dash)),
         row("Tags", if h.tags.is_empty() { dash() } else { h.tags.join(", ") }),
         row("Source", h.source_label.clone()),
+        row("Status", app.statuses.get(&h.name).cloned().unwrap_or_default().label()),
+        row("Last used", app.history.ago(&h.name, termax_core::history::now()).unwrap_or_else(|| "never".into())),
         Line::raw(""),
         row("Command", shell_words::join(&cmd)),
         Line::raw(""),
-        Line::from(Span::styled("  Enter: terminal   s: file transfer   e: edit", t.muted())),
+        Line::from(Span::styled("  Enter: terminal   s: file transfer   e: edit   f: forward a port", t.muted())),
     ];
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
@@ -352,12 +363,13 @@ fn unicode_width(s: &str) -> u16 {
     Line::raw(s).width() as u16
 }
 
-fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
+/// `states`: each saved forward's state, while the forwards list is open.
+fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
     let t = &app.theme;
     let Some(modal) = &app.modal else { return };
     match modal {
         Modal::Help => {
-            let r = centered(area, 72, 30);
+            let r = centered(area, 72, 38);
             f.render_widget(Clear, r);
             let k = |key: &str, desc: &str| {
                 Line::from(vec![Span::styled(format!("  {key:<22}"), t.accent()), Span::raw(desc.to_string())])
@@ -375,8 +387,16 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                 k("Enter", "open terminal (ssh)"),
                 k("s", "open file transfer (sftp)"),
                 k("/", "filter hosts"),
-                k("n / e / d", "new / edit / delete connection"),
+                k("n / e / d", "new / edit / delete host (ssh config too)"),
+                k("p", "check which hosts are reachable"),
+                k("o", "sort by name / recent"),
+                k("H", "show / hide hidden hosts"),
+                k("f / F", "forward a port / saved forwards"),
                 k("r", "reload config files"),
+                h("Host editor"),
+                k("Tab / ↑↓ · Ctrl+S", "move between fields · save"),
+                k("Space", "toggle Save to / Hidden"),
+                k("Enter (Other options)", "add a line"),
                 h("Terminal"),
                 k("Shift+PgUp / PgDn", "scroll back"),
                 k("Enter (when closed)", "reconnect"),
@@ -421,41 +441,83 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
             f.render_stateful_widget(list, r, &mut state);
         }
         Modal::Editor(ed) => {
-            let r = centered(area, 70, EDITOR_LABELS.len() as u16 + 6);
+            let rows = ed.rows();
+            let r = centered(area, 76, rows.len() as u16 + 6);
             f.render_widget(Clear, r);
-            let title = if ed.editing.is_some() { " Edit connection " } else { " New connection " };
-            let b = block(t, title, true);
+            let b = block(t, ed.title(), true);
             let inner = b.inner(r);
             f.render_widget(b, r);
-            let label_w = 16u16;
-            for (i, (label, field)) in EDITOR_LABELS.iter().zip(&ed.fields).enumerate() {
-                let y = inner.y + i as u16;
-                if y >= inner.bottom() {
-                    break;
-                }
+            let mut hint = "";
+            for (i, row) in rows.iter().enumerate() {
                 let focused = i == ed.focus;
-                let style = if focused { t.accent() } else { t.muted() };
-                f.render_widget(
-                    Paragraph::new(Span::styled(format!("{label:>14}: "), style)),
-                    Rect::new(inner.x, y, label_w, 1),
-                );
-                let field_area = Rect::new(inner.x + label_w, y, inner.width.saturating_sub(label_w), 1);
-                let value_style = if focused { Style::new().fg(t.fg).add_modifier(Modifier::UNDERLINED) } else { Style::new().fg(t.fg) };
-                f.render_widget(Paragraph::new(field.value.as_str()).style(value_style), field_area);
-                if focused {
-                    set_cursor(f, field_area.x, y, field);
+                let (label, value, input) = match *row {
+                    EdRow::Dest => ("Save to", format!("‹ {} ›", ed.dest_label()), None),
+                    EdRow::Field(fl) => {
+                        if focused {
+                            hint = fl.hint();
+                        }
+                        let input = ed.input(fl);
+                        (fl.label(), input.map(|i| i.value.clone()).unwrap_or_default(), input)
+                    }
+                    EdRow::Hidden => ("Hidden", if ed.form.hidden { "[x] left out of host lists" } else { "[ ]" }.to_string(), None),
+                    EdRow::Other(j) => (if j == 0 { "Other options" } else { "" }, ed.other[j].value.clone(), Some(&ed.other[j])),
+                };
+                if matches!(row, EdRow::Other(_)) && focused {
+                    hint = "one option per line, e.g. ForwardAgent yes · Enter adds a line";
                 }
+                field_row(f, t, inner, i as u16, label, &value, input, focused);
             }
-            let y = inner.y + EDITOR_LABELS.len() as u16 + 1;
             let footer = match &ed.error {
                 Some(e) => Line::styled(format!(" {e}"), Style::new().fg(t.error)),
-                None => Line::styled(
-                    " Tab/↑↓ move · Ctrl+S save · Esc cancel · args: shell-quoted · tags: comma-separated",
-                    t.muted(),
-                ),
+                None if !hint.is_empty() => Line::styled(format!(" {hint}"), t.muted()),
+                None => Line::styled(" Tab/↑↓ move · Space toggle · Ctrl+S save · Esc cancel", t.muted()),
             };
+            let y = inner.y + rows.len() as u16 + 1;
             if y < inner.bottom() {
-                f.render_widget(Paragraph::new(footer), Rect::new(inner.x, y, inner.width, 1));
+                f.render_widget(Paragraph::new(footer).wrap(Wrap { trim: true }), Rect::new(inner.x, y, inner.width, inner.bottom() - y));
+            }
+        }
+        Modal::Forward(form) => {
+            let rows = form.rows();
+            let r = centered(area, 76, rows.len() as u16 + 8);
+            f.render_widget(Clear, r);
+            let b = block(t, format!(" Forward a port — {} ", form.host), true);
+            let inner = b.inner(r);
+            f.render_widget(b, r);
+            for (i, row) in rows.iter().enumerate() {
+                let input = form.input(*row);
+                let value = match row {
+                    FwdRow::Kind => format!("‹ {} ›", form.kind.label()),
+                    _ => input.map(|i| i.value.clone()).unwrap_or_default(),
+                };
+                field_row(f, t, inner, i as u16, ForwardForm::label(*row), &value, input, i == form.focus);
+            }
+            let y = inner.y + rows.len() as u16 + 1;
+            let mut lines = vec![Line::styled(format!(" {}", form.kind.explain()), t.muted())];
+            if let Some(e) = &form.error {
+                lines.insert(0, Line::styled(format!(" {e}"), Style::new().fg(t.error)));
+            } else {
+                lines.push(Line::styled(" Bind address defaults to 127.0.0.1 · Ctrl+S save and start · Esc cancel", t.muted()));
+            }
+            if y < inner.bottom() {
+                f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), Rect::new(inner.x, y, inner.width, inner.bottom() - y));
+            }
+        }
+        Modal::Forwards { selected } => {
+            let list = &app.cfg.forwards;
+            let r = centered(area, 76, list.len().max(1) as u16 + 4);
+            f.render_widget(Clear, r);
+            let b = block(t, " Saved forwards (Enter start · s stop · e edit · d delete · Esc close) ", true);
+            if list.is_empty() {
+                f.render_widget(
+                    Paragraph::new("No saved forwards. Select a host and press f.").style(t.muted()).block(b),
+                    r,
+                );
+            } else {
+                let items: Vec<ListItem> =
+                    list.iter().zip(states).map(|(fw, st)| ListItem::new(format!(" {}  —  {st}", fw.title()))).collect();
+                let mut state = ListState::default().with_selected(Some(*selected));
+                f.render_stateful_widget(List::new(items).highlight_style(t.selected()).block(b), r, &mut state);
             }
         }
         Modal::Prompt(p) => {
@@ -476,6 +538,37 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                 r,
             );
         }
+    }
+}
+
+/// The list symbol for a host's status (shape differs too, not only color).
+fn status_symbol(t: &Theme, s: Option<&HostStatus>) -> (&'static str, Style) {
+    match s {
+        Some(HostStatus::Online { .. }) => ("●", Style::new().fg(t.success)),
+        Some(HostStatus::Offline(_)) => ("✕", Style::new().fg(t.error)),
+        Some(HostStatus::NotSsh) => ("!", Style::new().fg(t.warning)),
+        Some(HostStatus::Checking) => ("…", t.muted()),
+        Some(HostStatus::Unknown(_)) => ("?", t.muted()),
+        Some(HostStatus::Unchecked) | None => ("·", t.muted()),
+    }
+}
+
+/// One `label: value` line of a form; places the cursor in the focused input.
+#[allow(clippy::too_many_arguments)]
+fn field_row(f: &mut Frame, t: &Theme, inner: Rect, i: u16, label: &str, value: &str, input: Option<&TextInput>, focused: bool) {
+    let y = inner.y + i;
+    if y >= inner.bottom() {
+        return;
+    }
+    let label_w = 17u16;
+    let style = if focused { t.accent() } else { t.muted() };
+    let mark = if label.is_empty() { "  " } else { ": " };
+    f.render_widget(Paragraph::new(Span::styled(format!("{label:>15}{mark}"), style)), Rect::new(inner.x, y, label_w, 1));
+    let area = Rect::new(inner.x + label_w, y, inner.width.saturating_sub(label_w), 1);
+    let value_style = if focused { Style::new().fg(t.fg).add_modifier(Modifier::UNDERLINED) } else { Style::new().fg(t.fg) };
+    f.render_widget(Paragraph::new(value.to_string()).style(value_style), area);
+    if let (true, Some(input)) = (focused, input) {
+        set_cursor(f, area.x, y, input);
     }
 }
 

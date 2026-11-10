@@ -6,7 +6,11 @@
 
 use std::path::{Path, PathBuf};
 
-const MAX_INCLUDE_DEPTH: usize = 16;
+pub mod doc;
+pub mod edit;
+pub mod resolve;
+
+pub(crate) const MAX_INCLUDE_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SshHost {
@@ -16,6 +20,11 @@ pub struct SshHost {
     pub port: Option<u16>,
     pub identity_file: Option<String>,
     pub proxy_jump: Option<String>,
+    pub proxy_command: Option<String>,
+    /// From the `# termax:` comment of the host's first block.
+    pub tags: Vec<String>,
+    pub hidden: bool,
+    pub remote_dir: Option<String>,
     pub source: PathBuf,
 }
 
@@ -61,10 +70,23 @@ fn parse_file_into(path: &Path, depth: usize, out: &mut Vec<SshHost>) -> anyhow:
 pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>) {
     // Indices into `out` for the hosts declared by the current `Host` line.
     let mut current: Vec<usize> = Vec::new();
+    // Hosts first declared by the current `Host` line: they take its extras.
+    let mut fresh: Vec<usize> = Vec::new();
 
     for raw in text.lines() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.starts_with('#') {
+            if let Some((tags, hidden, dir)) = doc::parse_extras(line) {
+                for &i in &fresh {
+                    let h = &mut out[i];
+                    h.tags = tags.clone();
+                    h.hidden = hidden;
+                    h.remote_dir = dir.clone();
+                }
+            }
+            continue;
+        }
+        if line.is_empty() {
             continue;
         }
         let Some((key, value)) = split_kv(line) else { continue };
@@ -73,6 +95,7 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
         match key.as_str() {
             "host" => {
                 current.clear();
+                fresh.clear();
                 for pattern in value.split_whitespace() {
                     let pattern = unquote(pattern);
                     // Wildcard and negated patterns are defaults, not connectable hosts.
@@ -87,13 +110,17 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
                                 source: source.to_path_buf(),
                                 ..Default::default()
                             });
+                            fresh.push(out.len() - 1);
                             out.len() - 1
                         }
                     };
                     current.push(idx);
                 }
             }
-            "match" => current.clear(),
+            "match" => {
+                current.clear();
+                fresh.clear();
+            }
             "include" => {
                 for pat in value.split_whitespace() {
                     for file in resolve_include(unquote(pat)) {
@@ -116,6 +143,7 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
                         }
                         "identityfile" => set_once(&mut h.identity_file, &value),
                         "proxyjump" => set_once(&mut h.proxy_jump, &value),
+                        "proxycommand" => set_once(&mut h.proxy_command, &value),
                         _ => {}
                     }
                 }
@@ -131,7 +159,7 @@ fn set_once(slot: &mut Option<String>, value: &str) {
 }
 
 /// Splits `Key value`, `Key=value` or `Key = value`.
-fn split_kv(line: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_kv(line: &str) -> Option<(&str, &str)> {
     let end = line.find(|c: char| c.is_whitespace() || c == '=')?;
     let key = &line[..end];
     let rest = line[end..].trim_start();
@@ -142,11 +170,11 @@ fn split_kv(line: &str) -> Option<(&str, &str)> {
     Some((key, rest))
 }
 
-fn unquote(s: &str) -> &str {
+pub(crate) fn unquote(s: &str) -> &str {
     s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s)
 }
 
-fn resolve_include(pattern: &str) -> Vec<PathBuf> {
+pub(crate) fn resolve_include(pattern: &str) -> Vec<PathBuf> {
     let mut path = expand_tilde(pattern);
     if path.is_relative() {
         if let Some(home) = home_dir() {
@@ -235,6 +263,22 @@ mod tests {
         let hosts = parse("Host a\n  User one\n  User two\nHost a\n  User three\n");
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].user.as_deref(), Some("one"));
+    }
+
+    #[test]
+    fn reader_sees_extras_and_proxycommand() {
+        let hosts = parse("Host a
+  # termax: tags=x,y; hidden; dir=/srv
+  ProxyCommand nc %h 22
+Host a
+  # termax: tags=z
+Host b
+");
+        assert_eq!(hosts[0].tags, ["x", "y"]);
+        assert!(hosts[0].hidden);
+        assert_eq!(hosts[0].remote_dir.as_deref(), Some("/srv"));
+        assert_eq!(hosts[0].proxy_command.as_deref(), Some("nc %h 22"));
+        assert!(hosts[1].tags.is_empty() && !hosts[1].hidden);
     }
 
     #[test]

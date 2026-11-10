@@ -226,10 +226,36 @@ fn main() {
     s.save("4-password-prompt");
 
     // 5. Settings: editing a connection.
-    s.app.edit_target = Some(0);
+    s.app.edit_target = Some("file-server".into());
     s.app.open_settings();
     s.settle();
     s.save("5-settings");
+
+    // 6. Forwards tab, with status dots in the sidebar (fixtures only).
+    for name in ["file-server", "staging-api"] {
+        let i = s.app.hosts.iter().position(|h| h.name == name).unwrap();
+        s.app.check_status(Some(i));
+    }
+    let listen = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let fwd = termax_core::forward::Forward {
+        name: Some("admin panel".into()),
+        host: "file-server".into(),
+        kind: termax_core::forward::ForwardKind::Local,
+        bind: None,
+        listen,
+        target: Some(format!("127.0.0.1:{}", files_fx.port())),
+    };
+    s.app.cfg.forwards.push(fwd.clone());
+    let mut st = std::mem::take(&mut s.app.forwards);
+    s.app.start_forward(&mut st, &fwd);
+    s.app.forwards = st;
+    s.app.open_forwards();
+    s.until("forward running and statuses in", |a| {
+        a.forwards.state_of(&fwd) == Some(termax_core::forward::ForwardState::Running)
+            && ["file-server", "staging-api"].iter().all(|n| matches!(a.statuses.get(*n), Some(termax_core::status::Status::Online { .. })))
+    });
+    s.save("6-forwards");
+    s.app.forwards.stop_all();
 
     // Close everything (kills the ssh children) before the fixtures stop.
     for id in s.app.tabs.iter().map(|t| t.id).collect::<Vec<_>>() {

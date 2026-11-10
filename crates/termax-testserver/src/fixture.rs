@@ -102,6 +102,11 @@ impl TestFixture {
         v
     }
 
+    /// The server's port on 127.0.0.1.
+    pub fn port(&self) -> u16 {
+        self.server.port
+    }
+
     pub fn destination(&self) -> String {
         "127.0.0.1".into()
     }

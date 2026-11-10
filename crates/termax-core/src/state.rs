@@ -11,11 +11,39 @@ pub struct UiState {
     pub window_size: Option<(u32, u32)>,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
+    /// Host list order.
+    pub sort: SortMode,
+    /// Show hosts marked hidden.
+    pub show_hidden: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SortMode {
+    #[default]
+    Name,
+    Recent,
+}
+
+impl SortMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::Name => "Name",
+            SortMode::Recent => "Recent",
+        }
+    }
+
+    pub fn next(self) -> SortMode {
+        match self {
+            SortMode::Name => SortMode::Recent,
+            SortMode::Recent => SortMode::Name,
+        }
+    }
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { window_size: None, sidebar_width: 240.0, sidebar_collapsed: false }
+        Self { window_size: None, sidebar_width: 240.0, sidebar_collapsed: false, sort: SortMode::Name, show_hidden: false }
     }
 }
 
@@ -52,7 +80,7 @@ mod tests {
         assert_eq!(UiState::load(&path), UiState::default());
         assert_eq!(UiState::default().sidebar_width, 240.0);
 
-        let s = UiState { window_size: Some((1200, 800)), sidebar_width: 300.0, sidebar_collapsed: true };
+        let s = UiState { window_size: Some((1200, 800)), sidebar_width: 300.0, sidebar_collapsed: true, sort: SortMode::Recent, show_hidden: true };
         s.save(&path).unwrap();
         assert_eq!(UiState::load(&path), s);
 

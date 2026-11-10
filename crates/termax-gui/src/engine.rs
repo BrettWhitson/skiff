@@ -21,6 +21,7 @@ pub enum Msg {
     Transfer { tab: u64, ev: termax_core::fs::transfer::TransferEvent },
     /// ssh asks for a password / host-key answer (tag = "tab:side").
     Ask(termax_core::askpass::AskRequest),
+    HostStatus { host: String, status: termax_core::status::Status },
 }
 
 impl Msg {
@@ -29,6 +30,7 @@ impl Msg {
             Msg::Notice { tab, .. } => *tab,
             Msg::Files { tab, .. } | Msg::Transfer { tab, .. } => Some(*tab),
             Msg::Ask(req) => crate::files::parse_tag(&req.tag).map(|(t, _)| t),
+            Msg::HostStatus { .. } => None,
         }
     }
 }

@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use russh::keys::{PrivateKey, PublicKey};
 use russh::server::{Auth, ChannelOpenHandle, Msg, PublicKeyOffer, Server as _, Session, VerifiedPublicKey};
-use russh::{Channel, ChannelId, MethodKind, MethodSet};
+use russh::{Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet};
 use tokio::sync::oneshot;
 
 use crate::sftp_fs::SftpFs;
@@ -151,6 +151,39 @@ impl russh::server::Handler for Conn {
         Ok(())
     }
 
+    /// Local forwards (`ssh -L`). Only 127.0.0.1/localhost targets: the test
+    /// server never reaches out anywhere else.
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host: &str,
+        port: u32,
+        _originator: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<()> {
+        let Ok(port) = u16::try_from(port) else {
+            reply.reject(ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        if !matches!(host, "127.0.0.1" | "localhost") {
+            reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
+            return Ok(());
+        }
+        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(mut tcp) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut ch = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut ch, &mut tcp).await;
+                });
+            }
+            Err(_) => reply.reject(ChannelOpenFailure::ConnectFailed).await,
+        }
+        Ok(())
+    }
+
     async fn subsystem_request(&mut self, id: ChannelId, name: &str, session: &mut Session) -> Result<()> {
         match (name, self.channels.remove(&id)) {
             ("sftp", Some(channel)) => {
@@ -175,6 +208,20 @@ impl russh::server::Handler for Conn {
         session: &mut Session,
     ) -> Result<()> {
         session.channel_success(channel)?;
+        Ok(())
+    }
+
+    /// `exit N` exits with status N; any other command is echoed back.
+    async fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Result<()> {
+        let cmd = String::from_utf8_lossy(data).into_owned();
+        session.channel_success(channel)?;
+        let code = cmd.strip_prefix("exit ").and_then(|n| n.trim().parse::<u32>().ok());
+        if code.is_none() {
+            session.data(channel, format!("{cmd}\n").into_bytes())?;
+        }
+        session.exit_status_request(channel, code.unwrap_or(0))?;
+        session.eof(channel)?;
+        session.close(channel)?;
         Ok(())
     }
 

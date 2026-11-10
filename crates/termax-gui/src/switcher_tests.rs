@@ -15,19 +15,29 @@ fn hosts() -> Vec<HostEntry> {
 
 #[test]
 fn rank_prefers_hosts_by_fuzzy() {
-    let r = rank("bet", &hosts(), &[], &["dracula".into()]);
+    let r = rank("bet", &hosts(), &[], &["dracula".into()], &RankCtx::default());
     assert_eq!(r[0].0, Item::Host(1), "{:?}", r.iter().map(|x| &x.1).collect::<Vec<_>>());
     assert!(r.iter().all(|(i, _, _)| !matches!(i, Item::Host(0))));
-    let r = rank("drac", &hosts(), &[], &["dracula".into(), "nord".into()]);
+    let r = rank("drac", &hosts(), &[], &["dracula".into(), "nord".into()], &RankCtx::default());
     assert_eq!(r[0].0, Item::Theme("dracula".into()));
 }
 
 #[test]
 fn empty_query_lists_tabs_first() {
     let tabs = vec![(7u64, "\u{25CF} alpha".to_string())];
-    let r = rank("", &hosts(), &tabs, &[]);
+    let r = rank("", &hosts(), &tabs, &[], &RankCtx::default());
     assert_eq!(r[0].0, Item::Tab(7));
     assert_eq!(r[1].0, Item::Host(0));
+}
+
+#[test]
+fn switcher_lists_recent_first() {
+    let ctx = RankCtx { show_hidden: false, recent: vec!["beta".into()] };
+    let r = rank("", &hosts(), &[], &[], &ctx);
+    let found: Vec<&Item> = r.iter().map(|x| &x.0).filter(|i| matches!(i, Item::Host(_))).collect();
+    assert_eq!(found, [&Item::Host(1)], "only recent hosts on an empty query");
+    let r = rank("alp", &hosts(), &[], &[], &ctx);
+    assert_eq!(r[0].0, Item::Host(0), "typing still finds every host");
 }
 
 fn open(f: &mut Fixture) {

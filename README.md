@@ -2,8 +2,11 @@
 
 A terminal UI for SSH and file transfer, written in Rust.
 
-- Lists hosts from `~/.ssh/config` plus your own **custom connections**
+- Lists hosts from `~/.ssh/config` plus your own **custom connections**, and
+  **edits `~/.ssh/config` in place** (comments and formatting kept, with backups)
 - Opens each connection in its own **tab**, as an interactive terminal or a dual-pane **SFTP browser**
+- **Port forwards**, opt-in **reachability status**, **recent hosts**, hidden hosts
+- A **command line**: `termax web`, `termax web uptime`, `termax list --json`, shell completion
 - **Themes**, including built-in ones and your own, with live preview
 
 termax drives the system OpenSSH client (`ssh`), so `ProxyJump`, agents, keys,
@@ -20,7 +23,33 @@ cargo run --release
 cargo test
 ```
 
-`termax --config-path` prints where the config file lives.
+`termax --config-path` prints where the config file lives; `termax --help`
+lists every command.
+
+## Command line
+
+```bash
+termax                       # host list
+termax web                   # terminal to "web"
+termax --files web           # file transfer with "web"
+termax web uptime            # run a command; exits with its status
+termax -t web htop           # same, with a terminal (interactive programs)
+termax list                  # name<TAB>user@host:port<TAB>tags (hidden hosts: --all)
+termax list --json           # the same as JSON
+termax info web [--json]     # one host's details
+termax --host list uptime    # a host literally named "list"
+termax-gui web               # the GUI, opening "web"
+```
+
+An unknown name exits with status 2 and suggests the closest matches.
+Shell completion (host names included):
+
+```bash
+eval "$(termax completion bash)"     # ~/.bashrc
+eval "$(termax completion zsh)"      # ~/.zshrc
+termax completion fish > ~/.config/fish/completions/termax.fish
+termax completion powershell | Out-String | Invoke-Expression   # $PROFILE
+```
 
 ## How it works
 
@@ -50,6 +79,7 @@ scrollback = 5000
 sftp_batch_mode = true      # SFTP fails instead of prompting (see below)
 show_hidden_files = false
 # local_start_dir = "~/Downloads"
+status_checks = "manual"    # or "on_start": check which hosts are reachable at start
 
 [[connection]]
 name = "homelab"
@@ -58,9 +88,18 @@ user = "admin"
 port = 22
 identity_file = "~/.ssh/id_ed25519"
 proxy_jump = "bastion"
+# proxy_command = "ssh -W %h:%p bastion"
 extra_args = ["-A"]
 remote_dir = "/srv"
 tags = ["home"]
+# hidden = true             # left out of host lists (the CLI still finds it)
+
+[[forward]]
+name = "web admin"
+host = "homelab"
+kind = "local"              # local | remote | dynamic (SOCKS)
+listen = 8080               # bind defaults to 127.0.0.1
+target = "localhost:80"
 
 [[theme]]
 name = "my-theme"
@@ -76,9 +115,51 @@ warning = "#e0af68"
 error = "#f7768e"
 ```
 
-Hosts from `~/.ssh/config` are read-only in termax. Pressing `e` on one creates
-an editable termax copy. Saving from the app only changes the settings you
-edited; comments and formatting in the file are kept.
+Saving from the app only changes the settings you edited; comments and
+formatting in `config.toml` are kept.
+
+## Host management
+
+**Editing `~/.ssh/config`.** Hosts from your ssh config (and the files it
+`Include`s) can be added, edited, duplicated, hidden, moved between files and
+deleted, from the TUI (`n` / `e` / `d`) or the GUI (sidebar right-click, or
+Settings → Connections). termax changes only the lines you changed: comments,
+indentation, `Key=value` style, quoting, line endings and blank lines stay as
+they were. Before every write it:
+
+- refuses if the file changed on disk since it was read ("reopen to see the
+  new version") — your edit in another editor always wins;
+- copies the old file to `backups/<file>-<date>-<time>.bak` next to
+  `config.toml` (the 10 newest are kept);
+- writes a temp file and renames it over the original, so a crash never
+  leaves half a file (on Unix the file keeps its permissions; a new one is 0600).
+
+termax keeps its own extras (tags, hidden, remote directory) in one comment
+inside the host's block, e.g. `# termax: tags=prod,web; hidden; dir=/srv/app`.
+OpenSSH ignores it.
+
+Some hosts are shown but left alone, with the reason: a host that shares a
+`Host` line with others (`Host web db`), a host defined in more than one place,
+and wildcard or `Match` blocks. New hosts go before the first wildcard
+`Host *` / `Match` block, so your defaults keep applying to them.
+
+**Status** (`p` in the TUI, "Check status" in the GUI) connects to each host's
+port and reads the `SSH-` greeting — no login. It is off until you ask
+(`status_checks = "on_start"` runs it at start) because probing many servers
+unprompted can trip intrusion alarms. Hosts reached through `ProxyJump` /
+`ProxyCommand` (including ones inherited from `Host *`) show "unknown" rather
+than being probed directly.
+
+**History.** termax remembers when you last connected to each host
+(`history.toml` next to `config.toml`): sort by Recent (`o` in the TUI, the
+sidebar sort menu in the GUI), and the GUI switcher lists recent hosts first.
+Settings → General → Clear history forgets it.
+
+**Port forwards** (`f` on a host in the TUI, "Port forward…" in the GUI) run
+`ssh -N -o ExitOnForwardFailure=yes -L/-R/-D …` and are saved as `[[forward]]`.
+In the TUI a forward runs in its own tab (close the tab to stop it); in the
+GUI the Forwards tab starts and stops them and asks for passwords inline.
+Forwards stop when termax exits.
 
 Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`,
 `nord`, `gruvbox`, `solarized-dark`, `catppuccin`, `paper`.
@@ -96,8 +177,15 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | Hosts | `Enter` | Open terminal |
 | | `s` | Open SFTP browser |
 | | `/` | Fuzzy filter (name, host, user, tags) |
-| | `n` / `e` / `d` | New / edit / delete connection |
+| | `n` / `e` / `d` | New / edit / delete host (ssh config hosts too) |
+| | `p` | Check which hosts are reachable |
+| | `o` | Sort by name / most recent |
+| | `H` | Show / hide hidden hosts |
+| | `f` / `F` | Forward a port / saved forwards |
 | | `r` | Reload config files |
+| Host editor | `Tab` / `↑` `↓`, `Ctrl+S` | Move between fields, save |
+| | `Space` | Toggle "Save to" / Hidden |
+| | `Enter` in Other options | Add a line |
 | Terminal | `Shift+PgUp` / `Shift+PgDn` | Scrollback |
 | | `Enter` after disconnect | Reconnect |
 | SFTP | `Tab` / `←` `→` | Switch pane |
@@ -121,8 +209,12 @@ everything itself (winit + softbuffer + fontdue, no web view).
 cargo run -p termax-gui --release
 ```
 
-- **Sidebar** lists hosts (filter box at the top; right-click a host to open a
-  terminal or file transfer, edit, duplicate or delete it).
+- **Sidebar** lists hosts grouped by where they are defined, with a status dot
+  and first tag (hover a host for its address, status and when you last used
+  it). The header has the filter, Name/Recent sort and a "⋯" menu (new host,
+  check status of all, show hidden hosts, port forwards). Right-click a host to
+  open a terminal or file transfer, forward a port, check its status, edit,
+  duplicate, move it to another ssh config file, hide or delete it.
 - **Tabs** hold terminals, file transfers and settings. Drag a tab to move it.
 - **File transfer** shows two panes; each can be Local or any host, so
   remote↔remote copies work too. Drag files between panes (or from Explorer /
@@ -209,6 +301,7 @@ password prompts, cancellable transfers, overwrite prompts and remappable keys.
   `sftp_batch_mode = true` it uses keys or an agent and fails instead of prompting
   for a password. A future step is an `SSH_ASKPASS` helper that prompts inside termax.
 - Keybindings are fixed. A `[keys]` config section would make them remappable.
+- The status check never probes through jump hosts (those show "unknown").
 - No mouse support yet (tab clicks, scrolling, selection).
 - Transfers can't be cancelled, and there's no overwrite confirmation.
 - Terminal tabs have no search, and the scrollback is view-only.

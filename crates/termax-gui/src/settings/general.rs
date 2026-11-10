@@ -1,8 +1,10 @@
-//! ssh program, ssh config, scrollback, hidden files, local start folder.
+//! ssh program, ssh config, scrollback, hidden files, local start folder,
+//! host status checks, hidden hosts, connection history.
 
+use termax_core::config::StatusChecks;
 use termax_ui::geom::Rect;
 use termax_ui::ui::{Id, Ui};
-use termax_ui::widgets::{button, checkbox};
+use termax_ui::widgets::{button, checkbox, dropdown, label};
 
 use super::{LABEL_W, Rows, error_line, field, split_row};
 use crate::app::{GuiApp, local_start_dir};
@@ -13,6 +15,8 @@ pub struct GeneralState {
     fields: [String; 4],
     load_ssh_config: bool,
     show_hidden: bool,
+    /// 0 = only when asked, 1 = also at start.
+    status_checks: usize,
     dirty: bool,
     error: Option<String>,
 }
@@ -28,6 +32,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut GeneralState, app: &mut GuiApp) {
         ];
         st.load_ssh_config = s.load_ssh_config;
         st.show_hidden = s.show_hidden_files;
+        st.status_checks = usize::from(s.status_checks == StatusChecks::OnStart);
     }
     let mut rows = Rows::new(rect);
     let mut edited = false;
@@ -39,6 +44,9 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut GeneralState, app: &mut GuiApp) {
     let (_, c) = split_row(ui, rows.next(ui));
     edited |= checkbox(ui, Id::new("settings-gen-hidden"), c, &mut st.show_hidden, "Show hidden files").clicked;
     edited |= field(ui, Id::new("settings-gen-start"), rows.next(ui), "Local start folder", &mut st.fields[3]);
+    let (l, c) = split_row(ui, rows.next(ui));
+    label(ui, l, "Check host status", None);
+    edited |= dropdown(ui, Id::new("settings-gen-status"), c, &["When I ask", "Also at start"], &mut st.status_checks);
     st.dirty |= edited;
     let r = rows.next(ui);
     if button(ui, Id::new("settings-gen-save"), Rect::new(r.x + ui.px(LABEL_W), r.y, ui.px(100), r.h), "Save").clicked {
@@ -51,6 +59,23 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut GeneralState, app: &mut GuiApp) {
         }
     }
     error_line(ui, rows.next(ui), &st.error);
+
+    // These apply at once (no Save).
+    rows.next_h(ui, 8);
+    let (_, c) = split_row(ui, rows.next(ui));
+    let mut show = app.geometry.show_hidden;
+    if checkbox(ui, Id::new("settings-gen-hidden-hosts"), c, &mut show, "Show hidden hosts").clicked {
+        app.set_show_hidden(show);
+    }
+    let (l, c) = split_row(ui, rows.next(ui));
+    let n = app.history.hosts.len();
+    label(ui, l, "History", None);
+    let parts = ui.split_h(c, &[termax_ui::layout::Size::Px(140), termax_ui::layout::Size::Fill], 8);
+    if button(ui, Id::new("settings-gen-clear-history"), parts[0], "Clear history").clicked {
+        app.clear_history();
+    }
+    let muted = ui.style().palette.muted;
+    label(ui, parts[1], &format!("{n} host{} remembered", if n == 1 { "" } else { "s" }), Some(muted));
 }
 
 fn save(st: &GeneralState, app: &mut GuiApp) -> Result<(), String> {
@@ -65,6 +90,7 @@ fn save(st: &GeneralState, app: &mut GuiApp) -> Result<(), String> {
     s.scrollback = scrollback;
     s.show_hidden_files = st.show_hidden;
     s.local_start_dir = opt(&st.fields[3]);
+    s.status_checks = if st.status_checks == 1 { StatusChecks::OnStart } else { StatusChecks::Manual };
     app.start_dir = local_start_dir(&app.cfg.settings.local_start_dir);
     app.save_config();
     Ok(())
