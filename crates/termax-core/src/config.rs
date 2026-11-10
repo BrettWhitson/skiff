@@ -107,6 +107,16 @@ pub struct Settings {
     pub show_hidden_files: bool,
     /// Directory the local pane of the SFTP browser starts in (default: home).
     pub local_start_dir: Option<String>,
+    /// When host status checks run: only on request, or also at start.
+    pub status_checks: StatusChecks,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusChecks {
+    #[default]
+    Manual,
+    OnStart,
 }
 
 impl Default for Settings {
@@ -120,6 +130,7 @@ impl Default for Settings {
             sftp_batch_mode: true,
             show_hidden_files: false,
             local_start_dir: None,
+            status_checks: StatusChecks::Manual,
         }
     }
 }

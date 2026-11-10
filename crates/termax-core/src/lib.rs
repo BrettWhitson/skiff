@@ -8,5 +8,6 @@ pub mod hosts;
 pub mod sshconfig;
 pub mod sshver;
 pub mod state;
+pub mod status;
 pub mod terminal;
 pub mod theme;

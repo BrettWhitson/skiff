@@ -139,9 +139,10 @@ impl HostEntry {
             Some(set) => probe_target(set, dest),
             None => Probe::Direct { host: self.hostname.clone(), port: self.port.unwrap_or(22) },
         };
+        // `-p` on the command line (the port field or extra args) beats the config.
+        let arg_port = self.options.windows(2).filter(|w| w[0] == "-p").filter_map(|w| w[1].parse::<u16>().ok()).next_back();
         match (probe, &self.source) {
-            // `-p` on the command line beats the config.
-            (Probe::Direct { host, port }, Source::Custom(_)) => Probe::Direct { host, port: self.port.unwrap_or(port) },
+            (Probe::Direct { host, port }, Source::Custom(_)) => Probe::Direct { host, port: arg_port.unwrap_or(port) },
             (p, _) => p,
         }
     }
@@ -282,6 +283,8 @@ mod tests {
         assert!(matches!(h.probe(None), Probe::Unknown(_)));
         let c = Connection { name: "d".into(), host: "10.0.0.9".into(), port: Some(2222), ..Default::default() };
         assert_eq!(HostEntry::from_custom(0, &c).probe(None), Probe::Direct { host: "10.0.0.9".into(), port: 2222 });
+        let p = Connection { extra_args: vec!["-p".into(), "2200".into()], port: None, ..c.clone() };
+        assert_eq!(HostEntry::from_custom(0, &p).probe(None), Probe::Direct { host: "10.0.0.9".into(), port: 2200 });
         let c = Connection { extra_args: vec!["-J".into(), "b".into()], ..c };
         assert!(matches!(HostEntry::from_custom(0, &c).probe(None), Probe::Unknown(_)));
     }
