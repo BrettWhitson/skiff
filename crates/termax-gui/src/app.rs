@@ -26,15 +26,18 @@ use termax_ui::widgets::{TabTitle, button, label, splitter_h, tabs};
 
 use crate::engine::{Engine, Msg};
 use crate::files::{FilesTab, Location};
-use crate::keys::{Action, Keymap};
 use crate::forwards::{ForwardsState, Running};
+use crate::keys::{Action, Keymap};
 use crate::sidebar::{Sidebar, SidebarAction, SidebarCtx, sidebar};
 use crate::switcher::{Cmd, Item, SwitcherState};
 use crate::term::TermTab;
 use crate::theme::{GuiTheme, from_def};
 
 /// Starts the askpass broker; its questions arrive as `Msg::Ask`.
-pub fn start_broker(engine: &Engine, helper: PathBuf) -> anyhow::Result<termax_core::askpass::Broker> {
+pub fn start_broker(
+    engine: &Engine,
+    helper: PathBuf,
+) -> anyhow::Result<termax_core::askpass::Broker> {
     let (broker, mut rx) = termax_core::askpass::Broker::start(engine.rt.handle(), helper)?;
     let tx = engine.sender();
     engine.rt.spawn(async move {
@@ -133,7 +136,13 @@ pub fn find_theme(cfg: &Config) -> ThemeDef {
     cfg.themes
         .iter()
         .chain(builtin().iter())
-        .find(|t| t.name == termax_core::theme::effective_name(&cfg.settings.theme, crate::os::high_contrast()))
+        .find(|t| {
+            t.name
+                == termax_core::theme::effective_name(
+                    &cfg.settings.theme,
+                    crate::os::high_contrast(),
+                )
+        })
         .cloned()
         .unwrap_or_else(|| builtin().remove(0))
 }
@@ -252,14 +261,23 @@ impl GuiApp {
     }
 
     pub fn open_terminal(&mut self, host: &HostEntry) -> u64 {
-        let id = self.push_tab(TabKind::Terminal(Box::new(TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback))));
-        self.pending_records.push((id, host.name.clone(), Instant::now()));
+        let id = self.push_tab(TabKind::Terminal(Box::new(TermTab::new(
+            host.clone(),
+            &self.cfg.settings.ssh_binary,
+            self.cfg.settings.scrollback,
+        ))));
+        self.pending_records
+            .push((id, host.name.clone(), Instant::now()));
         id
     }
 
     /// Shows the Forwards tab (opening it if needed).
     pub fn open_forwards(&mut self) {
-        match self.tabs.iter().position(|t| matches!(t.kind, TabKind::Forwards)) {
+        match self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Forwards))
+        {
             Some(i) => self.active = i,
             None => {
                 self.push_tab(TabKind::Forwards);
@@ -269,7 +287,8 @@ impl GuiApp {
 
     pub fn open_files(&mut self, left: Location, right: Location) -> u64 {
         if self.ssh_version.is_none() {
-            self.ssh_version = Some(termax_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
+            self.ssh_version =
+                Some(termax_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
         }
         let mut tab = FilesTab::new(left, right);
         for p in &mut tab.panes {
@@ -290,7 +309,11 @@ impl GuiApp {
             st.conn.new_form(self);
             self.settings = st;
         }
-        match self.tabs.iter().position(|t| matches!(t.kind, TabKind::Settings)) {
+        match self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Settings))
+        {
             Some(i) => self.active = i,
             None => {
                 self.push_tab(TabKind::Settings);
@@ -391,7 +414,8 @@ impl GuiApp {
     pub fn apply_saved(&mut self, saved: Saved, set: &mut ConfigSet) -> Result<(), String> {
         match saved {
             Saved::Ssh(_) => {
-                set.save(&backups_dir(&self.cfg_path)).map_err(|e| format!("{e:#}"))?;
+                set.save(&backups_dir(&self.cfg_path))
+                    .map_err(|e| format!("{e:#}"))?;
                 self.rebuild_hosts();
             }
             Saved::Termax(_) => self.save_config(),
@@ -460,15 +484,22 @@ impl GuiApp {
             Some(i) => vec![i],
             None => hosts::visible(&self.hosts, self.geometry.show_hidden),
         };
-        let items: Vec<(String, hosts::Probe)> =
-            idx.into_iter().filter_map(|i| self.hosts.get(i)).map(|h| (h.name.clone(), h.probe(sets.as_deref()))).collect();
+        let items: Vec<(String, hosts::Probe)> = idx
+            .into_iter()
+            .filter_map(|i| self.hosts.get(i))
+            .map(|h| (h.name.clone(), h.probe(sets.as_deref())))
+            .collect();
         for (n, _) in &items {
             self.statuses.insert(n.clone(), Status::Checking);
         }
         let tx = self.engine.sender();
-        status::check_all(self.engine.rt.handle(), items, Arc::new(move |host, status| {
-            tx.send(Msg::HostStatus { host, status });
-        }));
+        status::check_all(
+            self.engine.rt.handle(),
+            items,
+            Arc::new(move |host, status| {
+                tx.send(Msg::HostStatus { host, status });
+            }),
+        );
     }
 
     /// The sidebar's selected host.
@@ -494,20 +525,38 @@ impl GuiApp {
             return;
         };
         st.stop(f);
-        st.running.retain(|r| &r.fwd != f || r.handle.state().is_live());
+        st.running
+            .retain(|r| &r.fwd != f || r.handle.state().is_live());
         if self.ssh_version.is_none() {
-            self.ssh_version = Some(termax_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
+            self.ssh_version =
+                Some(termax_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
         }
-        let can_prompt = self.askpass.is_some() && self.ssh_version.flatten().is_none_or(termax_core::sshver::supports_askpass_require);
+        let can_prompt = self.askpass.is_some()
+            && self
+                .ssh_version
+                .flatten()
+                .is_none_or(termax_core::sshver::supports_askpass_require);
         let tag = st.new_tag();
         let mut args = f.background_args(&host);
         let mut env = vec![];
         match (&self.askpass, can_prompt) {
             (Some(b), true) => env = b.env(&tag),
-            _ => args.splice(0..0, ["-o".to_string(), "BatchMode=yes".to_string()]).for_each(drop),
+            _ => args
+                .splice(0..0, ["-o".to_string(), "BatchMode=yes".to_string()])
+                .for_each(drop),
         }
-        let handle = ForwardHandle::start(self.engine.rt.handle(), &self.cfg.settings.ssh_binary, args, env);
-        st.running.push(Running { fwd: f.clone(), handle, tag, recorded: false });
+        let handle = ForwardHandle::start(
+            self.engine.rt.handle(),
+            &self.cfg.settings.ssh_binary,
+            args,
+            env,
+        );
+        st.running.push(Running {
+            fwd: f.clone(),
+            handle,
+            tag,
+            recorded: false,
+        });
     }
 
     /// History for terminals that have shown output and are still running
@@ -515,8 +564,12 @@ impl GuiApp {
     fn record_connections(&mut self) {
         let mut done = vec![];
         self.pending_records.retain(|(id, name, at)| {
-            let Some(tab) = self.tabs.iter_mut().find(|t| t.id == *id) else { return false };
-            let TabKind::Terminal(t) = &mut tab.kind else { return false };
+            let Some(tab) = self.tabs.iter_mut().find(|t| t.id == *id) else {
+                return false;
+            };
+            let TabKind::Terminal(t) = &mut tab.kind else {
+                return false;
+            };
             match &mut t.session {
                 Some(s) if at.elapsed() >= Duration::from_secs(2) && s.generation() > 0 => {
                     if s.is_alive() {
@@ -659,8 +712,12 @@ impl GuiApp {
             Item::Command(Cmd::CheckStatus) => self.check_status(None),
             Item::Command(Cmd::ReloadConfig) => self.reload_config(),
             Item::Snippet(i) => {
-                let Some(snippet) = self.cfg.snippets.get(i).cloned() else { return };
-                if let Some(TabKind::Terminal(t)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
+                let Some(snippet) = self.cfg.snippets.get(i).cloned() else {
+                    return;
+                };
+                if let Some(TabKind::Terminal(t)) =
+                    self.tabs.get_mut(self.active).map(|t| &mut t.kind)
+                {
                     t.send_snippet(&snippet);
                 }
             }
@@ -669,14 +726,19 @@ impl GuiApp {
 
     fn switcher_ui(&mut self, ui: &mut Ui) {
         if self.switcher_open && !self.switcher_was_open {
-            self.switcher = SwitcherState { just_opened: true, ..Default::default() };
+            self.switcher = SwitcherState {
+                just_opened: true,
+                ..Default::default()
+            };
             self.switcher_return_focus = ui.focused();
         }
         self.switcher_was_open = self.switcher_open;
         if !self.switcher_open {
             return;
         }
-        let tabs: Vec<(u64, String)> = (0..self.tabs.len()).map(|i| (self.tabs[i].id, self.tab_title(i))).collect();
+        let tabs: Vec<(u64, String)> = (0..self.tabs.len())
+            .map(|i| (self.tabs[i].id, self.tab_title(i)))
+            .collect();
         let ctx = crate::switcher::RankCtx {
             show_hidden: self.geometry.show_hidden,
             recent: self.history.recent(crate::switcher::RECENT_HOSTS),
@@ -692,7 +754,13 @@ impl GuiApp {
                 _ => vec![],
             },
         };
-        let items = crate::switcher::rank(&self.switcher.query, &self.hosts, &tabs, &self.theme_names(), &ctx);
+        let items = crate::switcher::rank(
+            &self.switcher.query,
+            &self.hosts,
+            &tabs,
+            &self.theme_names(),
+            &ctx,
+        );
         let out = crate::switcher::show(ui, &mut self.switcher, &items);
         if out.close {
             self.switcher_open = false;
@@ -724,7 +792,10 @@ impl GuiApp {
     // ----- actions ----------------------------------------------------
 
     fn in_terminal(&self) -> bool {
-        matches!(self.tabs.get(self.active).map(|t| &t.kind), Some(TabKind::Terminal(_)))
+        matches!(
+            self.tabs.get(self.active).map(|t| &t.kind),
+            Some(TabKind::Terminal(_))
+        )
     }
 
     pub fn do_action(&mut self, a: Action) {
@@ -735,7 +806,9 @@ impl GuiApp {
                     self.request_close_tab(id);
                 }
             }
-            Action::NextTab if !self.tabs.is_empty() => self.active = (self.active + 1) % self.tabs.len(),
+            Action::NextTab if !self.tabs.is_empty() => {
+                self.active = (self.active + 1) % self.tabs.len()
+            }
             Action::PrevTab if !self.tabs.is_empty() => {
                 self.active = (self.active + self.tabs.len() - 1) % self.tabs.len()
             }
@@ -755,9 +828,12 @@ impl GuiApp {
                 self.style = style_for(&self.theme, &self.cfg);
                 self.save_config();
             }
-            Action::Copy | Action::Paste | Action::Find | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
-                self.view_actions.push(a)
-            }
+            Action::Copy
+            | Action::Paste
+            | Action::Find
+            | Action::ZoomIn
+            | Action::ZoomOut
+            | Action::ZoomReset => self.view_actions.push(a),
             _ => {}
         }
     }
@@ -770,12 +846,15 @@ impl GuiApp {
             .events
             .iter()
             .filter_map(|e| match e {
-                // Ctrl+Alt that produces a character is AltGr typing (e.g. `}`
-                // on a German keyboard), never a shortcut.
-                Event::KeyDown { mods, text: Some(_), .. } if mods.ctrl && mods.alt => None,
-                Event::KeyDown { key, mods, .. } => {
-                    self.keymap.match_key(key, *mods, in_term).map(|a| (key.clone(), *mods, a))
+                Event::KeyDown { mods, text, .. }
+                    if crate::keys::altgr_text(*mods, text.as_deref()) =>
+                {
+                    None
                 }
+                Event::KeyDown { key, mods, .. } => self
+                    .keymap
+                    .match_key(key, *mods, in_term)
+                    .map(|a| (key.clone(), *mods, a)),
                 _ => None,
             })
             .collect();
@@ -812,12 +891,21 @@ impl GuiApp {
                         ssh_binary: &self.cfg.settings.ssh_binary,
                         ssh_version: self.ssh_version.flatten(),
                     };
-                    if let Some(TabKind::Files(f)) = self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.kind) {
+                    if let Some(TabKind::Files(f)) = self
+                        .tabs
+                        .iter_mut()
+                        .find(|t| t.id == tab)
+                        .map(|t| &mut t.kind)
+                    {
                         f.on_transfer(ev, &ctx);
                     }
                 }
                 Msg::Ask(req) if req.tag.starts_with(crate::forwards::TAG_PREFIX) => {
-                    let live = self.forwards.running.iter().any(|r| r.tag == req.tag && r.handle.state().is_live());
+                    let live = self
+                        .forwards
+                        .running
+                        .iter()
+                        .any(|r| r.tag == req.tag && r.handle.state().is_live());
                     if live {
                         self.forwards.ask(req);
                     } else {
@@ -826,8 +914,15 @@ impl GuiApp {
                 }
                 Msg::Ask(req) => {
                     let tab = crate::files::parse_tag(&req.tag).map(|(t, _)| t);
-                    match self.tabs.iter_mut().find(|t| Some(t.id) == tab).map(|t| &mut t.kind) {
-                        Some(TabKind::Files(f)) => crate::files::route_ask(f, tab.unwrap_or(0), req),
+                    match self
+                        .tabs
+                        .iter_mut()
+                        .find(|t| Some(t.id) == tab)
+                        .map(|t| &mut t.kind)
+                    {
+                        Some(TabKind::Files(f)) => {
+                            crate::files::route_ask(f, tab.unwrap_or(0), req)
+                        }
                         _ => {
                             let _ = req.reply.send(None);
                         }
@@ -835,7 +930,8 @@ impl GuiApp {
                 }
                 Msg::Files { tab, side, ev } => {
                     if let crate::files::FilesEvent::Connected { result: Ok(_), .. } = &ev
-                        && let Some(TabKind::Files(f)) = self.tabs.iter().find(|t| t.id == tab).map(|t| &t.kind)
+                        && let Some(TabKind::Files(f)) =
+                            self.tabs.iter().find(|t| t.id == tab).map(|t| &t.kind)
                         && let Some(Location::Host(h)) = f.panes.get(side).map(|p| &p.loc)
                     {
                         let name = h.name.clone();
@@ -850,7 +946,12 @@ impl GuiApp {
                         ssh_binary: &self.cfg.settings.ssh_binary,
                         ssh_version: self.ssh_version.flatten(),
                     };
-                    if let Some(TabKind::Files(f)) = self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.kind) {
+                    if let Some(TabKind::Files(f)) = self
+                        .tabs
+                        .iter_mut()
+                        .find(|t| t.id == tab)
+                        .map(|t| &mut t.kind)
+                    {
                         f.on_event(side, ev, &ctx);
                     }
                 }
@@ -881,7 +982,12 @@ impl GuiApp {
                 None => self.warnings.push(format!("unknown host: {name}")),
             }
         }
-        if !self.settings.capturing() || !self.tabs.get(self.active).is_some_and(|t| matches!(t.kind, TabKind::Settings)) {
+        if !self.settings.capturing()
+            || !self
+                .tabs
+                .get(self.active)
+                .is_some_and(|t| matches!(t.kind, TabKind::Settings))
+        {
             self.handle_shortcuts(ui);
         }
         self.track_window_size(ui);
@@ -897,13 +1003,22 @@ impl GuiApp {
             body
         } else {
             let before = self.geometry.sidebar_width;
-            let (side, main) = splitter_h(ui, Id::new("sidebar-split"), body, &mut self.geometry.sidebar_width, 160.0, 600.0);
+            let (side, main) = splitter_h(
+                ui,
+                Id::new("sidebar-split"),
+                body,
+                &mut self.geometry.sidebar_width,
+                160.0,
+                600.0,
+            );
             if self.geometry.sidebar_width != before {
                 self.geometry_changed();
             }
             let mut sb = std::mem::take(&mut self.sidebar);
             let ctx = self.sidebar_ctx();
-            let a = ui.region(Id::new("region-hosts"), "Hosts", |ui| sidebar(ui, side, &mut sb, &ctx));
+            let a = ui.region(Id::new("region-hosts"), "Hosts", |ui| {
+                sidebar(ui, side, &mut sb, &ctx)
+            });
             self.sidebar = sb;
             if let Some(a) = a {
                 self.on_sidebar(a);
@@ -923,7 +1038,10 @@ impl GuiApp {
             return;
         }
         let s = ui.scale();
-        let logical = ((win.w as f32 / s).round() as u32, (win.h as f32 / s).round() as u32);
+        let logical = (
+            (win.w as f32 / s).round() as u32,
+            (win.h as f32 / s).round() as u32,
+        );
         if self.geometry.window_size != Some(logical) {
             let first = self.geometry.window_size.is_none();
             self.geometry.window_size = Some(logical);
@@ -939,7 +1057,11 @@ impl GuiApp {
             if age >= GEOMETRY_SAVE_DELAY && !ui.input().left_down {
                 self.flush_geometry();
             } else {
-                ui.request_repaint_in(GEOMETRY_SAVE_DELAY.saturating_sub(age).max(Duration::from_millis(50)));
+                ui.request_repaint_in(
+                    GEOMETRY_SAVE_DELAY
+                        .saturating_sub(age)
+                        .max(Duration::from_millis(50)),
+                );
             }
         }
     }
@@ -948,9 +1070,17 @@ impl GuiApp {
         let parts = ui.split_v(rect, &[L::Px(34), L::Fill], 0);
         let (strip, content) = (parts[0], parts[1]);
         let titles: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
-        let tt: Vec<TabTitle> = titles.iter().map(|t| TabTitle { text: t, closable: true }).collect();
+        let tt: Vec<TabTitle> = titles
+            .iter()
+            .map(|t| TabTitle {
+                text: t,
+                closable: true,
+            })
+            .collect();
         let active = &mut self.active;
-        let r = ui.region(Id::new("region-tabs"), "Tabs", |ui| tabs(ui, Id::new("tabs"), strip, &tt, active));
+        let r = ui.region(Id::new("region-tabs"), "Tabs", |ui| {
+            tabs(ui, Id::new("tabs"), strip, &tt, active)
+        });
         if let Some((from, to)) = r.moved
             && from < self.tabs.len()
             && to < self.tabs.len()
@@ -970,7 +1100,9 @@ impl GuiApp {
             self.switcher_open = true;
         }
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
-        ui.region(Id::new("region-content"), "Content", |ui| self.tab_content(ui, content));
+        ui.region(Id::new("region-content"), "Content", |ui| {
+            self.tab_content(ui, content)
+        });
     }
 
     /// The active tab's view.
@@ -979,11 +1111,21 @@ impl GuiApp {
         ui.painter().rect(content, p.bg, 0.0);
         let Some(tab) = self.tabs.get_mut(self.active) else {
             let hint = "Double-click a host to open a terminal, or press Ctrl+Shift+K";
-            let r = Rect::new(content.x + ui.px(24), content.y + ui.px(24), content.w - ui.px(48), ui.px(24));
+            let r = Rect::new(
+                content.x + ui.px(24),
+                content.y + ui.px(24),
+                content.w - ui.px(48),
+                ui.px(24),
+            );
             label(ui, r, hint, Some(p.muted));
             return;
         };
-        let line = Rect::new(content.x + ui.px(16), content.y + ui.px(16), content.w - ui.px(32), ui.px(24));
+        let line = Rect::new(
+            content.x + ui.px(16),
+            content.y + ui.px(16),
+            content.w - ui.px(32),
+            ui.px(24),
+        );
         let newly_shown = self.shown_tab != Some(tab.id);
         self.shown_tab = Some(tab.id);
         let mut show_settings = false;
@@ -1001,7 +1143,16 @@ impl GuiApp {
                         ui.request_focus(id);
                     }
                 }
-                crate::term::view(ui, id, content, t, &self.theme, &self.keymap, self.engine.wake_fn(), &mut self.view_actions);
+                crate::term::view(
+                    ui,
+                    id,
+                    content,
+                    t,
+                    &self.theme,
+                    &self.keymap,
+                    self.engine.wake_fn(),
+                    &mut self.view_actions,
+                );
             }
             TabKind::Files(f) => {
                 let _ = line;
@@ -1073,7 +1224,10 @@ impl GuiApp {
         let p = self.theme.palette;
         ui.painter().rect(strip, p.surface, 0.0);
         let parts = ui.split_h(strip.inset(ui.px(4)), &[L::Fill, L::Px(120), L::Px(72)], 6);
-        let text = format!("{n} transfer{} running \u{2014} close the tab?", if n == 1 { "" } else { "s" });
+        let text = format!(
+            "{n} transfer{} running \u{2014} close the tab?",
+            if n == 1 { "" } else { "s" }
+        );
         label(ui, parts[0], &text, None);
         if button(ui, Id::new("close-anyway"), parts[1], "Close anyway").clicked {
             self.close_tab(id);
@@ -1088,30 +1242,57 @@ impl GuiApp {
         let px = ui.font_px();
         let left = match self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
             Some(TabKind::Terminal(t)) => t.status(),
-            Some(TabKind::Files(f)) => format!("files: {} \u{2194} {}", f.panes[0].loc.label(), f.panes[1].loc.label()),
+            Some(TabKind::Files(f)) => format!(
+                "files: {} \u{2194} {}",
+                f.panes[0].loc.label(),
+                f.panes[1].loc.label()
+            ),
             Some(TabKind::Settings) => "settings".into(),
             Some(TabKind::Forwards) => {
-                let n = self.forwards.running.iter().filter(|r| r.handle.state() == ForwardState::Running).count();
+                let n = self
+                    .forwards
+                    .running
+                    .iter()
+                    .filter(|r| r.handle.state() == ForwardState::Running)
+                    .count();
                 format!("{n} forward{} running", if n == 1 { "" } else { "s" })
             }
             None => "no tabs".into(),
         };
         // The host under the mouse is described in words (not only by its dot).
-        let hovered = self.sidebar.hovered.and_then(|i| self.hosts.get(i)).map(|h| {
-            let s = crate::sidebar::describe(h, self.statuses.get(&h.name), &self.history);
-            format!("{}: {s}", h.name)
-        });
+        let hovered = self
+            .sidebar
+            .hovered
+            .and_then(|i| self.hosts.get(i))
+            .map(|h| {
+                let s = crate::sidebar::describe(h, self.statuses.get(&h.name), &self.history);
+                format!("{}: {s}", h.name)
+            });
         let n = self.tabs.len();
-        let right = format!("{n} tab{} \u{00B7} theme: {}", if n == 1 { "" } else { "s" }, self.theme.name);
+        let right = format!(
+            "{n} tab{} \u{00B7} theme: {}",
+            if n == 1 { "" } else { "s" },
+            self.theme.name
+        );
         let pad = ui.px(10);
         let rw = ui.measure(&right, FontKind::Ui, px).ceil() as i32;
         let inner = rect.inset(0);
-        let parts = ui.split_h(Rect::new(inner.x + pad, inner.y, inner.w - 2 * pad, inner.h), &[L::Frac(0.35), L::Fill, L::Px((rw as f32 / ui.scale()).ceil() as i32 + 2)], 12);
+        let parts = ui.split_h(
+            Rect::new(inner.x + pad, inner.y, inner.w - 2 * pad, inner.h),
+            &[
+                L::Frac(0.35),
+                L::Fill,
+                L::Px((rw as f32 / ui.scale()).ceil() as i32 + 2),
+            ],
+            12,
+        );
         label(ui, parts[0], &left, Some(p.muted));
         if let Some(h) = hovered {
             label(ui, parts[1], &h, Some(p.fg));
         } else if let Some(w) = self.warnings.last().cloned() {
-            if let Some(n) = ui.a11y_node(Id::new("status-warning"), termax_ui::a11y::Role::Status, &w) {
+            if let Some(n) =
+                ui.a11y_node(Id::new("status-warning"), termax_ui::a11y::Role::Status, &w)
+            {
                 n.live = true;
             }
             label(ui, parts[1], &w, Some(p.warning));
@@ -1140,7 +1321,9 @@ impl App for GuiApp {
 /// Paths of the ssh config files in use (none when ssh config is off).
 fn ssh_files(cfg: &Config) -> Vec<PathBuf> {
     match hosts::ssh_config_path(cfg) {
-        Some(p) => ConfigSet::load(&p).map(|s| s.docs.into_iter().map(|d| d.path).collect()).unwrap_or_default(),
+        Some(p) => ConfigSet::load(&p)
+            .map(|s| s.docs.into_iter().map(|d| d.path).collect())
+            .unwrap_or_default(),
         None => vec![],
     }
 }
