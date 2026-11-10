@@ -4,8 +4,12 @@
 //! Like a POSIX server, every file reports an owner (1000 unless set) and
 //! SETSTAT of permissions/owner is honoured, but only emulated: the values
 //! are kept in memory per path (moved by rename, dropped by remove), never
-//! applied to the real file. A directory whose emulated mode lacks the owner
-//! write bit refuses new files.
+//! applied to the real file. A mode with file type bits makes the file
+//! report that type (e.g. `0o010644`, a FIFO). A file created with
+//! permissions gets them. A directory whose emulated mode lacks the owner
+//! write bit refuses new files. If the root holds `.ignore-temp-setstat`,
+//! SETSTAT on `*.termax-part` files succeeds but changes nothing, like a
+//! server that ignores it. A SETSTAT size really truncates the file.
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, SeekFrom};
@@ -87,8 +91,10 @@ impl SftpFs {
     /// Applies the emulated owner/permissions of `path` to `a`.
     fn patch(&self, path: &str, mut a: FileAttributes) -> FileAttributes {
         let (mode, uid, gid) = Self::virt(path).ok().and_then(|v| self.emulated.get(&v).copied()).unwrap_or_default();
-        if let Some(mode) = mode {
-            a.permissions = Some((a.permissions.unwrap_or(0) & !0o7777) | (mode & 0o7777));
+        match mode {
+            Some(mode) if mode & 0o170000 != 0 => a.permissions = Some(mode),
+            Some(mode) => a.permissions = Some((a.permissions.unwrap_or(0) & !0o7777) | (mode & 0o7777)),
+            None => {}
         }
         a.uid = uid.or(a.uid).or(Some(DEFAULT_OWNER));
         a.gid = gid.or(a.gid).or(Some(DEFAULT_OWNER));
@@ -128,10 +134,14 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(Version::new())
     }
 
-    async fn open(&mut self, id: u32, filename: String, pflags: OpenFlags, _attrs: FileAttributes) -> Result<Handle, Self::Error> {
+    async fn open(&mut self, id: u32, filename: String, pflags: OpenFlags, attrs: FileAttributes) -> Result<Handle, Self::Error> {
         let path = self.real(&filename)?;
-        if pflags.contains(OpenFlags::CREATE) && !path.exists() && self.parent_read_only(&filename) {
+        let created = pflags.contains(OpenFlags::CREATE) && !path.exists();
+        if created && self.parent_read_only(&filename) {
             return Err(StatusCode::PermissionDenied);
+        }
+        if created && let Some(mode) = attrs.permissions {
+            self.emulated.insert(Self::virt(&filename)?, (Some(mode & 0o7777), None, None));
         }
         let mut o = tokio::fs::OpenOptions::new();
         o.read(pflags.contains(OpenFlags::READ))
@@ -186,10 +196,18 @@ impl russh_sftp::server::Handler for SftpFs {
     }
 
     async fn setstat(&mut self, id: u32, path: String, attrs: FileAttributes) -> Result<Status, Self::Error> {
-        tokio::fs::symlink_metadata(self.real(&path)?).await.map_err(io_err)?;
+        let real = self.real(&path)?;
+        tokio::fs::symlink_metadata(&real).await.map_err(io_err)?;
+        if let Some(size) = attrs.size {
+            let f = tokio::fs::OpenOptions::new().write(true).open(&real).await.map_err(io_err)?;
+            f.set_len(size).await.map_err(io_err)?;
+        }
+        if path.ends_with(".termax-part") && self.root.join(".ignore-temp-setstat").exists() {
+            return Ok(status(id));
+        }
         let e = self.emulated.entry(Self::virt(&path)?).or_default();
         if let Some(mode) = attrs.permissions {
-            e.0 = Some(mode & 0o7777);
+            e.0 = Some(if mode & 0o170000 != 0 { mode } else { mode & 0o7777 });
         }
         if attrs.uid.is_some() {
             (e.1, e.2) = (attrs.uid, attrs.gid);

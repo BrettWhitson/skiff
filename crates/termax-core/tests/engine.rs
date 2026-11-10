@@ -418,8 +418,8 @@ async fn overwrite_keeps_dest_mode_owner_and_symlink() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
     let r = remote(&fx).await;
     let local = tempfile::tempdir().unwrap();
-    for name in ["secret", "owned", "link"] {
-        std::fs::write(fx.root().join(name), "old").unwrap();
+    for name in ["secret", "owned", "grp", "link"] {
+        std::fs::write(fx.root().join(name), "old and longer").unwrap();
         std::fs::write(local.path().join(name), "new").unwrap();
     }
     std::fs::remove_file(fx.root().join("link")).unwrap();
@@ -428,8 +428,9 @@ async fn overwrite_keeps_dest_mode_owner_and_symlink() {
     let s = sftp(&r);
     s.set_metadata("/secret", Metadata { permissions: Some(0o600), ..Default::default() }).await.unwrap();
     s.set_metadata("/owned", Metadata { uid: Some(4242), gid: Some(4242), ..Default::default() }).await.unwrap();
+    s.set_metadata("/grp", Metadata { uid: Some(1000), gid: Some(2000), ..Default::default() }).await.unwrap();
 
-    for name in ["secret", "owned", "link"] {
+    for name in ["secret", "owned", "grp", "link"] {
         if name == "link" && !remote_link {
             continue;
         }
@@ -441,6 +442,8 @@ async fn overwrite_keeps_dest_mode_owner_and_symlink() {
     assert_eq!(s.metadata("/secret").await.unwrap().permissions.unwrap() & 0o7777, 0o600, "mode dropped");
     assert_eq!(std::fs::read_to_string(fx.root().join("owned")).unwrap(), "new");
     assert_eq!(s.metadata("/owned").await.unwrap().uid, Some(4242), "owner dropped");
+    assert_eq!(std::fs::read_to_string(fx.root().join("grp")).unwrap(), "new");
+    assert_eq!(s.metadata("/grp").await.unwrap().gid, Some(2000), "group dropped");
     if remote_link {
         assert!(std::fs::symlink_metadata(fx.root().join("link")).unwrap().file_type().is_symlink(), "link replaced");
         assert_eq!(std::fs::read_to_string(fx.root().join("target")).unwrap(), "new");
@@ -483,6 +486,122 @@ async fn directory_copy_skips_part_files() {
     std::fs::write(d.join("a.txt"), "a").unwrap();
     std::fs::write(d.join(".a.txt.1-1.termax-part"), "partial").unwrap();
     let (res, _) = run_transfer(req(&Endpoint::Local, &p(&d), &r, "/"), OverwritePolicy::Ask, |_| panic!(), |_| {}).await;
-    assert_eq!(res.unwrap().files, 1);
+    let sum = res.unwrap();
+    assert_eq!((sum.files, sum.skipped), (1, 1), "a skipped file is reported");
     assert!(!fx.root().join("d").join(".a.txt.1-1.termax-part").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn temp_is_private_and_unverified_mode_falls_back_in_place() {
+    use russh_sftp::client::fs::Metadata;
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    let s = sftp(&r);
+    std::fs::write(fx.root().join("big"), "old").unwrap();
+    s.set_metadata("/big", Metadata { permissions: Some(0o644), ..Default::default() }).await.unwrap();
+    let local = tempfile::tempdir().unwrap();
+    std::fs::write(local.path().join("big"), data(40 * 1024 * 1024, 7)).unwrap();
+    // While data is written the temp file is private, not yet the target's 0644.
+    let root = fx.root().to_path_buf();
+    let mut temp_mode = None;
+    let up = req(&Endpoint::Local, &p(&local.path().join("big")), &r, "/");
+    let (res, _) = run_transfer(
+        up,
+        OverwritePolicy::Overwrite,
+        |_| panic!(),
+        |h| {
+            let mut names = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string());
+            let tmp = names.find(|n| n.ends_with(".termax-part")).expect("temp file");
+            let m = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(s.metadata(format!("/{tmp}")))).unwrap();
+            temp_mode = m.permissions.map(|m| m & 0o777);
+            h.cancel();
+        },
+    )
+    .await;
+    assert!(res.unwrap().cancelled);
+    assert_eq!(temp_mode, Some(0o600));
+
+    // A server that ignores SETSTAT on the temp: written in place instead.
+    std::fs::write(fx.root().join(".ignore-temp-setstat"), "").unwrap();
+    std::fs::write(fx.root().join("secret"), "old and longer").unwrap();
+    s.set_metadata("/secret", Metadata { permissions: Some(0o640), ..Default::default() }).await.unwrap();
+    std::fs::write(local.path().join("secret"), "new").unwrap();
+    let up = req(&Endpoint::Local, &p(&local.path().join("secret")), &r, "/");
+    assert_eq!(run_transfer(up, OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await.0.unwrap().files, 1);
+    assert_eq!(std::fs::read_to_string(fx.root().join("secret")).unwrap(), "new");
+    assert_eq!(s.metadata("/secret").await.unwrap().permissions.unwrap() & 0o7777, 0o640);
+    let parts =
+        std::fs::read_dir(fx.root()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".termax-part"));
+    assert_eq!(parts.count(), 0, "temp file left behind");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn in_place_overwrite_never_truncates_first() {
+    use russh_sftp::client::fs::Metadata;
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    let old = vec![b'o'; 40 * 1024 * 1024];
+    std::fs::write(fx.root().join("owned"), &old).unwrap();
+    sftp(&r).set_metadata("/owned", Metadata { uid: Some(4242), gid: Some(4242), ..Default::default() }).await.unwrap();
+    let local = tempfile::tempdir().unwrap();
+    std::fs::write(local.path().join("owned"), data(40 * 1024 * 1024, 8)).unwrap();
+    let up = req(&Endpoint::Local, &p(&local.path().join("owned")), &r, "/");
+    assert!(run_transfer(up, OverwritePolicy::Overwrite, |_| panic!(), |h| h.cancel()).await.0.unwrap().cancelled);
+    assert_eq!(std::fs::metadata(fx.root().join("owned")).unwrap().len(), old.len() as u64, "cancelled copy truncated the file");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_foreign_broken_and_special_destinations() {
+    use russh_sftp::client::fs::Metadata;
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    let s = sftp(&r);
+    let local = tempfile::tempdir().unwrap();
+    let up = |name: &str| {
+        std::fs::write(local.path().join(name), "new").unwrap();
+        req(&Endpoint::Local, &p(&local.path().join(name)), &r, "/")
+    };
+    // Emulates a FIFO: type bits in the emulated mode.
+    std::fs::write(fx.root().join("fifo"), "old").unwrap();
+    s.set_metadata("/fifo", Metadata { permissions: Some(0o010644), ..Default::default() }).await.unwrap();
+    let err = run_transfer(up("fifo"), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await.0.unwrap_err();
+    assert!(err.contains("not a regular file"), "{err}");
+    assert_eq!(std::fs::read_to_string(fx.root().join("fifo")).unwrap(), "old");
+
+    std::fs::write(fx.root().join("target"), "old").unwrap();
+    if !symlink_file(&fx.root().join("target"), &fx.root().join("theirs"))
+        || !symlink_file(&fx.root().join("gone"), &fx.root().join("broken"))
+    {
+        return;
+    }
+    s.set_metadata("/theirs", Metadata { uid: Some(4242), gid: Some(4242), ..Default::default() }).await.unwrap();
+    let err = run_transfer(up("theirs"), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await.0.unwrap_err();
+    assert!(err.contains("owned by another user"), "{err}");
+    assert_eq!(std::fs::read_to_string(fx.root().join("target")).unwrap(), "old");
+    let err = run_transfer(up("broken"), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await.0.unwrap_err();
+    assert!(err.contains("broken symlink"), "{err}");
+    assert!(std::fs::symlink_metadata(fx.root().join("broken")).unwrap().file_type().is_symlink());
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn readonly_local_destination_fails_clearly() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    std::fs::write(fx.root().join("ro.txt"), "new").unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let dest = local.path().join("ro.txt");
+    std::fs::write(&dest, "old").unwrap();
+    let set_ro = |ro: bool| {
+        let mut perm = std::fs::metadata(&dest).unwrap().permissions();
+        perm.set_readonly(ro);
+        std::fs::set_permissions(&dest, perm).unwrap();
+    };
+    set_ro(true);
+    let down = req(&r, "/ro.txt", &Endpoint::Local, &p(local.path()));
+    let err = run_transfer(down, OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await.0.unwrap_err();
+    set_ro(false);
+    assert!(err.contains("read-only"), "{err}");
+    assert_eq!(std::fs::read_to_string(&dest).unwrap(), "old");
+    assert_eq!(std::fs::read_dir(local.path()).unwrap().count(), 1, "temp file left behind");
 }

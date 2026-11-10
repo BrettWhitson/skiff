@@ -240,13 +240,23 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 
 A copied file is written next to its destination as
 `.<name>.<id>.termax-part` and moved into place only when complete, so
-cancelling (or a failure) never damages a file being overwritten; the new file
-keeps the old one's permission bits. Over SFTP the old file is removed just
-before the move, since SFTP servers don't rename onto an existing file.
-A destination that is a symlink, belongs to another user, or sits in a
-directory that doesn't allow new files is instead overwritten in place, so
-the link, owner and ACL survive; cancelling then leaves it partially written.
-`*.termax-part` leftovers are skipped when copying folders.
+cancelling (or a failure) never damages a file being overwritten. When
+overwriting, that temp file is private (`0600`) while it is written and then
+gets the old file's group and permission bits, checked before the move. Over
+SFTP the old file is removed just before the move, since SFTP servers don't
+rename onto an existing file.
+
+A destination that is a symlink, belongs to another user, sits in a directory
+that doesn't allow new files, or whose group/permissions the server won't set
+on the temp file is instead overwritten in place, so the link, owner and ACL
+survive. Cancelling then leaves it holding the new data written so far
+followed by the rest of the old file. Copies refuse to write to a directory,
+FIFO, device or other special file, a broken symlink, a symlink owned by
+another user, and (Windows) a read-only file.
+
+A `*.termax-part` file is only left behind if termax was killed or lost its
+connection mid-copy; it is safe to delete. Such files are skipped (and counted
+as skipped) when copying folders.
 
 All other keys in a terminal tab go straight to the remote shell. Only the
 shortcuts from the keymap are intercepted (by default `Alt+` chords, and only

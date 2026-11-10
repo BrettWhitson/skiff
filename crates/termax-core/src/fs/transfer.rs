@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::endpoint::{Endpoint, WriteMeta};
+use super::endpoint::{Endpoint, FileKind, WriteMeta};
 use super::path::is_safe_name;
 
 /// True if `dst` is `src` itself or a path inside it.
@@ -52,6 +52,41 @@ fn part_path(ep: &Endpoint, d: &str, job: u64) -> String {
     }
     let file = format!(".{}{tag}", &name[..end]);
     if dir.is_empty() { file } else { ep.join(&dir, &file) }
+}
+
+/// Refuses destinations a copy must not write to or replace.
+fn check_destination(d: &str, m: &WriteMeta) -> Result<()> {
+    match (m.kind, m.target) {
+        (FileKind::File, _) | (FileKind::Symlink, Some(FileKind::File)) => {}
+        (FileKind::Symlink, None) => bail!("{d} is a broken symlink"),
+        (FileKind::Dir, _) | (FileKind::Symlink, Some(FileKind::Dir)) => bail!("{d} is a directory"),
+        _ => bail!("{d} is not a regular file"),
+    }
+    if m.readonly {
+        bail!("{d}: the destination is read-only");
+    }
+    Ok(())
+}
+
+/// Gives the finished temp file `tmp` the destination's group, then its
+/// permission bits (a group change can clear set-id bits), and reads them
+/// back. False if they didn't take (some servers ignore SETSTAT).
+async fn adopt_meta(dst: &Endpoint, tmp: &str, dest: &WriteMeta, mine: &WriteMeta) -> bool {
+    if let (Some(gid), Some(uid)) = (dest.gid, mine.uid)
+        && mine.gid != Some(gid)
+        && dst.set_group(tmp, uid, gid).await.is_err()
+    {
+        return false;
+    }
+    if let Some(mode) = dest.mode
+        && dst.set_mode(tmp, mode).await.is_err()
+    {
+        return false;
+    }
+    match dst.write_meta(tmp).await {
+        Ok(Some(now)) => (dest.mode.is_none() || now.mode == dest.mode) && (dest.gid.is_none() || now.gid == dest.gid),
+        _ => false,
+    }
 }
 
 /// True if `e` (anywhere in its chain) is a local or SFTP permission error.
@@ -204,6 +239,7 @@ impl Job {
                     }
                     // Leftovers of interrupted transfers are not real content.
                     if !c.is_dir && c.name.ends_with(PART_SUFFIX) {
+                        self.summary.skipped += 1;
                         continue;
                     }
                     let child_dst = dst.join(&d, &c.name);
@@ -225,8 +261,7 @@ impl Job {
                     continue;
                 }
             }
-            let exists = existing.is_some();
-            match self.copy_file(src, &s, dst, &d, exists).await? {
+            match self.copy_file(src, &s, dst, &d).await? {
                 Copied::Done => self.summary.files += 1,
                 Copied::Cancelled => {
                     self.summary.cancelled = true;
@@ -264,67 +299,113 @@ impl Job {
         })
     }
 
-    /// Normally writes into a hidden sibling (see [`part_path`]) and moves it
-    /// over `d` only once complete, so a cancelled or failed copy never touches
-    /// an existing destination file; only the partial temp file is removed. An
-    /// existing destination's permission bits are copied onto the temp first.
+    /// Copies `s` to `d`. A new file is written into a hidden sibling (see
+    /// [`part_path`]) and moved into place once complete. Overwriting a
+    /// regular file works the same way, but the temp file is created private
+    /// (`0600`) and only after the data is written gets the old file's group
+    /// and permission bits (in that order, so set-id bits survive), read back
+    /// to check they took. A cancelled or failed copy never touches the
+    /// existing file; only the temp file is removed.
     ///
-    /// An existing `d` is instead rewritten in place (truncated, then written)
-    /// when replacing it would lose something: it is a symlink, it belongs to
-    /// another user, its permissions can't be copied, or the directory doesn't
-    /// allow new files. In that mode a cancelled or failed copy leaves the
-    /// partially written `d` behind.
-    async fn copy_file(&mut self, src: &Endpoint, s: &str, dst: &Endpoint, d: &str, exists: bool) -> Result<Copied> {
+    /// The destination is instead rewritten in place when replacing it would
+    /// lose something: it is a symlink (written through), it belongs to
+    /// another user, its group or mode can't be given to the temp file, or the
+    /// directory doesn't allow new files. In place, the file is overwritten
+    /// from the start and cut to the new length only at the end, so a
+    /// cancelled or failed copy leaves new data followed by the rest of the
+    /// old.
+    ///
+    /// Refused before anything is written: a destination that isn't a regular
+    /// file or a symlink to one, a broken symlink, a symlink owned by another
+    /// user, and (Windows) a read-only file.
+    async fn copy_file(&mut self, src: &Endpoint, s: &str, dst: &Endpoint, d: &str) -> Result<Copied> {
         self.current = d.to_string();
-        let reader = src.open_read(s).await?;
-        let dest = if exists { Some(dst.write_meta(d).await?) } else { None };
-        if dest.is_some_and(|m| m.is_symlink) {
-            return self.stream(reader, dst.create(d).await?).await;
+        let dest = dst.write_meta(d).await?;
+        if let Some(m) = &dest {
+            check_destination(d, m)?;
         }
+        let reader = src.open_read(s).await?;
         let tmp = part_path(dst, d, self.id);
-        let writer = match dst.create(&tmp).await {
+        let Some(dest) = dest else {
+            let writer = dst.create_new(&tmp, false).await?;
+            return self.finish_via_temp(reader, writer, dst, &tmp, d).await;
+        };
+        let writer = match dst.create_new(&tmp, true).await {
             Ok(w) => w,
-            Err(e) if exists && is_permission_denied(&e) => return self.stream(reader, dst.create(d).await?).await,
+            Err(e) if is_permission_denied(&e) => {
+                if dest.kind == FileKind::Symlink && dest.uid.is_some() {
+                    return Err(e.context(format!("{d} is a symlink and its owner can't be checked")));
+                }
+                return self.write_in_place(reader, dst, d).await;
+            }
             Err(e) => return Err(e),
         };
-        if let Some(dest) = dest
-            && !self.adopt_meta(dst, &tmp, dest).await
-        {
+        let mine = dst.write_meta(&tmp).await.ok().flatten();
+        let foreign = matches!((dest.uid, mine.and_then(|m| m.uid)), (Some(a), Some(b)) if a != b);
+        let Some(mine) = mine.filter(|_| dest.kind != FileKind::Symlink && !foreign) else {
             drop(writer);
             let _ = dst.remove(&tmp, false).await;
-            return self.stream(reader, dst.create(d).await?).await;
-        }
-        let result = self.stream(reader, writer).await;
-        match result {
-            Ok(Copied::Done) => {
-                if let Err(e) = dst.replace(&tmp, d).await {
-                    // Keep the finished copy if the original is already gone.
-                    if matches!(dst.stat(d).await, Ok(Some(_))) {
-                        let _ = dst.remove(&tmp, false).await;
-                        return Err(e);
-                    }
-                    return Err(e.context(format!("the new copy was left at {tmp}")));
-                }
-                Ok(Copied::Done)
+            if dest.kind == FileKind::Symlink && foreign {
+                bail!("{d} is a symlink owned by another user; not writing through it");
             }
+            return self.write_in_place(reader, dst, d).await;
+        };
+        let start = (self.done, self.summary.bytes);
+        match self.stream(reader, writer).await {
+            Ok(Copied::Done) => {}
             other => {
                 let _ = dst.remove(&tmp, false).await;
+                return other;
+            }
+        }
+        if !adopt_meta(dst, &tmp, &dest, &mine).await {
+            let _ = dst.remove(&tmp, false).await;
+            (self.done, self.summary.bytes) = start;
+            let reader = src.open_read(s).await?;
+            return self.write_in_place(reader, dst, d).await;
+        }
+        self.replace_with(dst, &tmp, d).await
+    }
+
+    async fn finish_via_temp(
+        &mut self,
+        reader: Box<dyn AsyncRead + Send + Unpin>,
+        writer: Box<dyn AsyncWrite + Send + Unpin>,
+        dst: &Endpoint,
+        tmp: &str,
+        d: &str,
+    ) -> Result<Copied> {
+        match self.stream(reader, writer).await {
+            Ok(Copied::Done) => self.replace_with(dst, tmp, d).await,
+            other => {
+                let _ = dst.remove(tmp, false).await;
                 other
             }
         }
     }
 
-    /// Gives the fresh temp file `tmp` the destination's permission bits. False
-    /// if the replacement would not keep the destination's owner or mode.
-    async fn adopt_meta(&self, dst: &Endpoint, tmp: &str, dest: WriteMeta) -> bool {
-        let Ok(mine) = dst.write_meta(tmp).await else { return false };
-        if matches!((dest.uid, mine.uid), (Some(a), Some(b)) if a != b) {
-            return false;
+    /// Moves the finished `tmp` over `d`.
+    async fn replace_with(&mut self, dst: &Endpoint, tmp: &str, d: &str) -> Result<Copied> {
+        if let Err(e) = dst.replace(tmp, d).await {
+            // Keep the finished copy if the original is already gone.
+            if matches!(dst.stat(d).await, Ok(Some(_))) {
+                let _ = dst.remove(tmp, false).await;
+                return Err(e);
+            }
+            return Err(e.context(format!("the new copy was left at {tmp}")));
         }
-        match dest.mode {
-            Some(mode) if mine.mode != Some(mode) => dst.set_mode(tmp, mode).await.is_ok(),
-            _ => true,
+        Ok(Copied::Done)
+    }
+
+    /// Overwrites existing `d` from the start, then cuts it to the new length.
+    async fn write_in_place(&mut self, reader: Box<dyn AsyncRead + Send + Unpin>, dst: &Endpoint, d: &str) -> Result<Copied> {
+        let writer = dst.open_write(d).await?;
+        let before = self.summary.bytes;
+        let copied = self.stream(reader, writer).await?;
+        if let Copied::Done = copied {
+            dst.set_len(d, self.summary.bytes - before).await?;
         }
+        Ok(copied)
     }
 
     async fn stream(

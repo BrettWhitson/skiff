@@ -8,15 +8,60 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use super::connect::RemoteConn;
 use super::path::{self, FileEntry};
 
-/// What a transfer needs to know about an existing destination file.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// What a path is, links not followed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    File,
+    Dir,
+    Symlink,
+    /// A FIFO, device, socket and the like.
+    Other,
+}
+
+/// What a transfer needs to know about an existing destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WriteMeta {
-    /// The path itself is a symbolic link.
-    pub is_symlink: bool,
-    /// Owner user id, where the file system reports one (Unix, SFTP).
+    /// The path itself (a symlink is not followed).
+    pub kind: FileKind,
+    /// For a symlink, what it points to; `None` if nothing (a broken link).
+    pub target: Option<FileKind>,
+    /// Owner user and group ids, where the file system reports them (Unix, SFTP).
     pub uid: Option<u32>,
+    pub gid: Option<u32>,
     /// Permission bits (`0o7777`), where the file system has them.
     pub mode: Option<u32>,
+    /// The Windows read-only attribute (always false elsewhere).
+    pub readonly: bool,
+}
+
+fn local_kind(ft: std::fs::FileType) -> FileKind {
+    if ft.is_symlink() {
+        FileKind::Symlink
+    } else if ft.is_dir() {
+        FileKind::Dir
+    } else if ft.is_file() {
+        FileKind::File
+    } else {
+        FileKind::Other
+    }
+}
+
+/// A server that sends no permissions is taken to mean a regular file.
+fn remote_kind(m: &russh_sftp::client::fs::Metadata) -> FileKind {
+    use russh_sftp::protocol::FileType;
+    if m.permissions.is_none() {
+        return FileKind::File;
+    }
+    match m.file_type() {
+        FileType::Dir => FileKind::Dir,
+        FileType::File => FileKind::File,
+        FileType::Symlink => FileKind::Symlink,
+        FileType::Other => FileKind::Other,
+    }
+}
+
+fn no_such_file(e: &russh_sftp::client::error::Error) -> bool {
+    matches!(e, russh_sftp::client::error::Error::Status(s) if s.status_code == russh_sftp::protocol::StatusCode::NoSuchFile)
 }
 
 #[derive(Clone)]
@@ -179,23 +224,52 @@ impl Endpoint {
         Ok(())
     }
 
-    /// Owner, permissions and link status of `p` itself (links not followed).
-    pub async fn write_meta(&self, p: &str) -> Result<WriteMeta> {
+    /// Type, owner and permissions of `p` itself (links not followed);
+    /// `None` if nothing is there.
+    pub async fn write_meta(&self, p: &str) -> Result<Option<WriteMeta>> {
         match self {
             Endpoint::Local => {
-                let m = tokio::fs::symlink_metadata(p).await.with_context(|| format!("stat {p}"))?;
+                let m = match tokio::fs::symlink_metadata(p).await {
+                    Ok(m) => m,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(e) => return Err(e).with_context(|| format!("stat {p}")),
+                };
+                let kind = local_kind(m.file_type());
+                let target = match kind {
+                    FileKind::Symlink => match tokio::fs::metadata(p).await {
+                        Ok(t) => Some(local_kind(t.file_type())),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(e) => return Err(e).with_context(|| format!("stat {p}")),
+                    },
+                    _ => None,
+                };
                 #[cfg(unix)]
-                let (uid, mode) = {
+                let (uid, gid, mode) = {
                     use std::os::unix::fs::MetadataExt;
-                    (Some(m.uid()), Some(m.mode() & 0o7777))
+                    (Some(m.uid()), Some(m.gid()), Some(m.mode() & 0o7777))
                 };
                 #[cfg(not(unix))]
-                let (uid, mode) = (None, None);
-                Ok(WriteMeta { is_symlink: m.file_type().is_symlink(), uid, mode })
+                let (uid, gid, mode) = (None, None, None);
+                let readonly = cfg!(windows) && kind == FileKind::File && m.permissions().readonly();
+                Ok(Some(WriteMeta { kind, target, uid, gid, mode, readonly }))
             }
             Endpoint::Remote(c) => {
-                let m = c.sftp.symlink_metadata(p).await.with_context(|| format!("stat {p}"))?;
-                Ok(WriteMeta { is_symlink: m.file_type().is_symlink(), uid: m.uid, mode: m.permissions.map(|m| m & 0o7777) })
+                let m = match c.sftp.symlink_metadata(p).await {
+                    Ok(m) => m,
+                    Err(e) if no_such_file(&e) => return Ok(None),
+                    Err(e) => return Err(e).with_context(|| format!("stat {p}")),
+                };
+                let kind = remote_kind(&m);
+                let target = match kind {
+                    FileKind::Symlink => match c.sftp.metadata(p).await {
+                        Ok(t) => Some(remote_kind(&t)),
+                        Err(e) if no_such_file(&e) => None,
+                        Err(e) => return Err(e).with_context(|| format!("stat {p}")),
+                    },
+                    _ => None,
+                };
+                let mode = m.permissions.map(|m| m & 0o7777);
+                Ok(Some(WriteMeta { kind, target, uid: m.uid, gid: m.gid, mode, readonly: false }))
             }
         }
     }
@@ -223,6 +297,39 @@ impl Endpoint {
         }
     }
 
+    /// Sets the group of `p` (SFTP sends the owner `uid` along, unchanged). A
+    /// no-op on Windows.
+    pub async fn set_group(&self, p: &str, uid: u32, gid: u32) -> Result<()> {
+        match self {
+            Endpoint::Local => {
+                let _ = uid; // a local chown keeps the owner
+                #[cfg(unix)]
+                std::os::unix::fs::chown(p, None, Some(gid)).with_context(|| format!("chgrp {p}"))?;
+                #[cfg(not(unix))]
+                let _ = (p, gid);
+                Ok(())
+            }
+            Endpoint::Remote(c) => {
+                let attrs = russh_sftp::client::fs::Metadata { uid: Some(uid), gid: Some(gid), ..Default::default() };
+                c.sftp.set_metadata(p, attrs).await.with_context(|| format!("chgrp {p}"))
+            }
+        }
+    }
+
+    /// Truncates (or extends) file `p` to `len` bytes.
+    pub async fn set_len(&self, p: &str, len: u64) -> Result<()> {
+        match self {
+            Endpoint::Local => {
+                let f = tokio::fs::OpenOptions::new().write(true).open(p).await.with_context(|| format!("open {p}"))?;
+                f.set_len(len).await.with_context(|| format!("truncate {p}"))
+            }
+            Endpoint::Remote(c) => {
+                let attrs = russh_sftp::client::fs::Metadata { size: Some(len), ..Default::default() };
+                c.sftp.set_metadata(p, attrs).await.with_context(|| format!("truncate {p}"))
+            }
+        }
+    }
+
     pub async fn open_read(&self, p: &str) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
         Ok(match self {
             Endpoint::Local => Box::new(tokio::fs::File::open(p).await.with_context(|| format!("open {p}"))?),
@@ -230,11 +337,40 @@ impl Endpoint {
         })
     }
 
-    /// Creates (or truncates) a file for writing.
-    pub async fn create(&self, p: &str) -> Result<Box<dyn AsyncWrite + Send + Unpin>> {
+    /// Creates file `p`, failing if anything (even a symlink) is there.
+    /// `private` makes it readable by the owner only (`0600`; Unix and SFTP).
+    pub async fn create_new(&self, p: &str, private: bool) -> Result<Box<dyn AsyncWrite + Send + Unpin>> {
         Ok(match self {
-            Endpoint::Local => Box::new(tokio::fs::File::create(p).await.with_context(|| format!("create {p}"))?),
-            Endpoint::Remote(c) => Box::new(c.sftp.create(p).await.with_context(|| format!("create {p}"))?),
+            Endpoint::Local => {
+                let mut o = tokio::fs::OpenOptions::new();
+                o.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    if private {
+                        o.mode(0o600);
+                    }
+                }
+                #[cfg(not(unix))]
+                let _ = private;
+                Box::new(o.open(p).await.with_context(|| format!("create {p}"))?)
+            }
+            Endpoint::Remote(c) => {
+                use russh_sftp::protocol::OpenFlags;
+                let attrs = russh_sftp::client::fs::Metadata { permissions: private.then_some(0o600), ..Default::default() };
+                let flags = OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE;
+                Box::new(c.sftp.open_with_flags_and_attributes(p, flags, attrs).await.with_context(|| format!("create {p}"))?)
+            }
+        })
+    }
+
+    /// Opens existing file `p` for writing from the start, without truncating it.
+    pub async fn open_write(&self, p: &str) -> Result<Box<dyn AsyncWrite + Send + Unpin>> {
+        Ok(match self {
+            Endpoint::Local => Box::new(tokio::fs::OpenOptions::new().write(true).open(p).await.with_context(|| format!("open {p}"))?),
+            Endpoint::Remote(c) => {
+                let flags = russh_sftp::protocol::OpenFlags::WRITE;
+                Box::new(c.sftp.open_with_flags(p, flags).await.with_context(|| format!("open {p}"))?)
+            }
         })
     }
 }
