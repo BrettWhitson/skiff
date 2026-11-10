@@ -190,11 +190,12 @@ pub fn local_start_dir(configured: &Option<String>) -> String {
         .unwrap_or_else(|| ".".into())
 }
 
-/// The toolkit style for a theme: its palette, the interface zoom and the
-/// terminal font size from the config.
+/// The toolkit style for a theme: its palette, the interface zoom, the
+/// terminal font size from the config, and the OS animation setting.
 pub fn style_for(theme: &GuiTheme, cfg: &Config) -> Style {
     let mut s = Style::dark_default();
     s.palette = theme.palette;
+    s.reduce_motion = !crate::os::animations();
     // `ui_scale` on top of Windows' text size (Settings > Accessibility).
     s.zoom = cfg.gui.ui_scale.clamp(0.5, 3.0) * crate::os::text_scale();
     // The interface zoom leaves terminal text at its configured size.

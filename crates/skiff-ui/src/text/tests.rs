@@ -4,7 +4,7 @@
 
 use super::cache::GlyphCache;
 use super::layout::{char_index_at_x, draw_text, line_height, measure};
-use super::{BlockFont, FontKind, FontStack, Fonts, GlyphBitmap, GlyphRasterizer, LazyFont, LineMetrics, TOFU};
+use super::{BlockFont, FontKind, FontStack, Fonts, GlyphBitmap, GlyphRasterizer, LazyFont, LineMetrics, TOFU, test_fonts};
 use crate::canvas::Canvas;
 use crate::color::Color;
 use crate::geom::Point;
@@ -186,4 +186,17 @@ fn scan_fonts_lists_monospace() {
     assert!(!only_mono[0].0.is_empty() && !only_mono[0].0.ends_with(".ttf"), "a font name, not a file name: {only_mono:?}");
     assert_eq!(all.len(), 2, "junk skipped: {all:?}");
     assert!(all.windows(2).all(|w| w[0].0 <= w[1].0), "sorted by name");
+}
+
+/// Synthetic semibold draws more ink and advances further than regular,
+/// and plain `Fonts::new` stacks fall back to it.
+#[test]
+fn emboldened_glyphs_are_heavier() {
+    let f = test_fonts();
+    assert!(!f.semibold_is_real);
+    let (r, b) = (f.ui.rasterize(0, 'a', 13.0), f.ui_semibold.rasterize(0, 'a', 13.0));
+    let ink = |g: &GlyphBitmap| g.coverage.iter().map(|&c| c as u32).sum::<u32>();
+    assert!(ink(&b) > ink(&r) && b.width == r.width + 1, "{} vs {}", ink(&b), ink(&r));
+    assert!(b.advance > r.advance);
+    assert_eq!(f.stack(FontKind::UiSemibold).line_metrics(13.0), f.ui.line_metrics(13.0));
 }

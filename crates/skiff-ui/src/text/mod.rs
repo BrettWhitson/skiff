@@ -1,7 +1,9 @@
 //! Text: glyph rasterization behind a trait, font stacks, caching, layout.
 //!
 //! `GlyphRasterizer` hides the font library; `FontStack` adds fallbacks
-//! and a "tofu" box; `Fonts` holds the UI and monospace stacks; `cache`
+//! and a "tofu" box; `Fonts` holds the UI, semibold UI and monospace
+//! stacks (semibold is a real face when one is installed, else the UI font
+//! emboldened by `Emboldened`); `cache`
 //! keeps rasterized glyphs; `layout` measures and draws single lines;
 //! `system` finds installed fonts.
 
@@ -67,6 +69,8 @@ pub trait GlyphRasterizer: Send + Sync {
 pub enum FontKind {
     /// Proportional interface font.
     Ui,
+    /// The interface font's semibold weight (titles, headings, names).
+    UiSemibold,
     /// Monospace font (terminal, code).
     Mono,
 }
@@ -111,6 +115,12 @@ impl FontStack {
         self.primary.line_metrics(px)
     }
 
+    /// The same stack with every font synthetically emboldened.
+    pub fn emboldened(&self) -> FontStack {
+        let e = |f: &Arc<dyn GlyphRasterizer>| Arc::new(Emboldened(f.clone())) as Arc<dyn GlyphRasterizer>;
+        FontStack { primary: e(&self.primary), fallbacks: self.fallbacks.iter().map(e).collect() }
+    }
+
     /// A hollow box as wide as the primary font's '0'.
     fn tofu(&self, px: f32) -> GlyphBitmap {
         let advance = self.primary.advance('0', px).max(1.0);
@@ -130,23 +140,36 @@ impl FontStack {
     }
 }
 
-/// The UI and monospace font stacks.
+/// The UI, semibold UI and monospace font stacks.
 #[derive(Clone)]
 pub struct Fonts {
     pub ui: FontStack,
+    /// Semibold UI text; `ui` emboldened unless a real face was loaded.
+    pub ui_semibold: FontStack,
+    /// `ui_semibold` is a real semibold (or bold) face, not emboldened.
+    pub semibold_is_real: bool,
     pub mono: FontStack,
 }
 
 impl Fonts {
-    /// Fonts from two prepared stacks.
+    /// Fonts from two prepared stacks; semibold is `ui` emboldened.
     pub fn new(ui: FontStack, mono: FontStack) -> Self {
-        Self { ui, mono }
+        let ui_semibold = ui.emboldened();
+        Self { ui, ui_semibold, semibold_is_real: false, mono }
+    }
+
+    /// The same fonts with `stack` as the real semibold face.
+    pub fn with_semibold(mut self, stack: FontStack) -> Self {
+        self.ui_semibold = stack;
+        self.semibold_is_real = true;
+        self
     }
 
     /// The stack for `kind`.
     pub fn stack(&self, kind: FontKind) -> &FontStack {
         match kind {
             FontKind::Ui => &self.ui,
+            FontKind::UiSemibold => &self.ui_semibold,
             FontKind::Mono => &self.mono,
         }
     }
@@ -165,6 +188,9 @@ impl Fonts {
     /// An explicit path wins; otherwise the first system candidate that
     /// loads. Remaining candidates and symbol fonts become fallbacks, read
     /// only when a character first needs one (startup parses two fonts).
+    /// With the system UI font, its installed semibold face (Segoe UI
+    /// Semibold, DejaVu Sans Bold) is loaded lazily for `UiSemibold`; an
+    /// explicit UI font, or none installed, is emboldened instead.
     pub fn load(ui_path: Option<&Path>, mono_path: Option<&Path>) -> Result<Fonts> {
         // One shared lazy font per symbol file, for both stacks.
         let symbols: Vec<Arc<dyn GlyphRasterizer>> =
@@ -175,7 +201,18 @@ impl Fonts {
             let mono = load_stack(FontKind::Mono, mono_path, &symbols);
             (ui.join().expect("font loading panicked"), mono)
         });
-        Ok(Fonts::new(ui?, mono?))
+        let fonts = Fonts::new(ui?, mono?);
+        let semibold = if ui_path.is_some() { None } else { system::semibold_candidates().into_iter().find(|p| p.is_file()) };
+        Ok(match semibold {
+            Some(p) => {
+                // The real face first; chars it lacks use the emboldened UI stack.
+                let mut fallbacks = vec![fonts.ui_semibold.primary.clone()];
+                fallbacks.extend(fonts.ui_semibold.fallbacks.iter().cloned());
+                let stack = FontStack { primary: Arc::new(LazyFont::file(p)), fallbacks };
+                fonts.with_semibold(stack)
+            }
+            None => fonts,
+        })
     }
 
     /// Monospace cell: the mono font's 'M' advance × its line height.
@@ -268,6 +305,55 @@ impl GlyphRasterizer for LazyFont {
             Some(f) => f.line_metrics(px),
             None => LineMetrics { ascent: 0.0, descent: 0.0, line_gap: 0.0 },
         }
+    }
+}
+
+/// A font made heavier by smearing each glyph right by a fraction of a
+/// pixel (synthetic semibold, used when no real semibold face exists).
+pub struct Emboldened(pub Arc<dyn GlyphRasterizer>);
+
+impl Emboldened {
+    /// How far (0.35..=1 px) glyphs at `px` are smeared.
+    fn strength(px: f32) -> f32 {
+        (px / 20.0).clamp(0.35, 1.0)
+    }
+}
+
+impl GlyphRasterizer for Emboldened {
+    /// Same glyphs as the inner font.
+    fn has_glyph(&self, c: char) -> bool {
+        self.0.has_glyph(c)
+    }
+
+    /// The inner advance plus the smear width.
+    fn advance(&self, c: char, px: f32) -> f32 {
+        self.0.advance(c, px) + Self::strength(px)
+    }
+
+    /// The inner glyph one pixel wider, each pixel "screen"-blended with
+    /// `strength` of its left neighbour.
+    fn rasterize(&self, c: char, px: f32) -> GlyphBitmap {
+        let g = self.0.rasterize(c, px);
+        let s = Self::strength(px);
+        if g.width == 0 || g.height == 0 {
+            return GlyphBitmap { advance: g.advance + s, ..g };
+        }
+        let (w, nw) = (g.width, g.width + 1);
+        let mut coverage = vec![0u8; nw * g.height];
+        for y in 0..g.height {
+            let row = &g.coverage[y * w..(y + 1) * w];
+            for x in 0..nw {
+                let a = if x < w { row[x] as f32 } else { 0.0 };
+                let b = if x > 0 { row[x - 1] as f32 * s } else { 0.0 };
+                coverage[y * nw + x] = (a + b * (1.0 - a / 255.0)).round().min(255.0) as u8;
+            }
+        }
+        GlyphBitmap { width: nw, coverage, advance: g.advance + s, ..g }
+    }
+
+    /// The inner font's metrics.
+    fn line_metrics(&self, px: f32) -> LineMetrics {
+        self.0.line_metrics(px)
     }
 }
 
