@@ -485,7 +485,11 @@ impl ConfigSet {
         if comments {
             // Never into the previous block (its termax comment is its own).
             let floor = d.blocks().iter().filter(|o| o.end <= b.start).map(|o| o.end).max().unwrap_or(0);
-            while start > floor && d.lines[start - 1].0.trim().starts_with('#') {
+            // Only comments indented like the `Host` line: deeper ones are the
+            // previous host's commented-out options.
+            let indent = leading_ws(&d.lines[b.start].0).to_string();
+            let describes = |c: &str| c.trim().starts_with('#') && leading_ws(c) == indent;
+            while start > floor && describes(&d.lines[start - 1].0) {
                 start -= 1;
             }
         }
@@ -787,6 +791,14 @@ mod tests {
         s.move_host("a", 1).unwrap();
         assert_eq!(s.docs[0].render(), format!("{inc}\nHost b\n"));
         assert_eq!(s.docs[1].render(), "# the db box\n# (ask ops)\nHost a\n  User x\n");
+
+        // The previous host's commented-out options stay with it.
+        std::fs::write(&work, "").unwrap();
+        std::fs::write(&main, format!("{inc}Host a\n  User x\n  # ForwardAgent yes\n# about b\nHost b\n  User y\n")).unwrap();
+        let mut s = ConfigSet::load(&main).unwrap();
+        s.move_host("b", 1).unwrap();
+        assert_eq!(s.docs[0].render(), format!("{inc}Host a\n  User x\n  # ForwardAgent yes\n"));
+        assert_eq!(s.docs[1].render(), "# about b\nHost b\n  User y\n");
     }
 
     #[test]
