@@ -10,6 +10,7 @@ pub mod history;
 pub mod hostform;
 pub mod hosts;
 pub mod migrate;
+pub mod panes;
 pub mod sshconfig;
 pub mod sshver;
 pub mod state;
