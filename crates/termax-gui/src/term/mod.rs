@@ -72,6 +72,11 @@ pub struct TermTab {
     /// The paste prompt was drawn (its first frame moves focus to Cancel).
     paste_shown: bool,
     mouse: mouse::MouseState,
+    /// Actions chosen from this terminal's own menu, run next frame (the
+    /// app's action list is only for the frame it was filled in).
+    queued: Vec<Action>,
+    /// Which pane this is ("pane 1 of 2"), while the tab is split; set by the split view.
+    pub pane_label: Option<String>,
 }
 
 /// Rows × columns that fit `rect` (at least 2 × 10, as the pty needs).
@@ -114,6 +119,8 @@ impl TermTab {
             pending_paste: None,
             paste_shown: false,
             mouse: mouse::MouseState::default(),
+            queued: vec![],
+            pane_label: None,
         }
     }
 
@@ -233,7 +240,9 @@ pub fn view(
     }
     let scale = ui.scale();
     let default_px = ui.mono_px() / scale;
-    for a in actions.drain(..) {
+    let mut todo = std::mem::take(&mut tab.queued);
+    todo.append(actions);
+    for a in todo {
         match a {
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => tab.zoom(a, default_px),
             Action::Copy => {
@@ -433,9 +442,12 @@ pub fn view(
     let has_sel = tab.select.sel.is_some();
     let items = [MenuItem { label: "Copy", shortcut: None, enabled: has_sel }, MenuItem { label: "Paste", shortcut: None, enabled: true }];
     match context_menu(ui, menu, &items) {
-        Some(0) => actions.push(Action::Copy),
-        Some(1) => actions.push(Action::Paste),
+        Some(0) => tab.queued.push(Action::Copy),
+        Some(1) => tab.queued.push(Action::Paste),
         _ => {}
+    }
+    if !tab.queued.is_empty() {
+        ui.request_repaint_in(Duration::ZERO);
     }
 
     let cursor = if !focused {
