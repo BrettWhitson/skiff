@@ -303,6 +303,51 @@ fn context_menu_select_and_dismiss() {
     assert_eq!(chosen.get(), None);
 }
 
+/// Every enabled item's displayed shortcut chooses it while the menu is
+/// open (and closes it); a disabled item's shortcut does nothing.
+#[test]
+fn context_menu_shortcuts_choose_items() {
+    let mut h = Harness::new(400, 400, 1.0);
+    let ctrl = Modifiers { ctrl: true, ..NONE };
+    let items = [
+        MenuItem::new("Open").shortcut("Enter"),
+        MenuItem::new("Copy").shortcut("Ctrl+Shift+C"),
+        MenuItem::SEPARATOR,
+        MenuItem::new("Zoom in").shortcut("Ctrl++"),
+        MenuItem::new("Rename").shortcut("F2").enabled(false),
+        MenuItem::new("Find").shortcut("Cmd+F"),
+        MenuItem::new("Delete").shortcut("Del").danger(),
+    ];
+    let presses = [
+        (Key::Enter, NONE),
+        (Key::Char('C'), Modifiers { shift: true, ..ctrl }),
+        (Key::Escape, NONE), // the separator: never pressed
+        (Key::Char('+'), ctrl),
+        (Key::F(2), NONE),
+        (Key::Char('f'), Modifiers { logo: true, ..NONE }),
+        (Key::Delete, NONE),
+    ];
+    let chosen = Cell::new(None);
+    let open = Cell::new(false);
+    let menu = Id::new("menu");
+    let mut f = |ui: &mut Ui| {
+        if open.take() {
+            open_context_menu(ui, menu, Point::new(10, 10));
+        }
+        if let Some(i) = context_menu(ui, menu, &items) {
+            chosen.set(Some(i));
+        }
+    };
+    for (i, (it, (k, mods))) in items.iter().zip(presses).enumerate().filter(|(_, (it, _))| !it.separator) {
+        open.set(true);
+        h.frame(vec![], &mut f);
+        h.frame(vec![Event::KeyDown { key: k, mods, text: None }], &mut f);
+        assert_eq!(chosen.take(), it.enabled.then_some(i), "{} ({:?})", it.label, it.shortcut);
+        assert_eq!(is_menu_open(&mut h, menu), !it.enabled, "{}", it.label);
+        h.frame(key(Key::Escape), &mut f);
+    }
+}
+
 /// Runs an empty frame and reports whether menu `id` is open.
 fn is_menu_open(h: &mut Harness, id: Id) -> bool {
     let open = Cell::new(false);

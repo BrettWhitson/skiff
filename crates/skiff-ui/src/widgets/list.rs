@@ -131,8 +131,11 @@ pub fn list_named(
                 if rr.double_clicked {
                     out.activated = Some(i);
                 }
+                // Right-click selects and focuses too, so the row's keys work
+                // once its menu is dismissed.
                 if rr.right_clicked {
                     *selected = Some(i);
+                    ui.request_focus(id);
                     out.context = Some((i, ui.input().mouse));
                 }
                 let is_sel = *selected == Some(i);

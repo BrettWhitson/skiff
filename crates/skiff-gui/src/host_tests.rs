@@ -301,6 +301,30 @@ fn forward_rows_and_sidebar_controls_are_named() {
     }
 }
 
+/// The host menu's "Del" works: pressed while the menu is open it asks to
+/// delete the menu's host, and the menu closes.
+#[test]
+fn host_menu_del_key_asks_to_delete() {
+    let mut f = Fixture::new();
+    f.right_click_text("beta");
+    f.frame(vec![Event::KeyDown { key: Key::Delete, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("Delete beta?").is_some(), "{:?}", f.texts());
+    assert!(f.h.tree().nodes.iter().all(|n| n.role != skiff_ui::a11y::Role::MenuItem), "the menu closed");
+}
+
+/// A right-clicked host row has focus once its menu is dismissed, so its
+/// shortcuts (Del, Enter) apply to it.
+#[test]
+fn right_clicked_host_row_takes_del() {
+    let mut f = Fixture::new();
+    f.right_click_text("beta");
+    f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![Event::KeyDown { key: Key::Delete, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("Delete beta?").is_some(), "{:?}", f.texts());
+}
+
 /// The Delete key asks first with focus on Cancel; Esc cancels and returns
 /// focus to the host list.
 #[test]

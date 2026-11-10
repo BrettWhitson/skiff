@@ -438,8 +438,10 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     {
         sb.collapsed.insert(g.clone());
     }
-    // Delete on a focused host row asks for confirmation.
+    // Delete on a focused host row asks for confirmation (an open menu
+    // owns the keyboard and handles its own "Del").
     if lr.response.focused
+        && ui.keys_for(Id::new("sidebar-list"))
         && let Some(Row::Host(h)) = sb.selected.and_then(|i| rows.get(i))
         && ui.input_mut().take_key(&Key::Delete, Modifiers::NONE)
     {

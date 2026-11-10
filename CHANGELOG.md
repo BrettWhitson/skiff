@@ -115,6 +115,10 @@ First release under the name Skiff (formerly termax).
 
 ### Fixed
 
+- **Menu shortcuts work.** Pressing a shortcut shown in an open context
+  menu (such as `Del` or `Enter` in a host's menu) chooses that item, and a
+  right-clicked host row takes keyboard focus so its `Del` and `Enter` work
+  after the menu is dismissed.
 - GUI app shortcuts wait while a dialog or the command palette is open
   (Ctrl+Tab no longer abandons a dialog; the palette is a modal dialog to
   screen readers), and a dialog dropped without an answer gives focus back.

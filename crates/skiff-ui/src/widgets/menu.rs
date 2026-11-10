@@ -2,6 +2,8 @@
 //! and call `context_menu` every frame; it closes itself on a choice,
 //! Escape, or a click outside. Items can carry an icon, a right-aligned
 //! shortcut hint and a danger style; `MenuItem::SEPARATOR` draws a divider.
+//! While a menu is open, pressing an enabled item's shown shortcut
+//! (`Del`, `Enter`, `Ctrl+Shift+C`, ...) chooses that item.
 
 use crate::a11y::Role;
 use crate::geom::{Point, Rect};
@@ -15,7 +17,9 @@ use crate::ui::{Id, Sense, Ui};
 #[derive(Debug, Clone, Copy)]
 pub struct MenuItem<'a> {
     pub label: &'a str,
-    /// Shortcut text drawn right-aligned (display only; it is not bound here).
+    /// Shortcut text drawn right-aligned, e.g. `Del` or `Ctrl+Shift+C`;
+    /// while the menu is open, pressing it chooses the item. The app must
+    /// also bind it where the menu was opened from, or not show it.
     pub shortcut: Option<&'a str>,
     /// Disabled items are drawn muted and cannot be hovered or chosen.
     pub enabled: bool,
@@ -136,6 +140,71 @@ fn step(items: &[MenuItem], from: Option<usize>, forward: bool) -> Option<usize>
     None
 }
 
+/// The key and exact modifiers of shortcut text such as `Del`,
+/// `Ctrl+Shift+C`, `Cmd+PgUp` or `Ctrl++`; `None` if it names no key.
+fn parse_shortcut(s: &str) -> Option<(Key, Modifiers)> {
+    let s = s.trim();
+    // "Ctrl++" ends in the '+' key itself.
+    let (mods_part, key_name) = match s.strip_suffix("++") {
+        Some(m) => (m, "+"),
+        None if s == "+" => ("", "+"),
+        None => s.rsplit_once('+').unwrap_or(("", s)),
+    };
+    let mut mods = Modifiers::NONE;
+    for m in mods_part.split('+').filter(|m| !m.is_empty()) {
+        match m.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => mods.ctrl = true,
+            "shift" => mods.shift = true,
+            "alt" | "option" | "opt" => mods.alt = true,
+            "cmd" | "command" | "super" | "win" | "logo" | "meta" => mods.logo = true,
+            _ => return None,
+        }
+    }
+    let name = key_name.trim().to_ascii_lowercase();
+    let key = match name.as_str() {
+        "enter" | "return" => Key::Enter,
+        "del" | "delete" => Key::Delete,
+        "esc" | "escape" => Key::Escape,
+        "tab" => Key::Tab,
+        "space" => Key::Space,
+        "backspace" => Key::Backspace,
+        "ins" | "insert" => Key::Insert,
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "home" => Key::Home,
+        "end" => Key::End,
+        "pgup" | "pageup" => Key::PageUp,
+        "pgdn" | "pagedown" => Key::PageDown,
+        "menu" | "contextmenu" => Key::ContextMenu,
+        k if k.chars().count() == 1 => Key::Char(k.chars().next()?),
+        k => Key::F(k.strip_prefix('f')?.parse().ok().filter(|n| (1..=24).contains(n))?),
+    };
+    Some((key, mods))
+}
+
+/// Takes this frame's press of an enabled item's shortcut out of the
+/// input; returns that item's index. Letters match in either case.
+fn take_shortcut(ui: &mut Ui, items: &[MenuItem]) -> Option<usize> {
+    let lower = |k: &Key| match k {
+        Key::Char(c) => Key::Char(c.to_lowercase().next().unwrap_or(*c)),
+        k => k.clone(),
+    };
+    let events = &mut ui.input_mut().events;
+    for (e, ev) in events.iter().enumerate() {
+        let Event::KeyDown { key, mods, .. } = ev else { continue };
+        let hit = items.iter().position(|it| {
+            it.choosable() && it.shortcut.and_then(parse_shortcut).is_some_and(|(k, m)| m == *mods && lower(&k) == lower(key))
+        });
+        if hit.is_some() {
+            events.remove(e);
+            return hit;
+        }
+    }
+    None
+}
+
 /// Draws menu `id` if open; returns the index of a chosen item.
 pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     let mut st = *ui.memory::<MenuState>(id);
@@ -169,7 +238,8 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
         st.hover = None;
     }
     let mut chosen = None;
-    // Keyboard: Escape closes, Up/Down move the highlight, Enter picks it.
+    // Keyboard: Escape closes, Up/Down move the highlight, Enter picks it;
+    // an item's shortcut picks that item (Enter too, when nothing is lit).
     let mut close = false;
     if ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
         close = true;
@@ -180,9 +250,14 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     if ui.input_mut().take_key(&Key::Up, Modifiers::NONE) {
         st.hover = step(items, st.hover, false);
     }
-    if ui.input_mut().take_key(&Key::Enter, Modifiers::NONE) {
-        chosen = st.hover.filter(|&i| items.get(i).is_some_and(|it| it.choosable()));
+    if st.hover.is_some() && ui.input_mut().take_key(&Key::Enter, Modifiers::NONE) {
+        chosen = st.hover;
     }
+    if chosen.is_none() {
+        chosen = take_shortcut(ui, items);
+    }
+    // A stray Enter (nothing lit, no item bound to it) stays with the menu.
+    ui.input_mut().take_key(&Key::Enter, Modifiers::NONE);
     let mouse_moved = ui.input().events.iter().any(|e| matches!(e, Event::MouseMove(_)));
     // A click outside closes it, except the click that just opened it.
     if !st.fresh && ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(_, p) if !menu.contains(*p))) {

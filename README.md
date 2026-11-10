@@ -310,6 +310,7 @@ Keyboard navigation (no mouse needed):
 | `←` `→` on the sidebar divider | Narrow / widen the sidebar |
 | `Enter` / `Space` | Open the selected row; press buttons and checkboxes |
 | `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
+| A shortcut shown in an open menu | Chooses that item (e.g. `Del` in a host's menu) |
 | `Delete` | Delete the selected host or file (asks first) |
 | `Ctrl+L` | Type a path in the focused file pane |
 | Letters in a file list | Select the first name that starts with them |
