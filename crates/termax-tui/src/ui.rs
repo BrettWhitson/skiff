@@ -514,7 +514,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
     let t = &app.theme;
     let Some(modal) = &app.modal else { return };
     match modal {
-        Modal::Help => {
+        Modal::Help { scroll } => {
             let r = centered(area, 76, 50);
             f.render_widget(Clear, r);
             let k = |key: &str, desc: &str| Line::from(vec![Span::styled(format!("  {key:<22}"), t.accent()), Span::raw(desc.to_string())]);
@@ -564,8 +564,10 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 k("X", "cancel the newest running transfer"),
                 k(". / r / x", "hidden files / refresh / clear transfers"),
             ]);
-            let p = Paragraph::new(lines).block(block(t, format!(" Help — config: {} ", app.cfg_path.display()), true));
-            f.render_widget(p, r);
+            let b = block(t, format!(" Help (↑↓ PgUp PgDn scroll · Esc close) — config: {} ", app.cfg_path.display()), true);
+            let visible = b.inner(r).height;
+            let scroll = (*scroll).min((lines.len() as u16).saturating_sub(visible));
+            f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(b), r);
         }
         Modal::ThemePicker { selected, .. } => {
             let themes = app.all_themes();

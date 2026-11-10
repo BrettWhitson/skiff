@@ -385,7 +385,7 @@ fn alt_shortcuts_ignore_case_but_leave_alt_shift_to_the_shell() {
     t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT | KeyModifiers::SHIFT)));
     assert!(t.app.modal.is_none(), "Alt+Shift+H isn't a shortcut");
     t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT)));
-    assert!(matches!(t.app.modal, Some(Modal::Help)), "Alt+H with Caps Lock on");
+    assert!(matches!(t.app.modal, Some(Modal::Help { .. })), "Alt+H with Caps Lock on");
 }
 
 #[test]
@@ -495,10 +495,24 @@ fn tui_keys_remap_end_to_end() {
     alt(&mut t, 'h');
     assert!(t.app.modal.is_none(), "Alt+H no longer opens help");
     t.key(KeyCode::F(1));
-    assert!(matches!(t.app.modal, Some(Modal::Help)));
+    assert!(matches!(t.app.modal, Some(Modal::Help { .. })));
     let term = draw(&mut t);
     assert!(find_text(&term, "F1").is_some(), "the help lists the effective key");
     assert!(find_text(&term, "bogus").is_some(), "and the config problem");
+    t.key(KeyCode::F(1));
+    assert!(t.app.modal.is_none(), "the help key closes it again");
+}
+
+#[test]
+fn help_scrolls_on_a_small_screen() {
+    let mut t = T::new("");
+    t.key(KeyCode::Char('?'));
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &mut t.app)).unwrap();
+    assert!(find_text(&term, "cancel the newest running transfer").is_none(), "the end is below the fold");
+    t.key(KeyCode::End);
+    term.draw(|f| crate::ui::draw(f, &mut t.app)).unwrap();
+    assert!(find_text(&term, "cancel the newest running transfer").is_some(), "End shows the end");
 }
 
 /// Removing a tab before the active one must not switch tabs.

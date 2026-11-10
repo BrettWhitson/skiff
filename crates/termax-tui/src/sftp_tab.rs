@@ -108,6 +108,8 @@ pub struct SftpTab {
     askpass: Option<Arc<Broker>>,
     /// Connection attempts so far; each gets its own askpass tag.
     attempt: u64,
+    /// The newest remote listing request.
+    listing: u64,
     next_transfer: u64,
     rt: Handle,
     tx: UnboundedSender<Msg>,
@@ -128,6 +130,7 @@ impl SftpTab {
             launch: None,
             askpass: None,
             attempt: 0,
+            listing: 0,
             next_transfer: 1,
             rt,
             tx,
@@ -226,17 +229,28 @@ impl SftpTab {
         }
     }
 
+    /// Numbers a remote listing request; only the newest one's answer is shown.
+    fn next_listing(&mut self) -> u64 {
+        self.listing += 1;
+        self.listing
+    }
+
     pub fn list_remote(&mut self, path: String, keep: Option<String>) {
         let Some(ep) = self.endpoint(Side::Remote) else { return };
         self.remote.loading = true;
-        let (tx, id) = (self.tx.clone(), self.tab_id);
+        let (tx, id, seq) = (self.tx.clone(), self.tab_id, self.next_listing());
         self.rt.spawn(async move {
             let result = ep.list(&path).await.map(|e| (path, e, keep)).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Msg::RemoteListing { tab: id, result });
+            let _ = tx.send(Msg::RemoteListing { tab: id, seq, result });
         });
     }
 
-    pub fn on_remote_listing(&mut self, result: Result<(String, Vec<FileEntry>, Option<String>), String>) {
+    /// `seq` is the request's number: an answer to an older request (the
+    /// user moved on meanwhile) is dropped.
+    pub fn on_remote_listing(&mut self, seq: u64, result: Result<(String, Vec<FileEntry>, Option<String>), String>) {
+        if seq != self.listing {
+            return;
+        }
         match result {
             Ok((path, entries, keep)) => self.remote.set_entries(path, entries, self.show_hidden, keep.as_deref()),
             Err(e) => {
@@ -472,5 +486,17 @@ mod tests {
         p.set_entries("/x".into(), vec![f("b", false), f(".hid", false), f("A", true), f("a", false)], false, None);
         let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["..", "A", "a", "b"]);
+    }
+
+    #[test]
+    fn late_listing_of_an_earlier_request_is_ignored() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (tx, _rx) = unbounded_channel();
+        let mut tab = SftpTab::new(1, "h".into(), std::env::temp_dir(), false, rt.handle().clone(), tx);
+        let first = tab.next_listing();
+        let second = tab.next_listing();
+        tab.on_remote_listing(second, Ok(("/b".into(), vec![], None)));
+        tab.on_remote_listing(first, Ok(("/a".into(), vec![], None)));
+        assert_eq!(tab.remote.path, "/b");
     }
 }

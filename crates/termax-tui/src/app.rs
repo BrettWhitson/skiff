@@ -38,6 +38,7 @@ pub enum Msg {
     },
     RemoteListing {
         tab: u64,
+        seq: u64,
         result: Result<(String, Vec<FileEntry>, Option<String>), String>,
     },
     TransferProgress {
@@ -144,7 +145,10 @@ pub enum ConfirmAction {
 }
 
 pub enum Modal {
-    Help,
+    /// Keys; scrolled down `scroll` lines.
+    Help {
+        scroll: u16,
+    },
     ThemePicker {
         selected: usize,
         original: String,
@@ -823,7 +827,7 @@ impl App {
             match msg {
                 Msg::Status { .. } | Msg::Ask(_) | Msg::TransferAsk { .. } => {}
                 Msg::SftpConnected { result, .. } => s.on_connected(result),
-                Msg::RemoteListing { result, .. } => s.on_remote_listing(result),
+                Msg::RemoteListing { seq, result, .. } => s.on_remote_listing(seq, result),
                 Msg::TransferProgress { id, done, .. } => s.on_transfer_progress(id, done),
                 Msg::TransferDone { id, result, .. } => s.on_transfer_done(id, result),
                 Msg::RemoteOpDone { result, keep, .. } => s.on_remote_op(result, keep),
@@ -1212,7 +1216,7 @@ impl App {
             Action::PrevTab => self.active = (self.active + self.tabs.len() - 1) % self.tabs.len(),
             Action::CloseTab => self.close_active_tab(),
             Action::Theme => self.open_theme_picker(),
-            Action::Help => self.modal = Some(Modal::Help),
+            Action::Help => self.modal = Some(Modal::Help { scroll: 0 }),
             Action::Quit => self.request_quit(),
             Action::Find if terminal => {
                 self.modal = Some(Modal::Search { query: TextInput::default(), search: TermSearch::default() });
@@ -1273,7 +1277,7 @@ impl App {
                 self.reload_config();
             }
             KeyCode::Char('t') => self.open_theme_picker(),
-            KeyCode::Char('?') => self.modal = Some(Modal::Help),
+            KeyCode::Char('?') => self.modal = Some(Modal::Help { scroll: 0 }),
             KeyCode::Char('p') => self.check_status(),
             KeyCode::Char('o') => self.cycle_sort(),
             KeyCode::Char('H') => self.toggle_hidden(),
@@ -1455,8 +1459,16 @@ impl App {
             return;
         };
         self.modal = match modal {
-            Modal::Help => match key.code {
+            Modal::Help { scroll } => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => None,
+                _ if self.keys.match_key(&key) == Some(Action::Help) => None,
+                KeyCode::Down | KeyCode::Char('j') => Some(Modal::Help { scroll: scroll.saturating_add(1) }),
+                KeyCode::Up | KeyCode::Char('k') => Some(Modal::Help { scroll: scroll.saturating_sub(1) }),
+                KeyCode::PageDown | KeyCode::Char(' ') => Some(Modal::Help { scroll: scroll.saturating_add(10) }),
+                KeyCode::PageUp => Some(Modal::Help { scroll: scroll.saturating_sub(10) }),
+                KeyCode::Home | KeyCode::Char('g') => Some(Modal::Help { scroll: 0 }),
+                // Drawing stops at the last page.
+                KeyCode::End | KeyCode::Char('G') => Some(Modal::Help { scroll: u16::MAX }),
                 _ => Some(modal),
             },
             Modal::ThemePicker { mut selected, original } => {
