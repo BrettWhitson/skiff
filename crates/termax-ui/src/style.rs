@@ -12,6 +12,9 @@ pub struct Palette {
     pub accent: Color,
     pub accent_fg: Color,
     pub border: Color,
+    /// Outline of inputs, checkboxes and buttons: at least 3:1 on `bg` and
+    /// `surface` (WCAG 1.4.11), where `border` may be a subtle divider.
+    pub control: Color,
     pub selection: Color,
     pub danger: Color,
     pub success: Color,
@@ -40,6 +43,7 @@ impl Style {
                 accent: Color::hex(0x7c8cff),
                 accent_fg: Color::hex(0x10121a),
                 border: Color::hex(0x3c3f52),
+                control: Color::hex(0x6e7290),
                 selection: Color::hex(0x3d4470),
                 danger: Color::hex(0xff6b6b),
                 success: Color::hex(0x5fd38d),

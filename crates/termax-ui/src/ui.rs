@@ -399,7 +399,13 @@ impl<'a> Ui<'a> {
                 Event::A11y { target, action: A11yAction::Click } => {
                     frame.clicked.insert(*target);
                 }
-                Event::A11y { target, action: A11yAction::Focus } => st.focus = Some(*target),
+                // Only widgets that take keyboard focus can get it; a row or
+                // tab is reached through its list or strip.
+                Event::A11y { target, action: A11yAction::Focus } => {
+                    if st.prev_hits.iter().any(|h| h.id == *target && h.sense.focus) {
+                        st.focus = Some(*target);
+                    }
+                }
                 Event::FocusLost => {
                     st.left = false;
                     st.right = false;

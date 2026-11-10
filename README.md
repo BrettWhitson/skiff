@@ -316,7 +316,7 @@ anything a screen reader gets wrong.
 | `F6` / `Shift+F6` | Next / previous area: hosts, tabs, content (also out of a terminal) |
 | `Tab` / `Shift+Tab` | Next / previous control |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move in lists; `←` `→` switch tabs on the tab strip |
-| `Enter` / `Space` | Activate |
+| `Enter` | Open the selected row; `Enter` / `Space` press buttons and checkboxes |
 | `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
 | `Delete` | Delete the selected host (asks first) |
 | `Ctrl+Alt+=` / `-` / `0` | Larger / smaller / normal interface (`Cmd+Alt` on macOS) |

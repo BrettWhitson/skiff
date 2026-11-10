@@ -38,3 +38,16 @@ fn every_builtin_maps() {
         assert_eq!(t.palette.bg.a, 255, "{}", d.name);
     }
 }
+
+#[test]
+fn control_outlines_meet_3_to_1() {
+    use termax_core::theme::{builtin, contrast};
+    let rgb = |c: Color| (c.r, c.g, c.b);
+    for d in builtin() {
+        let p = from_def(&d).palette;
+        for (what, on) in [("bg", p.bg), ("surface", p.surface)] {
+            let got = contrast(rgb(p.control), rgb(on));
+            assert!(got >= 3.0, "{} control/{what}: {got:.2}", d.name);
+        }
+    }
+}

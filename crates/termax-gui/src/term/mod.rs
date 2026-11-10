@@ -56,6 +56,9 @@ pub struct TermTab {
     last_screen: String,
     /// The latest announcement (a live region's text).
     live: String,
+    /// Take the screen as read without announcing it (tab shown again,
+    /// or a screen reader just connected).
+    resync: bool,
 }
 
 /// Rows × columns that fit `rect` (at least 2 × 10, as the pty needs).
@@ -92,10 +95,17 @@ impl TermTab {
             announcer: announce::Announcer::new(Instant::now()),
             last_screen: String::new(),
             live: String::new(),
+            resync: false,
         }
     }
 
     /// Cell width and height of the last frame, in physical pixels.
+    /// The tab came to the front: its screen is taken as read, so screen
+    /// readers hear only output from here on.
+    pub fn shown(&mut self) {
+        self.resync = true;
+    }
+
     pub fn cell_size(&self) -> (i32, i32) {
         (self.cell.w, self.cell.h)
     }
@@ -280,14 +290,17 @@ pub fn view(
         return;
     };
     let parser = session.parser.clone();
-    if ui.a11y_on() {
+    if !ui.a11y_on() {
+        tab.resync = true;
+    } else {
         let text = parser.lock().map(|p| p.screen().contents()).unwrap_or_default();
         let speak = match tab.announce {
             termax_core::config::Announce::All => true,
             termax_core::config::Announce::Focused => focused,
             termax_core::config::Announce::Off => false,
         };
-        if speak && text != tab.last_screen {
+        let quiet = std::mem::take(&mut tab.resync);
+        if speak && !quiet && text != tab.last_screen {
             tab.announcer.push_output(&announce::new_output(&tab.last_screen, &text));
         }
         tab.last_screen.clone_from(&text);

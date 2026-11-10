@@ -32,7 +32,7 @@ pub fn checkbox(ui: &mut Ui, id: Id, rect: Rect, value: &mut bool, text: &str) -
         } else {
             painter.rect(bx, p.surface, radius);
         }
-        painter.border(bx, if r.focused || r.hovered { p.accent } else { p.border }, bw, radius);
+        painter.border(bx, if r.focused || r.hovered { p.accent } else { p.control }, bw, radius);
     }
     let gap = ui.px(ui.style().spacing);
     let text_rect = Rect::new(bx.right() + gap, rect.y, rect.right() - bx.right() - gap, rect.h);

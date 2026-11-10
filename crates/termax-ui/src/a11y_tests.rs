@@ -153,3 +153,21 @@ fn tab_strip_takes_focus_and_arrows() {
     assert_eq!(run(&mut h, vec![key(Key::Right)]), 1);
     assert_eq!(run(&mut h, vec![key(Key::Left)]), 0);
 }
+
+#[test]
+fn a11y_focus_on_row_keeps_list_focus() {
+    let mut h = Harness::new(400, 300, 1.0);
+    let mut sel = Some(0);
+    let names = ["alpha", "beta", "gamma"];
+    let mut run = |h: &mut Harness, ev: Vec<Event>| {
+        h.frame(ev, &mut |ui| {
+            list_named(ui, Id::new("l"), Rect::new(0, 0, 200, 200), "Hosts", 3, 20, &mut sel, |i| names[i].to_string(), |_, _, _, _| {});
+        });
+        sel
+    };
+    run(&mut h, vec![key(Key::Tab)]);
+    let row = h.tree().find("beta").expect("row").id;
+    run(&mut h, vec![Event::A11y { target: row, action: A11yAction::Focus }]);
+    assert_eq!(h.state.focused(), Some(Id::new("l")), "a row is not a focus target");
+    assert_eq!(run(&mut h, vec![key(Key::Down)]), Some(1), "arrows still move the list");
+}

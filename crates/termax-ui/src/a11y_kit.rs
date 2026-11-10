@@ -62,10 +62,12 @@ fn node(n: &Node, root_title: &str) -> accesskit::Node {
         k.set_children(n.children.iter().map(|c| NodeId(c.0)).collect::<Vec<_>>());
     }
     match n.role {
-        Role::Button | Role::CheckBox | Role::ListItem | Role::Tab | Role::MenuItem | Role::ComboBox => {
+        Role::Button | Role::CheckBox | Role::ComboBox => {
             k.add_action(Action::Click);
             k.add_action(Action::Focus);
         }
+        // Rows, tabs and menu items are reached through their container.
+        Role::ListItem | Role::Tab | Role::MenuItem => k.add_action(Action::Click),
         Role::TextInput => {
             k.add_action(Action::Focus);
             k.add_action(Action::SetValue);

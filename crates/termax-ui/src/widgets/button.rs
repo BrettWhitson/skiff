@@ -34,7 +34,7 @@ pub fn button(ui: &mut Ui, id: Id, rect: Rect, text: &str) -> Response {
     } else {
         p.surface_alt
     };
-    let border = if r.focused { p.accent } else { p.border };
+    let border = if r.focused { p.accent } else { p.control };
     let bw = ui.px(1).max(1);
     let px = ui.font_px();
     let pad = ui.px(ui.style().padding);

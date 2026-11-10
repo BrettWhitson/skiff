@@ -322,6 +322,24 @@ fn f6_cycles_regions_from_terminal() {
 }
 
 #[test]
+fn tab_strip_arrows_keep_focus_on_strip() {
+    let mut f = Fixture::new();
+    f.double_click_text("alpha");
+    f.frame(vec![]);
+    f.double_click_text("beta");
+    f.frame(vec![]);
+    assert_eq!(f.app.active, 1);
+    let key = |key, shift| Event::KeyDown { key, mods: Modifiers { shift, ..Modifiers::NONE }, text: None };
+    f.frame(vec![key(Key::F(6), true)]);
+    f.frame(vec![]);
+    assert_eq!(f.h.state.focused(), Some(Id::new("tabs")));
+    f.frame(vec![key(Key::Left, false)]);
+    f.frame(vec![]);
+    assert_eq!(f.app.active, 0);
+    assert_eq!(f.h.state.focused(), Some(Id::new("tabs")), "arrows stay on the strip, not the shell");
+}
+
+#[test]
 fn shift_f10_opens_host_menu() {
     let mut f = Fixture::new();
     f.click_text("alpha");

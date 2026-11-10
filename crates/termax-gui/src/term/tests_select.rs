@@ -192,3 +192,24 @@ fn zoom_changes_grid_size() {
     l.frame(vec![], vec![]);
     assert_eq!(l.tab.grid, before);
 }
+
+#[test]
+fn shown_again_does_not_reannounce_screen() {
+    let mut l = Live::new();
+    let start = Instant::now();
+    while l.tab.announcer.has_pending() {
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(100));
+        l.frame(vec![], vec![]);
+    }
+    // Output arrives while the tab is in the background (not drawn).
+    l.tab.session.as_mut().unwrap().write(b"while-hidden\r");
+    let start = Instant::now();
+    while !l.screen_text().contains("while-hidden") {
+        assert!(start.elapsed() < Duration::from_secs(15));
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    l.tab.shown();
+    l.frame(vec![], vec![]);
+    assert!(!l.tab.announcer.has_pending(), "switching to a tab reads nothing old");
+}

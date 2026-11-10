@@ -313,7 +313,7 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
     {
         let mut painter = ui.painter();
         painter.rect(rect, p.surface, radius);
-        painter.border(rect, if r.focused { p.accent } else { p.border }, bw, radius);
+        painter.border(rect, if r.focused { p.accent } else { p.control }, bw, radius);
     }
     ui.with_clip(inner, |ui| {
         let mut painter = ui.painter();
