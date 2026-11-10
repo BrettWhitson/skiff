@@ -122,3 +122,28 @@ fn unreadable_custom_theme_keeps_muted_and_selection_visible() {
     assert!(ratio(p.selection, p.bg) >= MIN_VISIBLE, "selection {:?} vs bg {:?}", p.selection, p.bg);
     assert!(t.warning.as_deref().is_some_and(|w| w.contains("nord")), "{:?}", t.warning);
 }
+
+/// On light themes the terminal's ANSI colours are darkened until they
+/// read on the background (4.5:1 colours, 3:1 greys); dark themes keep theirs.
+#[test]
+fn light_theme_ansi_colors_read_on_background() {
+    use skiff_core::theme::contrast;
+    let rgb = |c: Color| (c.r, c.g, c.b);
+    let paper = from_def(&builtin().into_iter().find(|t| t.name == "paper").unwrap());
+    for (i, c) in paper.ansi.iter().enumerate().skip(1) {
+        let min = if matches!(i, 7 | 8 | 15) { 3.0 } else { 4.5 };
+        assert!(contrast(rgb(*c), rgb(paper.term_bg)) >= min, "paper ansi {i} {c:?}");
+    }
+    let nord = builtin().into_iter().find(|t| t.name == "nord").unwrap();
+    let list: Vec<Color> = nord
+        .ansi
+        .clone()
+        .unwrap()
+        .iter()
+        .map(|s| match skiff_core::theme::parse_color(s) {
+            Some(skiff_core::theme::Rgb::Rgb(r, g, b)) => Color::rgb(r, g, b),
+            _ => panic!("{s}"),
+        })
+        .collect();
+    assert_eq!(from_def(&nord).ansi.to_vec(), list, "dark themes unchanged");
+}
