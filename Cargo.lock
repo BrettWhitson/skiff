@@ -3988,6 +3988,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "termax-gui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "tempfile",
+ "termax-core",
+ "termax-testserver",
+ "termax-ui",
+ "tokio",
+ "vt100",
+]
+
+[[package]]
 name = "termax-testserver"
 version = "0.1.0"
 dependencies = [

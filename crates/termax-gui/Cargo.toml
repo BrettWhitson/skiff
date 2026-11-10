@@ -1,0 +1,21 @@
+[package]
+name = "termax-gui"
+version.workspace = true
+edition.workspace = true
+description = "Desktop GUI front-end for termax"
+
+[[bin]]
+name = "termax-gui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+tokio.workspace = true
+vt100.workspace = true
+termax-core.workspace = true
+termax-ui = { path = "../termax-ui" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+termax-testserver = { path = "../termax-testserver" }
