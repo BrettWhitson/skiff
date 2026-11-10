@@ -454,9 +454,9 @@ mod tests {
             ("close_tab", "ctrl+shift+x, f4"),
             ("nope", "alt+z"),
             ("help", "alt+banana"),
-            ("theme", "x"),     // taken by swap_panes
-            ("quit", "alt+]"),  // taken by next_tab
-            ("prefix", "w"),    // the prefix itself needs Ctrl or Alt
+            ("theme", "x"),    // taken by swap_panes
+            ("quit", "alt+]"), // taken by next_tab
+            ("prefix", "w"),   // the prefix itself needs Ctrl or Alt
         ]));
         assert_eq!(
             errors,
@@ -537,7 +537,8 @@ mod tests {
     #[test]
     fn termax_keys_can_be_restored() {
         let doc = include_str!("../../../docs/CONFIGURATION.md");
-        let block = doc.split("The termax keys").nth(1).and_then(|b| b.split("```toml").nth(1)).and_then(|b| b.split("```").next()).unwrap();
+        let block =
+            doc.split("The termax keys").nth(1).and_then(|b| b.split("```toml").nth(1)).and_then(|b| b.split("```").next()).unwrap();
         // `name = "value"  # comment` lines; the only escape used is `\\`.
         let pairs: BTreeMap<String, String> = block
             .lines()

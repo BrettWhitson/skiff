@@ -147,7 +147,12 @@ fn copy_legacy_with(old: &Path, new: &Path, rename: &mut dyn FnMut(&Path, &Path)
 
 /// Renames `from` to `to`, trying up to `attempts` times with a short,
 /// doubling pause; stops early once `to` exists (another instance won).
-fn rename_retrying(from: &Path, to: &Path, attempts: u32, rename: &mut dyn FnMut(&Path, &Path) -> std::io::Result<()>) -> std::io::Result<()> {
+fn rename_retrying(
+    from: &Path,
+    to: &Path,
+    attempts: u32,
+    rename: &mut dyn FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let mut attempt = 0;
     loop {
         match rename(from, to) {
