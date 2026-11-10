@@ -40,10 +40,10 @@ impl SearchState {
         }
     }
 
-    /// Re-runs the search when the query or the output changed.
-    pub fn update(&mut self, parser: &mut vt100::Parser, generation: u64, query_changed: bool) {
+    /// Re-runs the search when the query or the output changed; true if it did.
+    pub fn update(&mut self, parser: &mut vt100::Parser, generation: u64, query_changed: bool) -> bool {
         if !query_changed && self.generation == Some(generation) {
-            return;
+            return false;
         }
         let (lines, history) = screen_lines(parser);
         self.history = history;
@@ -59,6 +59,7 @@ impl SearchState {
         if query_changed {
             self.scroll_due = true;
         }
+        true
     }
 
     /// Next older (`older`) or newer match, wrapping.

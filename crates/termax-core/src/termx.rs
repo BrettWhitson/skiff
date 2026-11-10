@@ -184,6 +184,26 @@ impl Snippet {
     }
 }
 
+/// How a snippet reaches the terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnippetSend {
+    /// One line: typed as is (with its Enter if it has one).
+    Type(String),
+    /// Several lines: pasted (the paste rule applies), then Enter if
+    /// `enter`, outside any bracketed paste so the shell runs it.
+    Paste { body: String, enter: bool },
+}
+
+impl Snippet {
+    pub fn send(&self) -> SnippetSend {
+        if self.command.contains(['\n', '\r']) {
+            SnippetSend::Paste { body: self.command.clone(), enter: self.run }
+        } else {
+            SnippetSend::Type(self.text())
+        }
+    }
+}
+
 /// The snippets usable in a tab connected to `host`.
 pub fn snippets_for<'a>(all: &'a [Snippet], host: &str) -> Vec<&'a Snippet> {
     all.iter().filter(|s| s.host.as_deref().is_none_or(|h| h == host)).collect()
@@ -239,6 +259,14 @@ mod tests {
         assert_eq!(e(M::None, E::Sgr, MouseEv::Press(0), 0), None);
         let ctrl = encode_mouse(M::PressRelease, E::Sgr, MouseEv::Press(2), 0, 0, false, false, true);
         assert_eq!(ctrl, Some(b"\x1b[<18;1;1M".to_vec()));
+    }
+
+    #[test]
+    fn multi_line_run_snippet_enters_after_the_paste() {
+        let s = |command: &str, run| Snippet { name: "x".into(), command: command.into(), host: None, run };
+        assert_eq!(s("ls", true).send(), SnippetSend::Type("ls\r".into()));
+        assert_eq!(s("a\nb", true).send(), SnippetSend::Paste { body: "a\nb".into(), enter: true });
+        assert_eq!(s("a\nb", false).send(), SnippetSend::Paste { body: "a\nb".into(), enter: false });
     }
 
     #[test]

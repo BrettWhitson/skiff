@@ -38,9 +38,9 @@ struct FontLists {
 fn start_scan() -> Receiver<FontLists> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let dirs = termax_ui::text::system::font_dirs();
-        let all = termax_ui::text::system::scan_fonts(&dirs, false);
-        let mono = termax_ui::text::system::scan_fonts(&dirs, true);
+        let found = termax_ui::text::system::scan_all(&termax_ui::text::system::scan_dirs());
+        let mono = found.iter().filter(|f| f.2).map(|(n, p, _)| (n.clone(), p.clone())).collect();
+        let all = found.into_iter().map(|(n, p, _)| (n, p)).collect();
         let _ = tx.send(FontLists { mono, all });
     });
     rx

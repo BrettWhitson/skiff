@@ -258,6 +258,13 @@ fn gui_multiline_paste_prompts() {
     assert!(on_screen(&l, "Paste 2 lines into fx?"), "the paste waits for a yes");
     std::thread::sleep(Duration::from_millis(200));
     assert!(!l.screen_text().contains("echo a"), "nothing sent yet");
+    l.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }], vec![]);
+    l.frame(vec![], vec![]);
+    assert!(l.tab.pending_paste.is_none(), "a reflexive Enter cancels");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!l.screen_text().contains("echo a"));
+    l.frame(vec![], vec![Action::Paste]);
+    l.frame(vec![], vec![]);
     let at = text_at(&l, "Paste").expect("Paste button");
     l.frame(press(at), vec![]);
     l.frame(release(at), vec![]);
@@ -288,4 +295,32 @@ fn shift_bypasses_mouse_reporting() {
     l.frame(vec![Event::MouseMove(pt(5))], vec![]);
     l.frame(release(pt(5)), vec![]);
     assert!(l.tab.select.sel.is_some(), "Shift+drag selects");
+}
+
+#[test]
+fn search_repaints_after_new_output() {
+    let mut l = Live::new();
+    l.frame(vec![], vec![Action::Find]);
+    l.frame(vec![Event::Text("needle".into())], vec![]);
+    l.frame(vec![], vec![]);
+    l.tab.session.as_mut().unwrap().write(b"needle late\r");
+    l.wait_for("needle late");
+    assert_eq!(l.h.repaint_in, Some(Duration::ZERO), "new matches are drawn on the next frame, not whenever input comes");
+}
+
+#[test]
+fn clicks_on_the_find_bar_stay_out_of_the_terminal() {
+    let mut l = Live::new();
+    l.frame(vec![], vec![Action::Find]);
+    l.frame(vec![], vec![]);
+    let bar = l.h.list().prims.iter().find_map(|p| match p {
+        termax_ui::display::Prim::Text { text, bounds, .. } if text == "Find" => Some(Point::new(bounds.x + 2, bounds.y + bounds.h / 2)),
+        _ => None,
+    });
+    let at = bar.expect("find bar placeholder");
+    for _ in 0..2 {
+        l.frame(press(at), vec![]);
+        l.frame(release(at), vec![]);
+    }
+    assert!(l.tab.select.sel.is_none(), "a double-click in the find box doesn't select terminal text");
 }

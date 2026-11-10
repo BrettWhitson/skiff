@@ -219,7 +219,10 @@ shortcuts are intercepted.
 - **Paste warning.** Pasting text with a line break into a shell that hasn't
   turned on bracketed paste would run each line, so termax asks first
   ("Paste 3 lines into homelab?"). Programs that use bracketed paste (most
-  modern shells and editors) are never interrupted. Turn the prompt off with
+  modern shells and editors) are never interrupted. In the GUI, focus starts
+  on Cancel, so a reflexive Enter doesn't paste; in the TUI press `y`. Windows
+  consoles have no bracketed paste, so the TUI there treats a burst of 8+
+  keys with a line break as a paste. Turn the prompt off with
   `confirm_multiline_paste = false`.
 - **Mouse reporting.** When a program asks for the mouse (vim, htop, tmux,
   less with `--mouse`), clicks, drags and the wheel go to it. Hold `Shift` to
@@ -256,7 +259,8 @@ cargo run -p termax-gui --release
 - **Settings** (`Ctrl+Shift+,`) edits connections, theme, fonts, keybindings
   and general options. Under Appearance, "Choose terminal font…" and "Choose
   interface font…" list the installed fonts (the terminal list shows only
-  monospace ones), with a filter box; picking one applies it at once. Edits to `config.toml` made outside termax are picked
+  monospace ones; per-user installed fonts included), with a filter box;
+  picking one applies it at once. Edits to `config.toml` made outside termax are picked
   up within a second while the window has focus.
 
 | Action | Windows / Linux | macOS |

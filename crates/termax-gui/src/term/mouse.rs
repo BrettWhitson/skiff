@@ -31,7 +31,9 @@ pub fn cell_of(p: Point, inner: Rect, cell: Size) -> (u16, u16) {
 }
 
 /// The bytes this frame's mouse events report to the program. Presses
-/// count only inside `inner`; a held button is followed outside it.
+/// count only inside `inner` and when the terminal is the topmost widget
+/// under the pointer (`on_top`: not under the find bar or a popup); a held
+/// button is followed outside it.
 pub fn reports(
     events: &[Event],
     inner: Rect,
@@ -39,6 +41,7 @@ pub fn reports(
     mode: MouseProtocolMode,
     enc: MouseProtocolEncoding,
     mods: Modifiers,
+    on_top: bool,
     st: &mut MouseState,
 ) -> Vec<Vec<u8>> {
     let mut out = vec![];
@@ -49,7 +52,7 @@ pub fn reports(
     };
     for e in events {
         match e {
-            Event::MouseDown(b, p) if inner.contains(*p) => {
+            Event::MouseDown(b, p) if on_top && inner.contains(*p) => {
                 let Some(b) = button(b) else { continue };
                 let at = cell_of(*p, inner, cell);
                 st.held = Some(b);
@@ -63,7 +66,7 @@ pub fn reports(
             }
             Event::MouseMove(p) => {
                 let at = cell_of(*p, inner, cell);
-                if st.last == Some(at) || (st.held.is_none() && !inner.contains(*p)) {
+                if st.last == Some(at) || (st.held.is_none() && (!on_top || !inner.contains(*p))) {
                     continue;
                 }
                 st.last = Some(at);
@@ -92,9 +95,20 @@ mod tests {
             Event::MouseMove(Point::new(10 + 8 * 5 + 1, 10 + 16 * 2 + 1)),
             Event::MouseUp(MouseButton::Left, Point::new(10 + 8 * 5 + 1, 10 + 16 * 2 + 1)),
         ];
-        let out = reports(&ev, inner, cell, M::ButtonMotion, E::Sgr, Default::default(), &mut st);
+        let out = reports(&ev, inner, cell, M::ButtonMotion, E::Sgr, Default::default(), true, &mut st);
         assert_eq!(out, vec![b"\x1b[<0;5;3M".to_vec(), b"\x1b[<32;6;3M".to_vec(), b"\x1b[<0;6;3m".to_vec()]);
         let outside = [Event::MouseDown(MouseButton::Left, Point::new(0, 0))];
-        assert!(reports(&outside, inner, cell, M::ButtonMotion, E::Sgr, Default::default(), &mut st).is_empty());
+        assert!(reports(&outside, inner, cell, M::ButtonMotion, E::Sgr, Default::default(), true, &mut st).is_empty());
+    }
+
+    #[test]
+    fn presses_under_an_overlay_are_not_reported() {
+        let inner = Rect::new(0, 0, 800, 400);
+        let cell = Size::new(8, 16);
+        let mut st = MouseState::default();
+        let at = Point::new(20, 20);
+        let press = [Event::MouseDown(MouseButton::Left, at), Event::MouseUp(MouseButton::Left, at)];
+        // `false`: something (the find bar, a popup) is on top of the terminal there.
+        assert!(reports(&press, inner, cell, M::PressRelease, E::Sgr, Default::default(), false, &mut st).is_empty());
     }
 }

@@ -66,8 +66,11 @@ pub struct TermTab {
     pub search: Option<search::SearchState>,
     /// Ask before a multi-line paste (`settings.confirm_multiline_paste`); set by the app.
     pub confirm_paste: bool,
-    /// A paste waiting for a yes: the text and its line count.
-    pub pending_paste: Option<(String, usize)>,
+    /// A paste waiting for a yes: the text, its line count, and whether
+    /// Enter follows it (a multi-line `run` snippet).
+    pub pending_paste: Option<(String, usize, bool)>,
+    /// The paste prompt was drawn (its first frame moves focus to Cancel).
+    paste_shown: bool,
     mouse: mouse::MouseState,
 }
 
@@ -109,6 +112,7 @@ impl TermTab {
             search: None,
             confirm_paste: true,
             pending_paste: None,
+            paste_shown: false,
             mouse: mouse::MouseState::default(),
         }
     }
@@ -116,26 +120,28 @@ impl TermTab {
     /// Cell width and height of the last frame, in physical pixels.
     /// Types a snippet. A multi-line one is a paste (and may ask first);
     /// a one-line one is typed, with its Enter if it has one.
-    pub fn send_snippet(&mut self, text: &str) {
+    pub fn send_snippet(&mut self, snippet: &termax_core::termx::Snippet) {
+        use termax_core::termx::SnippetSend;
         let Some(s) = self.session.as_mut() else { return };
-        if text.trim_end_matches('\r').contains(['\n', '\r']) {
-            let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
-            match termax_core::termx::paste_lines(text, bracketed, self.confirm_paste) {
-                Some(n) => self.pending_paste = Some((text.to_string(), n)),
-                None => s.paste(text),
+        match snippet.send() {
+            SnippetSend::Type(text) => s.write(text.as_bytes()),
+            SnippetSend::Paste { body, enter } => {
+                let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
+                match termax_core::termx::paste_lines(&body, bracketed, self.confirm_paste) {
+                    Some(n) => self.pending_paste = Some((body, n, enter)),
+                    None => paste_then_enter(s, &body, enter),
+                }
             }
-        } else {
-            s.write(text.as_bytes());
         }
     }
 
     /// Sends (`yes`) or drops the paste waiting for confirmation.
     pub fn paste_answer(&mut self, yes: bool) {
-        if let Some((text, _)) = self.pending_paste.take()
+        if let Some((text, _, enter)) = self.pending_paste.take()
             && yes
             && let Some(s) = self.session.as_mut()
         {
-            s.paste(&text);
+            paste_then_enter(s, &text, enter);
         }
     }
 
@@ -237,7 +243,7 @@ pub fn view(
                 if let (Some(t), Some(s)) = (ui.clipboard().get(), tab.session.as_mut()) {
                     let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
                     match termax_core::termx::paste_lines(&t, bracketed, tab.confirm_paste) {
-                        Some(n) => tab.pending_paste = Some((t, n)),
+                        Some(n) => tab.pending_paste = Some((t, n, false)),
                         None => s.paste(&t),
                     }
                 }
@@ -299,7 +305,7 @@ pub fn view(
 
     // Wheel: scrollback (or arrow keys in full-screen apps like less/vim).
     let (_, dy) = ui.input().wheel();
-    if dy != 0.0 && inner.contains(ui.input().mouse) {
+    if dy != 0.0 && r.hovered && inner.contains(ui.input().mouse) {
         tab.wheel_rest += dy / (WHEEL_PX_PER_LINE * scale);
         let lines = tab.wheel_rest.trunc() as i32;
         tab.wheel_rest -= lines as f32;
@@ -339,12 +345,7 @@ pub fn view(
                 tab.reset_blink();
             }
         } else if tab.pending_paste.is_some() {
-            // The paste prompt owns Enter / Esc; other keys wait.
-            if ui.input_mut().take_key(&Key::Enter, Modifiers::NONE) {
-                tab.paste_answer(true);
-            } else if ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
-                tab.paste_answer(false);
-            }
+            // The paste prompt has focus; keys typed meanwhile are dropped.
         } else {
             let bytes = input::route(&events, keymap, session.application_cursor());
             if !bytes.is_empty() {
@@ -394,12 +395,12 @@ pub fn view(
     if report_mouse {
         let events = ui.input().events.clone();
         let mods = ui.input().mods;
-        for b in mouse::reports(&events, inner, cell, mouse_mode, mouse_enc, mods, &mut tab.mouse) {
+        for b in mouse::reports(&events, inner, cell, mouse_mode, mouse_enc, mods, r.hovered, &mut tab.mouse) {
             if let Some(s) = tab.session.as_mut() {
                 s.write(&b);
             }
         }
-    } else if handle_mouse(ui, id, inner, cell, &mut tab.select, offset)
+    } else if (r.hovered || tab.select.dragging) && handle_mouse(ui, id, inner, cell, &mut tab.select, offset)
         && let Ok(p) = parser.lock()
     {
         tab.select.resolve(p.screen(), offset);
@@ -454,10 +455,27 @@ pub fn view(
     paste_bar(ui, id, inner, tab);
 }
 
+/// Pastes `text`; then Enter, after the paste ends, so the shell runs it.
+fn paste_then_enter(s: &mut TerminalSession, text: &str, enter: bool) {
+    s.paste(text);
+    if enter {
+        s.write(b"\r");
+    }
+}
+
 /// "Paste n lines into host?" along the bottom of the terminal.
 fn paste_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab) {
-    let Some((_, n)) = tab.pending_paste.as_ref() else { return };
-    let msg = format!("Paste {n} lines into {}?", tab.host.name);
+    let Some((_, n, _)) = tab.pending_paste.as_ref() else {
+        tab.paste_shown = false;
+        return;
+    };
+    let what = if *n == 1 { "1 line".to_string() } else { format!("{n} lines") };
+    let msg = format!("Paste {what} into {}?", tab.host.name);
+    let (yes, no) = (id.with("paste-yes"), id.with("paste-no"));
+    // Focus starts on Cancel, so a reflexive Enter doesn't paste.
+    if !std::mem::replace(&mut tab.paste_shown, true) {
+        ui.request_focus(no);
+    }
     let h = ui.px(36);
     let rect = Rect::new(inner.x, inner.bottom() - h, inner.w, h);
     let mut answer = None;
@@ -469,13 +487,16 @@ fn paste_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab) {
         ui.painter().border(rect, p.warning, bw, radius);
         let parts = ui.split_h(rect.inset(ui.px(4)), &[L::Fill, L::Px(80), L::Px(80)], 6);
         label(ui, parts[0], &msg, Some(p.fg));
-        if button(ui, id.with("paste-yes"), parts[1], "Paste").clicked {
+        if button(ui, yes, parts[1], "Paste").clicked {
             answer = Some(true);
         }
-        if button(ui, id.with("paste-no"), parts[2], "Cancel").clicked {
+        if button(ui, no, parts[2], "Cancel").clicked {
             answer = Some(false);
         }
     });
+    if (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
+        answer = Some(false);
+    }
     if let Some(yes) = answer {
         tab.paste_answer(yes);
         ui.request_focus(id);
@@ -499,7 +520,10 @@ fn find_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab, parser: &std::s
         ui.request_focus(id);
         return;
     }
-    s.update(&mut p, generation, changed);
+    if s.update(&mut p, generation, changed) {
+        // The marks for the new matches are drawn next frame.
+        ui.request_repaint_in(Duration::ZERO);
+    }
     if std::mem::take(&mut s.scroll_due) {
         if let Some(off) = s.offset() {
             // Keep the match a few rows below the top when there is room.

@@ -284,7 +284,7 @@ fn tui_multiline_paste_confirms() {
     let mut t = T::new("");
     let _fx = fixture_terminal(&mut t);
     t.app.handle_event(Event::Paste("a\nb".into()));
-    assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste(_), .. })));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste { .. }, .. })));
 }
 
 #[test]
@@ -297,4 +297,25 @@ fn tui_snippet_picker_sends() {
     t.key(KeyCode::Enter);
     assert!(t.app.modal.is_none());
     wait_screen(&t, "echo hi-snippet");
+}
+
+fn press_keys(text: &str) -> Vec<Event> {
+    text.chars()
+        .map(|c| {
+            let code = if c == '\r' { KeyCode::Enter } else { KeyCode::Char(c) };
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+        })
+        .collect()
+}
+
+#[test]
+fn tui_key_burst_is_a_paste() {
+    // Windows consoles deliver a paste as a burst of key presses.
+    let mut t = T::new("");
+    let _fx = fixture_terminal(&mut t);
+    t.app.paste_bursts = true;
+    t.app.handle_batch(press_keys("ls\r"));
+    assert!(t.app.modal.is_none(), "a few keys typed quickly are just typing");
+    t.app.handle_batch(press_keys("echo one\recho two\r"));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste { .. }, .. })));
 }

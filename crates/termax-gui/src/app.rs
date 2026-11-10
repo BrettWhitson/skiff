@@ -659,9 +659,9 @@ impl GuiApp {
             Item::Command(Cmd::CheckStatus) => self.check_status(None),
             Item::Command(Cmd::ReloadConfig) => self.reload_config(),
             Item::Snippet(i) => {
-                let Some(text) = self.cfg.snippets.get(i).map(|s| s.text()) else { return };
+                let Some(snippet) = self.cfg.snippets.get(i).cloned() else { return };
                 if let Some(TabKind::Terminal(t)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
-                    t.send_snippet(&text);
+                    t.send_snippet(&snippet);
                 }
             }
         }

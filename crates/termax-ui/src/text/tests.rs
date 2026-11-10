@@ -152,7 +152,9 @@ fn scan_fonts_lists_monospace() {
     };
     let dir = std::env::temp_dir().join(format!("termax-fonts-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(&mono, dir.join("mono.ttf")).unwrap();
+    // Fonts in subfolders count (Linux keeps them in per-family folders).
+    std::fs::create_dir_all(dir.join("family")).unwrap();
+    std::fs::copy(&mono, dir.join("family").join("mono.ttf")).unwrap();
     std::fs::copy(&ui, dir.join("ui.ttf")).unwrap();
     std::fs::write(dir.join("junk.ttf"), b"not a font at all, just bytes").unwrap();
     let dirs = [dir.clone()];

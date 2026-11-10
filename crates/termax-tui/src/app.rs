@@ -70,8 +70,9 @@ pub enum ConfirmAction {
     DeleteForward(usize),
     DeleteFile { name: String, is_dir: bool },
     Quit,
-    /// A multi-line paste into the active terminal.
-    Paste(String),
+    /// A multi-line paste into the active terminal, then Enter if `enter`
+    /// (a multi-line `run` snippet).
+    Paste { text: String, enter: bool },
 }
 
 pub enum Modal {
@@ -111,6 +112,9 @@ pub struct App {
     pub term_area: (u16, u16),
     /// Screen position of the terminal content's top-left cell (mouse reports).
     pub term_origin: (u16, u16),
+    /// Treat a burst of typed keys with a line break as a paste (Windows
+    /// consoles have no bracketed paste, so pastes arrive as key presses).
+    pub paste_bursts: bool,
     /// Reachability per host name.
     pub statuses: HashMap<String, HostStatus>,
     pub history: History,
@@ -151,6 +155,7 @@ impl App {
             should_quit: false,
             term_area: (24, 80),
             term_origin: (1, 1),
+            paste_bursts: cfg!(windows),
             next_id: 1,
             rt,
             tx,
@@ -531,6 +536,24 @@ impl App {
 
     // ----- input -----
 
+    /// Handles the events that were waiting together. In a terminal tab, a
+    /// burst of plain keys that holds a line break and at least
+    /// `PASTE_BURST_CHARS` characters can only be a paste: it goes through
+    /// the paste rule instead of straight to the shell.
+    pub fn handle_batch(&mut self, events: Vec<Event>) {
+        if self.paste_bursts
+            && self.modal.is_none()
+            && matches!(self.tabs[self.active].kind, TabKind::Terminal(_))
+            && let Some(text) = key_burst_text(&events)
+        {
+            self.handle_paste(&text);
+            return;
+        }
+        for ev in events {
+            self.handle_event(ev);
+        }
+    }
+
     pub fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
@@ -599,24 +622,20 @@ impl App {
         termx::snippets_for(&self.cfg.snippets, host)
     }
 
-    /// Sends `text` to the active terminal. A paste, or multi-line text, goes
-    /// through the paste rule and may ask first.
-    fn send_to_terminal(&mut self, text: &str, is_paste: bool) {
+    /// Pastes `text` into the active terminal (the paste rule may ask
+    /// first), then Enter if `enter`.
+    fn send_to_terminal(&mut self, text: &str, enter: bool) {
         let title = self.tabs[self.active].title.clone();
         let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else { return };
-        let multi = text.trim_end_matches('\r').contains(['\n', '\r']);
-        if !is_paste && !multi {
-            s.write(text.as_bytes());
-            return;
-        }
         let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
         match termx::paste_lines(text, bracketed, self.cfg.settings.confirm_multiline_paste) {
             Some(n) => {
                 let what = if n == 1 { "1 line".to_string() } else { format!("{n} lines") };
                 let text_owned = text.to_string();
-                self.modal = Some(Modal::Confirm { text: format!("Paste {what} into {title}?"), action: ConfirmAction::Paste(text_owned) });
+                self.modal =
+                    Some(Modal::Confirm { text: format!("Paste {what} into {title}?"), action: ConfirmAction::Paste { text: text_owned, enter } });
             }
-            None => s.paste(text),
+            None => paste_then_enter(s, text, enter),
         }
     }
 
@@ -671,7 +690,7 @@ impl App {
             None => {}
         }
         match &mut self.tabs[self.active].kind {
-            TabKind::Terminal(_) => self.send_to_terminal(text, true),
+            TabKind::Terminal(_) => self.send_to_terminal(text, false),
             TabKind::Hosts if self.filtering => {
                 self.filter.insert_str(line);
                 self.refilter();
@@ -1004,9 +1023,16 @@ impl App {
                     KeyCode::Down | KeyCode::Char('j') if n > 0 => Some(Modal::Snippets { selected: (selected + 1) % n }),
                     KeyCode::Up | KeyCode::Char('k') if n > 0 => Some(Modal::Snippets { selected: (selected + n - 1) % n }),
                     KeyCode::Enter if selected < n => {
-                        let text = self.tab_snippets()[selected].text();
-                        // A multi-line snippet may open the paste confirmation.
-                        self.send_to_terminal(&text, false);
+                        let send = self.tab_snippets()[selected].send();
+                        match send {
+                            termx::SnippetSend::Type(text) => {
+                                if let TabKind::Terminal(s) = &mut self.tabs[self.active].kind {
+                                    s.write(text.as_bytes());
+                                }
+                            }
+                            // May open the paste confirmation.
+                            termx::SnippetSend::Paste { body, enter } => self.send_to_terminal(&body, enter),
+                        }
                         self.modal.take()
                     }
                     _ => Some(Modal::Snippets { selected }),
@@ -1091,9 +1117,9 @@ impl App {
     fn run_confirm(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::Quit => self.should_quit = true,
-            ConfirmAction::Paste(text) => {
+            ConfirmAction::Paste { text, enter } => {
                 if let TabKind::Terminal(s) = &mut self.tabs[self.active].kind {
-                    s.paste(&text);
+                    paste_then_enter(s, &text, enter);
                 }
             }
             ConfirmAction::DeleteHost(name) => {
@@ -1136,6 +1162,40 @@ impl App {
                 s.navigate(side, path, None);
             }
         }
+    }
+}
+
+/// Fewest characters in a key burst read as a paste (no one types this
+/// many keys between two reads of the input, ~30 ms apart).
+const PASTE_BURST_CHARS: usize = 8;
+
+/// The text of `events` if they are all plain key presses (and releases)
+/// forming a paste: a line break and at least `PASTE_BURST_CHARS` chars.
+fn key_burst_text(events: &[Event]) -> Option<String> {
+    let mut text = String::new();
+    for e in events {
+        let Event::Key(k) = e else { return None };
+        if k.kind == KeyEventKind::Release {
+            continue;
+        }
+        if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            return None;
+        }
+        match k.code {
+            KeyCode::Char(c) => text.push(c),
+            KeyCode::Enter => text.push('\r'),
+            KeyCode::Tab => text.push('\t'),
+            _ => return None,
+        }
+    }
+    (text.contains('\r') && text.chars().count() >= PASTE_BURST_CHARS).then_some(text)
+}
+
+/// Pastes `text`; then Enter, after the paste ends, so the shell runs it.
+fn paste_then_enter(s: &mut TerminalSession, text: &str, enter: bool) {
+    s.paste(text);
+    if enter {
+        s.write(b"\r");
     }
 }
 

@@ -45,20 +45,69 @@ pub fn fallbacks() -> Vec<PathBuf> {
 /// Files larger than this (big CJK fonts) aren't read while scanning.
 const MAX_SCAN_BYTES: u64 = 32 << 20;
 
-/// `(name, path)` of the `.ttf` / `.otf` fonts in `dirs` (not recursive),
-/// sorted by name; only monospace ones with `mono_only`. Unreadable or
-/// invalid files are skipped.
-pub fn scan_fonts(dirs: &[PathBuf], mono_only: bool) -> Vec<(String, PathBuf)> {
-    let mut out: Vec<(String, PathBuf)> = dirs
-        .iter()
-        .filter_map(|d| std::fs::read_dir(d).ok())
-        .flatten()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf")))
-        .filter_map(|p| font_info(&p).filter(|(_, mono)| *mono || !mono_only).map(|(name, _)| (name, p)))
-        .collect();
+/// Where installed fonts live, for listing them: the system folders plus
+/// the per-user ones (Windows' per-user install, `~/Library/Fonts`,
+/// `~/.local/share/fonts`). Scanned recursively.
+pub fn scan_dirs() -> Vec<PathBuf> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    let mut dirs = if cfg!(windows) {
+        let mut d = font_dirs();
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            d.push(PathBuf::from(local).join("Microsoft").join("Windows").join("Fonts"));
+        }
+        d
+    } else if cfg!(target_os = "macos") {
+        let mut d = font_dirs();
+        d.extend(home.map(|h| h.join("Library").join("Fonts")));
+        d
+    } else {
+        let mut d = vec![PathBuf::from("/usr/share/fonts"), PathBuf::from("/usr/local/share/fonts")];
+        if let Some(h) = home {
+            d.push(h.join(".local").join("share").join("fonts"));
+            d.push(h.join(".fonts"));
+        }
+        d
+    };
+    dirs.dedup();
+    dirs
+}
+
+/// How deep `scan_fonts` looks below each folder.
+const SCAN_DEPTH: usize = 4;
+
+/// `(name, path, monospace)` of the fonts (`.ttf`, `.otf`, and the first
+/// face of `.ttc`) in `dirs` and their subfolders, sorted by name.
+/// Unreadable or invalid files are skipped.
+pub fn scan_all(dirs: &[PathBuf]) -> Vec<(String, PathBuf, bool)> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if depth < SCAN_DEPTH {
+                    walk(&p, depth + 1, out);
+                }
+            } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["ttf", "otf", "ttc"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = vec![];
+    for d in dirs {
+        walk(d, 0, &mut files);
+    }
+    files.sort();
+    files.dedup();
+    let mut out: Vec<(String, PathBuf, bool)> = files.into_iter().filter_map(|p| font_info(&p).map(|(n, m)| (n, p, m))).collect();
     out.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.1.cmp(&b.1)));
     out
+}
+
+/// `(name, path)` of the fonts in `dirs` (see `scan_all`); only monospace
+/// ones with `mono_only`.
+pub fn scan_fonts(dirs: &[PathBuf], mono_only: bool) -> Vec<(String, PathBuf)> {
+    scan_all(dirs).into_iter().filter(|(_, _, m)| *m || !mono_only).map(|(n, p, _)| (n, p)).collect()
 }
 
 /// A font file's full name and whether it is monospace (`i`, `M` and `0`
