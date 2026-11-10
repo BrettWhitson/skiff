@@ -304,8 +304,9 @@ pub struct App {
     pub other_pane: Option<Rect>,
     /// The whole area of a split terminal (its divider drags with the mouse).
     pub split_area: Option<Rect>,
-    /// The divider of a split is being dragged.
-    divider_drag: bool,
+    /// The id of the tab whose split divider is being dragged; a switch to
+    /// another tab, a focus change or the next press off the divider ends it.
+    divider_drag: Option<u64>,
     /// Screen columns of each tab's label in the tab bar (row 0).
     pub tab_cols: Vec<(u16, u16)>,
     /// The mouse button a program was told is down.
@@ -385,7 +386,7 @@ impl App {
             term_origin: (1, 1),
             other_pane: None,
             split_area: None,
-            divider_drag: false,
+            divider_drag: None,
             tab_cols: vec![],
             mouse_held: None,
             mouse_target: None,
@@ -889,6 +890,7 @@ impl App {
         if let (TabKind::Terminal(s), Some(sp)) = (&mut tab.kind, &mut tab.split) {
             std::mem::swap(s, &mut sp.other);
             sp.focus_first = !sp.focus_first;
+            self.divider_drag = None;
             // This belongs to the pane that had the focus (a held button
             // is released to it by `check_mouse_held`).
             self.selection = None;
@@ -1217,19 +1219,26 @@ impl App {
     /// True when `m` was part of a divider drag and needs nothing else.
     fn drag_divider(&mut self, m: &MouseEvent) -> bool {
         let always = self.cfg.settings.tui_mouse == TuiMouse::Always;
-        let (Some(area), Some(sp)) = (self.split_area, self.tabs[self.active].split.as_mut()) else {
-            self.divider_drag = false;
+        let tab = &mut self.tabs[self.active];
+        let (Some(area), Some(sp)) = (self.split_area, tab.split.as_mut()) else {
+            self.divider_drag = None;
             return false;
         };
+        // A drag started in another tab (or before a focus change) is over.
+        let dragging = self.divider_drag == Some(tab.id);
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) if always && crate::ui::on_divider(area, sp.dir, sp.ratio, m.column, m.row) => {
-                self.divider_drag = true;
+            // Every press decides afresh, so a release that never arrived can't
+            // leave a drag stuck on.
+            MouseEventKind::Down(MouseButton::Left) => {
+                let on = always && crate::ui::on_divider(area, sp.dir, sp.ratio, m.column, m.row);
+                self.divider_drag = on.then_some(tab.id);
+                return on;
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.divider_drag => {
+            MouseEventKind::Drag(MouseButton::Left) if dragging => {
                 let free = m.modifiers.contains(KeyModifiers::ALT);
                 sp.ratio = crate::ui::divider_ratio(area, sp.dir, m.column, m.row, !free);
             }
-            MouseEventKind::Up(MouseButton::Left) if self.divider_drag => self.divider_drag = false,
+            MouseEventKind::Up(MouseButton::Left) if dragging => self.divider_drag = None,
             _ => return false,
         }
         true

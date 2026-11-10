@@ -924,6 +924,20 @@ fn split_panes_swap_resize_equalize_and_drag() {
     draw(&mut t);
     let size = |s: &TerminalSession| s.parser.lock().unwrap().screen().size();
     assert_eq!(size(panes(&t).0).1, 18, "the left pane is 20 columns with its border");
+
+    // A press on the divider whose release was lost doesn't stick: the next
+    // press inside a pane, or a tab switch, ends the drag.
+    mouse(&mut t, K::Down(B::Left), 20, 10);
+    mouse(&mut t, K::Down(B::Left), 60, 10);
+    mouse(&mut t, K::Drag(B::Left), 70, 10);
+    assert_eq!(split(&t).1, 0.25, "a press off the divider ends the lost drag");
+    mouse(&mut t, K::Down(B::Left), 20, 10);
+    let here = t.app.active;
+    t.app.active = 0;
+    mouse(&mut t, K::Drag(B::Left), 70, 10);
+    t.app.active = here;
+    mouse(&mut t, K::Drag(B::Left), 70, 10);
+    assert_eq!(split(&t).1, 0.25, "a tab switch ends the drag");
 }
 
 /// Readline / emacs Alt keys aren't taken as shortcuts; Alt+/ still opens find.
