@@ -25,28 +25,34 @@ fn chord_parse_and_defaults() {
 
     let (win, warn) = Keymap::new(&BTreeMap::new(), false);
     assert!(warn.is_empty());
-    assert_eq!(win.match_event(&down(Key::Char('k'), true, true, false, false), true), Some(Action::QuickSwitcher));
+    assert_eq!(win.match_event(&down(Key::Char('p'), true, true, false, false), true), Some(Action::QuickSwitcher));
     // shifted '=' arrives as '+'
     assert_eq!(win.match_event(&down(Key::Char('+'), true, true, false, false), true), Some(Action::ZoomIn));
     assert_eq!(win.match_event(&down(Key::Tab, true, false, false, false), true), Some(Action::NextTab));
     assert_eq!(win.match_event(&down(Key::PageUp, true, false, false, false), true), Some(Action::PrevTab));
 
     let (mac, _) = Keymap::new(&BTreeMap::new(), true);
-    assert_eq!(mac.match_event(&down(Key::Char('k'), false, false, false, true), true), Some(Action::QuickSwitcher));
-    assert_eq!(mac.match_event(&down(Key::Char('k'), true, true, false, false), true), None);
-    assert_eq!(win.chords(Action::QuickSwitcher)[0].to_string(), "Ctrl+Shift+P", "the palette's chord leads");
-    assert_eq!(win.match_event(&down(Key::Char('p'), true, true, false, false), true), Some(Action::QuickSwitcher));
+    assert_eq!(mac.match_event(&down(Key::Char('p'), false, false, false, true), true), Some(Action::QuickSwitcher), "Cmd+P");
     assert_eq!(mac.match_event(&down(Key::Char('p'), false, true, false, true), true), Some(Action::QuickSwitcher));
+    assert_eq!(mac.chords(Action::QuickSwitcher)[0].to_string(), "Cmd+P", "the palette's chord leads");
+    // The old Ctrl+K / Ctrl+Shift+K / Cmd+K aliases are gone (rebindable via [keys]).
+    for (km, mods) in [(&win, (true, false, false, false)), (&win, (true, true, false, false)), (&mac, (false, false, false, true))] {
+        assert_eq!(km.match_event(&down(Key::Char('k'), mods.0, mods.1, mods.2, mods.3), false), None);
+    }
 }
 
-/// The plain Ctrl+K switcher alias works outside a terminal but goes to the
-/// shell inside one.
+/// Ctrl+P opens the palette outside a terminal but is the shell's
+/// previous-history key inside one, where Ctrl+Shift+P opens it and is the
+/// chord the hints show.
 #[test]
-fn ctrl_k_alias_only_outside_terminal() {
+fn ctrl_p_palette_outside_terminal_ctrl_shift_p_inside() {
     let (km, _) = Keymap::new(&BTreeMap::new(), false);
-    let ev = down(Key::Char('k'), true, false, false, false);
+    let ev = down(Key::Char('p'), true, false, false, false);
     assert_eq!(km.match_event(&ev, false), Some(Action::QuickSwitcher));
     assert_eq!(km.match_event(&ev, true), None);
+    assert_eq!(km.match_event(&down(Key::Char('p'), true, true, false, false), true), Some(Action::QuickSwitcher));
+    assert_eq!(km.hint(Action::QuickSwitcher, false).unwrap().to_string(), "Ctrl+P");
+    assert_eq!(km.hint(Action::QuickSwitcher, true).unwrap().to_string(), "Ctrl+Shift+P");
 }
 
 /// A user binding of plain Ctrl or Alt + character only applies outside a
@@ -75,7 +81,7 @@ fn invalid_chord_reported_not_fatal() {
     assert_eq!(warn.len(), 2, "{warn:?}");
     assert!(warn[0].contains("quick_switcher") || warn[1].contains("quick_switcher"));
     assert!(warn.iter().any(|w| w.contains("no_such_action")));
-    assert_eq!(km.match_event(&down(Key::Char('k'), true, true, false, false), true), Some(Action::QuickSwitcher));
+    assert_eq!(km.match_event(&down(Key::Char('p'), true, true, false, false), true), Some(Action::QuickSwitcher));
 }
 
 /// A comma-separated override binds every chord listed.

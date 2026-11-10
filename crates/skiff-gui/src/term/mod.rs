@@ -568,10 +568,10 @@ fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab, keymap: &Ke
     }
     let live = tab.session.is_some();
     let split = tab.pane_label.is_some();
-    // Each item shows its shortcut (the first chord bound to it).
+    // Each item shows its shortcut (the first chord that works in a terminal).
     let keys: Vec<String> = [Action::Copy, Action::Paste, Action::SplitRight, Action::SplitDown, Action::ClosePane]
         .iter()
-        .map(|a| keymap.chords(*a).first().map(|c| c.to_string()).unwrap_or_default())
+        .map(|a| keymap.hint(*a, true).map(|c| c.to_string()).unwrap_or_default())
         .collect();
     /// `m` with shortcut `k`, when there is one.
     fn with_key<'a>(m: MenuItem<'a>, k: &'a str) -> MenuItem<'a> {

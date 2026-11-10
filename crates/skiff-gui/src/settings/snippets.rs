@@ -221,7 +221,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp, n
         let e = EmptyState {
             icon: Some(Icon::Terminal),
             title: "No snippet selected",
-            body: "Snippets are saved commands you send to a terminal from the command palette (Ctrl+K).",
+            body: "Snippets are saved commands you send to a terminal from the command palette (type # there to list them).",
             action: Some("Add snippet"),
             ..Default::default()
         };

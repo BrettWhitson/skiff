@@ -279,7 +279,11 @@ A chord is modifiers and a key joined by `+`:
 
 While a terminal has focus, a chord of plain `Ctrl` or plain `Alt` plus a
 character always goes to the shell, so such a binding only works outside
-terminals. An unknown action or a chord that doesn't parse is reported as a
+terminals. That is why the palette has two chords: `ctrl+p` outside
+terminals (in a terminal it stays readline's previous-history key) and
+`ctrl+shift+p` everywhere; hints show the one that works where you are.
+For the older `Ctrl+K` aliases, set
+`quick_switcher = "ctrl+p, ctrl+shift+p, ctrl+shift+k, ctrl+k"`. An unknown action or a chord that doesn't parse is reported as a
 warning and that action keeps its default. Settings → Keybindings groups
 the actions, records chords, flags ones shared by two actions, marks changed
 ones with a dot and resets them to the default.
@@ -293,7 +297,7 @@ finds any setting, host or snippet by name.
 
 | Action | Windows / Linux default | macOS default |
 |---|---|---|
-| `quick_switcher` (the command palette) | `ctrl+shift+p, ctrl+shift+k, ctrl+k` | `cmd+shift+p, cmd+k` |
+| `quick_switcher` (the command palette) | `ctrl+p, ctrl+shift+p` | `cmd+p, cmd+shift+p` |
 | `new_tab` | `ctrl+shift+t` | `cmd+t` |
 | `close_tab` | `ctrl+shift+w` | `cmd+w` |
 | `next_tab` | `ctrl+tab, ctrl+pagedown` | `ctrl+tab, cmd+shift+]` |

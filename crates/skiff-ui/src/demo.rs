@@ -186,7 +186,7 @@ impl Demo {
                     body: "Add a host to connect to it, or import the hosts you already have in your SSH config.",
                     action: Some("Add host"),
                     secondary: Some("Import ~/.ssh/config"),
-                    hint: Some("or press Ctrl+K for the command palette"),
+                    hint: Some("or press Ctrl+P for the command palette"),
                 };
                 let r = empty_state(ui, Id::new("empty"), body, &e);
                 if r.action || r.secondary {

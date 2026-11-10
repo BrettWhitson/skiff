@@ -26,6 +26,12 @@ First release under the name Skiff (formerly termax).
   comments are still read and rewritten when the host is edited.
 - **Partial transfer files** are named `*.skiff-part`; `*.termax-part`
   leftovers are skipped like them.
+- **Command palette shortcut** is `Ctrl+P` (`Cmd+P` on macOS), with
+  `Ctrl+Shift+P` / `Cmd+Shift+P` as the second chord. In a terminal tab
+  `Ctrl+P` stays the shell's previous-history key, so `Ctrl+Shift+P` opens
+  the palette there (and is the chord hints show). `Ctrl+K`,
+  `Ctrl+Shift+K` and `Cmd+K` no longer open it by default; bind them again
+  with `quick_switcher` under `[keys]`.
 - **`skiff list --json`**: hosts defined in the Skiff config report
   `"source": "skiff"` (was `"termax"`).
 - **TUI default keys moved.** Bash's readline binds nearly every Alt key, so
@@ -66,7 +72,7 @@ First release under the name Skiff (formerly termax).
   keyboard focus ring is 2 px with a 2 px gap; Windows' "show animations"
   setting turns animations off.
 - **GUI refresh.** A command palette replaces the quick switcher
-  (`Ctrl+Shift+P` / `Cmd+Shift+P`, plus the old shortcuts): Recent and
+  (`Ctrl+P` / `Cmd+P`, or `Ctrl+Shift+P` / `Cmd+Shift+P`): Recent and
   Suggested on an empty query, `>` commands, `@` hosts, `:` port forwards
   (start / stop), `#` snippets, with icons, kind badges, highlighted matches
   and shortcuts. Notices are toasts (errors stay until closed) and the

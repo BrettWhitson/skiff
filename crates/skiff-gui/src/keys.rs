@@ -171,7 +171,7 @@ impl Action {
         use Action::*;
         if mac {
             return match self {
-                QuickSwitcher => &["cmd+shift+p", "cmd+k"],
+                QuickSwitcher => &["cmd+p", "cmd+shift+p"],
                 NewTab => &["cmd+t"],
                 CloseTab => &["cmd+w"],
                 NextTab => &["ctrl+tab", "cmd+shift+]"],
@@ -203,7 +203,7 @@ impl Action {
             };
         }
         match self {
-            QuickSwitcher => &["ctrl+shift+p", "ctrl+shift+k", "ctrl+k"],
+            QuickSwitcher => &["ctrl+p", "ctrl+shift+p"],
             NewTab => &["ctrl+shift+t"],
             CloseTab => &["ctrl+shift+w"],
             NextTab => &["ctrl+tab", "ctrl+pagedown"],
@@ -433,6 +433,14 @@ impl Keymap {
     /// The chords bound to `a` (empty when unbound).
     pub fn chords(&self, a: Action) -> &[Chord] {
         self.binds.get(&a).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The chord to show for `a` in hints and menus: the first one bound,
+    /// or with `in_terminal` the first that works there (plain `Ctrl+P`
+    /// belongs to the shell, so a terminal shows `Ctrl+Shift+P`).
+    pub fn hint(&self, a: Action, in_terminal: bool) -> Option<&Chord> {
+        let chords = self.chords(a);
+        chords.iter().find(|c| !(in_terminal && c.shell_owned())).or(chords.first())
     }
 
     /// The action bound to this key press, if any. With `in_terminal`,

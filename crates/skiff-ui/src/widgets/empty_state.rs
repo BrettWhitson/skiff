@@ -23,7 +23,7 @@ pub struct EmptyState<'a> {
     pub action: Option<&'a str>,
     /// Secondary button label.
     pub secondary: Option<&'a str>,
-    /// Caption under the buttons, e.g. "or press Ctrl+K".
+    /// Caption under the buttons, e.g. "or press Ctrl+P".
     pub hint: Option<&'a str>,
 }
 

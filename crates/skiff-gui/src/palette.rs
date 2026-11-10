@@ -1,5 +1,5 @@
-//! Command palette (Ctrl+Shift+P, Ctrl+Shift+K, Ctrl+K outside terminals;
-//! Cmd+Shift+P / Cmd+K on macOS): one fuzzy search over open tabs, hosts,
+//! Command palette (Ctrl+P outside terminals, Ctrl+Shift+P everywhere;
+//! Cmd+P / Cmd+Shift+P on macOS): one fuzzy search over open tabs, hosts,
 //! app commands, port forwards, snippets and themes.
 //!
 //! An empty query lists Recent (open tabs and recently used hosts), then

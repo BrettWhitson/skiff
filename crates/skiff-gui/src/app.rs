@@ -644,7 +644,7 @@ impl GuiApp {
             show_hidden: self.geometry.show_hidden,
             files: &self.ssh_files,
             ssh_config_on: self.cfg.settings.load_ssh_config,
-            palette_key: self.keymap.chords(Action::QuickSwitcher).first().map(|c| c.to_string()),
+            palette_key: self.keymap.hint(Action::QuickSwitcher, self.in_terminal()).map(|c| c.to_string()),
         }
     }
 
@@ -909,10 +909,12 @@ impl GuiApp {
                 (self.tabs[i].id, self.tab_title(i), icon)
             })
             .collect();
+        // Shortcuts as they work from the active tab (a terminal keeps plain Ctrl+letter).
+        let in_term = self.in_terminal();
         let shortcuts = Cmd::ALL
             .into_iter()
             .filter_map(|c| match c {
-                Cmd::Action(a) => self.keymap.chords(a).first().map(|k| (c, k.to_string())),
+                Cmd::Action(a) => self.keymap.hint(a, in_term).map(|k| (c, k.to_string())),
                 _ => None,
             })
             .collect();

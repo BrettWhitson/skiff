@@ -272,7 +272,7 @@ pub struct Config {
     pub settings: Settings,
     /// `[gui]`.
     pub gui: GuiSettings,
-    /// Action name → key chord (e.g. `quick_switcher = "Ctrl+Shift+K"`). Parsed by the GUI.
+    /// Action name → key chord (e.g. `quick_switcher = "Ctrl+Shift+P"`). Parsed by the GUI.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, String>,
     /// Action name → key chord for the terminal UI (e.g. `close_tab = "alt+x"`). Parsed by the TUI.

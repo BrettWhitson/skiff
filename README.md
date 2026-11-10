@@ -63,8 +63,8 @@ every key. Everywhere else, shortcuts start with `Alt+O` (then `1`…`9` for a
 tab, `w` to close it, `?` for help); `Alt+[` / `Alt+]` switch tabs.
 
 **GUI.** Run `skiff-gui`. Pick a host in the sidebar (right-click for file
-transfer, forwards and editing), or press `Ctrl+Shift+P` (`Cmd+Shift+P`;
-`Ctrl+Shift+K` / `Cmd+K` work too) for the command palette: type to search
+transfer, forwards and editing), or press `Ctrl+P` (`Cmd+P`; in a terminal
+tab `Ctrl+Shift+P`) for the command palette: type to search
 hosts, tabs and commands, or start with `>` for commands, `@` for hosts,
 `:` for port forwards and `#` for snippets. `Ctrl+Shift+,` (or the gear at
 the right end of the tab strip) opens Settings. Notices and errors appear
@@ -264,7 +264,7 @@ them back.
 
 | Action | Windows / Linux | macOS |
 |---|---|---|
-| Command palette (hosts, tabs, commands, forwards, snippets, themes) | `Ctrl+Shift+P`, `Ctrl+Shift+K`, `Ctrl+K`* | `Cmd+Shift+P`, `Cmd+K` |
+| Command palette (hosts, tabs, commands, forwards, snippets, themes) | `Ctrl+P`*, `Ctrl+Shift+P` | `Cmd+P`, `Cmd+Shift+P` |
 | New tab / close tab | `Ctrl+Shift+T` / `Ctrl+Shift+W` | `Cmd+T` / `Cmd+W` |
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+PgDn` / `Ctrl+PgUp` | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Cmd+Shift+]` / `Cmd+Shift+[` |
 | Copy / paste in a terminal | `Ctrl+Shift+C` / `Ctrl+Shift+V` | `Cmd+C` / `Cmd+V` |
@@ -280,8 +280,9 @@ them back.
 | Move the divider next to the focused pane (next snap point) | `Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+←` `→` `↑` `↓` |
 | Equalize panes | `Alt+Shift+=` | `Cmd+Ctrl+=` |
 
-\* Plain `Ctrl`+letter belongs to the shell inside a terminal, so `Ctrl+K`
-opens the palette only outside terminals. All of these can be changed in
+\* Plain `Ctrl`+letter belongs to the shell inside a terminal, so `Ctrl+P`
+stays the shell's previous-history key there and `Ctrl+Shift+P` opens the
+palette from a terminal tab (`Cmd+P` works everywhere on macOS). All of these can be changed in
 Settings → Keybindings or `[keys]`.
 
 Keyboard navigation (no mouse needed):
