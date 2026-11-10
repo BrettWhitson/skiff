@@ -25,6 +25,7 @@ pub mod mouse;
 pub mod render;
 pub mod search;
 pub mod select;
+pub mod split;
 
 const BLINK: Duration = Duration::from_millis(530);
 /// Logical pixels of wheel movement per scrolled line (a notch = 48 → 3 lines).
@@ -160,6 +161,21 @@ impl TermTab {
         self.resync = true;
     }
 
+    /// The terminal's accessible name ("Terminal: web, pane 2 of 2").
+    pub fn a11y_name(&self) -> String {
+        match &self.pane_label {
+            Some(p) => format!("Terminal: {}, {p}", self.host.name),
+            None => format!("Terminal: {}", self.host.name),
+        }
+    }
+
+    /// A new terminal to the same host, the same way (a split pane).
+    pub fn sibling(&self) -> TermTab {
+        let mut t = TermTab::with_command(self.host.clone(), self.program.clone(), self.args.clone(), self.scrollback);
+        (t.blink, t.announce, t.confirm_paste, t.font_px) = (self.blink, self.announce, self.confirm_paste, self.font_px);
+        t
+    }
+
     pub fn cell_size(&self) -> (i32, i32) {
         (self.cell.w, self.cell.h)
     }
@@ -292,7 +308,7 @@ pub fn view(
     if let Some(e) = tab.error.clone() {
         ui.painter().rect(rect, theme.term_bg, 0.0);
         label(ui, Rect::new(inner.x, inner.y, inner.w, cell.h + ui.px(4)), &e, Some(theme.palette.danger));
-        let name = format!("Terminal: {}", tab.host.name);
+        let name = tab.a11y_name();
         if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
             n.value = Some(e);
         }
@@ -373,7 +389,7 @@ pub fn view(
         }
     }
 
-    let name = format!("Terminal: {}", tab.host.name);
+    let name = tab.a11y_name();
     let Some(session) = tab.session.as_mut() else {
         if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
             n.value = tab.error.clone();

@@ -27,10 +27,16 @@ pub enum Action {
     UiScaleUp,
     UiScaleDown,
     UiScaleReset,
+    /// Split the terminal: a new pane on the right.
+    SplitRight,
+    /// Split the terminal: a new pane below.
+    SplitDown,
+    FocusNextPane,
+    ClosePane,
 }
 
 impl Action {
-    pub const ALL: [Action; 16] = [
+    pub const ALL: [Action; 20] = [
         Action::QuickSwitcher,
         Action::NewTab,
         Action::CloseTab,
@@ -47,6 +53,10 @@ impl Action {
         Action::UiScaleUp,
         Action::UiScaleDown,
         Action::UiScaleReset,
+        Action::SplitRight,
+        Action::SplitDown,
+        Action::FocusNextPane,
+        Action::ClosePane,
     ];
 
     /// The name used in the `[keys]` table.
@@ -68,6 +78,10 @@ impl Action {
             Action::UiScaleUp => "ui_scale_up",
             Action::UiScaleDown => "ui_scale_down",
             Action::UiScaleReset => "ui_scale_reset",
+            Action::SplitRight => "split_right",
+            Action::SplitDown => "split_down",
+            Action::FocusNextPane => "focus_next_pane",
+            Action::ClosePane => "close_pane",
         }
     }
 
@@ -89,6 +103,10 @@ impl Action {
             Action::UiScaleUp => "Larger interface",
             Action::UiScaleDown => "Smaller interface",
             Action::UiScaleReset => "Reset interface size",
+            Action::SplitRight => "Split pane right",
+            Action::SplitDown => "Split pane down",
+            Action::FocusNextPane => "Next pane",
+            Action::ClosePane => "Close pane",
         }
     }
 
@@ -117,6 +135,10 @@ impl Action {
                 UiScaleUp => &["cmd+alt+="],
                 UiScaleDown => &["cmd+alt+-"],
                 UiScaleReset => &["cmd+alt+0"],
+                SplitRight => &["cmd+d"],
+                SplitDown => &["cmd+shift+d"],
+                FocusNextPane => &["cmd+]"],
+                ClosePane => &["cmd+alt+w"],
             };
         }
         match self {
@@ -136,6 +158,10 @@ impl Action {
             UiScaleUp => &["ctrl+alt+="],
             UiScaleDown => &["ctrl+alt+-"],
             UiScaleReset => &["ctrl+alt+0"],
+            SplitRight => &["ctrl+shift+d"],
+            SplitDown => &["ctrl+shift+e"],
+            FocusNextPane => &["ctrl+shift+o"],
+            ClosePane => &["ctrl+shift+x"],
         }
     }
 }

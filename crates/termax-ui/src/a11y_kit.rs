@@ -29,6 +29,7 @@ fn role(r: Role) -> accesskit::Role {
         Role::Terminal => K::Terminal,
         Role::Dialog => K::Dialog,
         Role::Status => K::Status,
+        Role::Splitter => K::Splitter,
     }
 }
 
@@ -73,6 +74,11 @@ fn node(n: &Node, root_title: &str) -> accesskit::Node {
             k.add_action(Action::SetValue);
         }
         Role::PasswordInput | Role::List | Role::Terminal => k.add_action(Action::Focus),
+        Role::Splitter => {
+            k.add_action(Action::Focus);
+            k.add_action(Action::Increment);
+            k.add_action(Action::Decrement);
+        }
         _ => {}
     }
     k

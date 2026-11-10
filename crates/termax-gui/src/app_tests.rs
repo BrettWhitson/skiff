@@ -346,7 +346,7 @@ fn f6_cycles_regions_from_terminal() {
     let mut f = Fixture::new();
     f.double_click_text("alpha");
     f.frame(vec![]);
-    let term = Id::new(("term", f.app.tabs[0].id));
+    let term = crate::term::split::pane_id(f.app.tabs[0].id, 0);
     assert_eq!(f.h.state.focused(), Some(term));
     let f6 = |shift| Event::KeyDown { key: Key::F(6), mods: Modifiers { shift, ..Modifiers::NONE }, text: None };
     f.frame(vec![f6(false)]);
@@ -444,10 +444,10 @@ fn switcher_runs_snippet() {
     args.push("-tt".into());
     args.push(fx.destination());
     let host = f.app.hosts[0].clone();
-    f.app.push_tab(TabKind::Terminal(Box::new(TermTab::with_command(host, "ssh".into(), args, 500))));
+    f.app.push_tab(TabKind::Terminal(Box::new(TermSplit::new(TermTab::with_command(host, "ssh".into(), args, 500)))));
     f.frame(vec![]);
     let screen = |f: &Fixture| match &f.app.tabs[f.app.active].kind {
-        TabKind::Terminal(t) => t.session.as_ref().map(|s| s.parser.lock().unwrap().screen().contents()).unwrap_or_default(),
+        TabKind::Terminal(t) => t.focused().session.as_ref().map(|s| s.parser.lock().unwrap().screen().contents()).unwrap_or_default(),
         _ => String::new(),
     };
     let wait = |f: &mut Fixture, s: &str| {

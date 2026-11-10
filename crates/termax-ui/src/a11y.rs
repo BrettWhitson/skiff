@@ -32,6 +32,8 @@ pub enum Role {
     Terminal,
     Dialog,
     Status,
+    /// A draggable divider between two panes (value: the first pane's share).
+    Splitter,
 }
 
 #[derive(Debug, Clone, PartialEq)]
