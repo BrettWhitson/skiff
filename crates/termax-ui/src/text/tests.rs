@@ -1,6 +1,7 @@
 use super::cache::GlyphCache;
 use super::layout::{char_index_at_x, draw_text, line_height, measure};
-use super::{FontKind, Fonts};
+use super::{BlockFont, FontKind, FontStack, Fonts, GlyphBitmap, GlyphRasterizer, LazyFont, LineMetrics, TOFU};
+use std::sync::Arc;
 use crate::canvas::Canvas;
 use crate::color::Color;
 use crate::geom::Point;
@@ -98,4 +99,45 @@ fn char_index_at_x_roundtrip() {
     }
     assert_eq!(char_index_at_x(&f, &mut c, FontKind::Ui, s, 14.0, -5.0), 0);
     assert_eq!(char_index_at_x(&f, &mut c, FontKind::Ui, s, 14.0, 10_000.0), n);
+}
+
+#[test]
+fn fallback_fonts_load_on_first_use() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let loads = Arc::new(AtomicUsize::new(0));
+    let n = loads.clone();
+    let lazy = LazyFont::new(Box::new(move || {
+        n.fetch_add(1, Ordering::SeqCst);
+        Ok(Arc::new(BlockFont) as Arc<dyn GlyphRasterizer>)
+    }));
+    let mut stack = FontStack::new(Arc::new(NoMissingGlyphs));
+    stack.fallbacks.push(Arc::new(lazy));
+    assert_eq!(stack.resolve('a'), 0);
+    assert_eq!(loads.load(Ordering::SeqCst), 0, "primary had it: nothing loaded");
+    assert_eq!(stack.resolve('\u{2603}'), 1);
+    assert_eq!(stack.resolve('\u{2604}'), 1);
+    assert_eq!(loads.load(Ordering::SeqCst), 1, "loaded once");
+    assert!(stack.rasterize(1, '\u{2603}', 14.0).width > 0);
+
+    let broken = LazyFont::new(Box::new(|| anyhow::bail!("no such file")));
+    let mut stack = FontStack::new(Arc::new(NoMissingGlyphs));
+    stack.fallbacks.push(Arc::new(broken));
+    assert_eq!(stack.resolve('\u{2603}'), TOFU);
+}
+
+/// Has ASCII only.
+struct NoMissingGlyphs;
+impl GlyphRasterizer for NoMissingGlyphs {
+    fn has_glyph(&self, c: char) -> bool {
+        c.is_ascii()
+    }
+    fn advance(&self, c: char, px: f32) -> f32 {
+        BlockFont.advance(c, px)
+    }
+    fn rasterize(&self, c: char, px: f32) -> GlyphBitmap {
+        BlockFont.rasterize(c, px)
+    }
+    fn line_metrics(&self, px: f32) -> LineMetrics {
+        BlockFont.line_metrics(px)
+    }
 }

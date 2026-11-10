@@ -209,6 +209,7 @@ fn apply_font_swap(out: &mut FrameOut, fonts: &mut Fonts, cache: &mut GlyphCache
         *fonts = f;
         cache.clear();
         renderer.invalidate();
+        renderer.clear_glyphs();
         out.redraw_in = Some(Duration::ZERO);
     }
 }

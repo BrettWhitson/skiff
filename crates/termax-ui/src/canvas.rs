@@ -8,6 +8,9 @@ pub struct Canvas {
     pub height: i32,
     pub pixels: Vec<u32>,
     clips: Vec<Rect>,
+    /// Row of the full picture this canvas's first row is (a band of a
+    /// larger canvas, painted on another thread). Coordinates stay global.
+    y0: i32,
 }
 
 /// Blends `c` over `dst` with extra coverage `cov` (0..=255).
@@ -39,7 +42,23 @@ fn rounded_coverage(px: i32, py: i32, r: Rect, radius: f32) -> f32 {
 impl Canvas {
     pub fn new(width: i32, height: i32) -> Self {
         let (width, height) = (width.max(0), height.max(0));
-        Self { width, height, pixels: vec![0; (width * height) as usize], clips: vec![] }
+        Self { width, height, pixels: vec![0; (width * height) as usize], clips: vec![], y0: 0 }
+    }
+
+    /// Rows `y0..y0 + height` of a `width`-wide picture.
+    pub fn band(width: i32, height: i32, y0: i32) -> Self {
+        let mut c = Self::new(width, height);
+        c.y0 = y0;
+        c
+    }
+
+    /// Reuses this canvas (and its allocation) as another band.
+    pub fn set_band(&mut self, width: i32, height: i32, y0: i32) {
+        if (self.width, self.height) != (width.max(0), height.max(0)) {
+            self.resize(width, height);
+        }
+        self.clips.clear();
+        self.y0 = y0;
     }
 
     pub fn resize(&mut self, width: i32, height: i32) {
@@ -52,7 +71,12 @@ impl Canvas {
     }
 
     pub fn bounds(&self) -> Rect {
-        Rect::new(0, 0, self.width, self.height)
+        Rect::new(0, self.y0, self.width, self.height)
+    }
+
+    #[inline]
+    fn index(&self, x: i32, y: i32) -> usize {
+        ((y - self.y0) * self.width + x) as usize
     }
 
     /// The current clip (canvas bounds intersected with every pushed clip).
@@ -70,7 +94,7 @@ impl Canvas {
     }
 
     pub fn pixel(&self, x: i32, y: i32) -> u32 {
-        self.pixels[(y * self.width + x) as usize]
+        self.pixels[self.index(x, y)]
     }
 
     pub fn clear(&mut self, c: Color) {
@@ -83,7 +107,7 @@ impl Canvas {
             return;
         }
         for y in r.y..r.bottom() {
-            let row = (y * self.width) as usize;
+            let row = self.index(0, y);
             let span = &mut self.pixels[row + r.x as usize..row + r.right() as usize];
             if c.a == 255 {
                 span.fill(c.to_u32());
@@ -111,7 +135,7 @@ impl Canvas {
             for x in clip.x..clip.right() {
                 let cov = rounded_coverage(x, y, r, radius);
                 if cov > 0.0 {
-                    let i = (y * self.width + x) as usize;
+                    let i = self.index(x, y);
                     self.pixels[i] = blend(self.pixels[i], c, (cov * 255.0) as u32);
                 }
             }
@@ -140,7 +164,7 @@ impl Canvas {
                 let inn = if inner.is_empty() { 0.0 } else { rounded_coverage(x, y, inner, inner_radius) };
                 let cov = (outer - inn).max(0.0);
                 if cov > 0.0 {
-                    let i = (y * self.width + x) as usize;
+                    let i = self.index(x, y);
                     self.pixels[i] = blend(self.pixels[i], c, (cov * 255.0) as u32);
                 }
             }
@@ -163,7 +187,7 @@ impl Canvas {
         let Some(area) = Rect::new(x, y, w, h).intersect(self.clip()) else { return };
         for py in area.y..area.bottom() {
             let mrow = ((py - y) * w) as usize;
-            let row = (py * self.width) as usize;
+            let row = self.index(0, py);
             for px in area.x..area.right() {
                 let cov = mask[mrow + (px - x) as usize] as u32;
                 if cov != 0 {
