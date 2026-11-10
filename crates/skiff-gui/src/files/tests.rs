@@ -53,6 +53,23 @@ fn column_headers_sort_and_keep_the_selection() {
     assert_eq!(e.h.tree().find("Size").and_then(|n| n.sort), Some(skiff_ui::a11y::SortDir::Descending));
 }
 
+/// A narrow pane drops Modified, except when it is the sort column: then
+/// it stays (in Size's place) so the sort stays visible.
+#[test]
+fn narrow_pane_keeps_the_sorted_column() {
+    use skiff_ui::a11y::SortDir;
+    let d = tree();
+    let mut e = Env::new(d.path());
+    e.h.resize(700, 700);
+    e.until("listing", |e| e.loaded(0));
+    assert!(e.h.tree().find("Modified").is_none(), "narrow: no Modified column");
+    e.tab.panes[0].set_sort(Some(skiff_ui::widgets::Sort { column: pane::COL_MODIFIED, dir: SortDir::Descending }));
+    e.frame(vec![]);
+    let t = e.h.tree();
+    assert_eq!(t.find("Modified").and_then(|n| n.sort), Some(SortDir::Descending));
+    assert!(e.texts().iter().any(|s| s.contains('-') && s.contains(':')), "dates shown: {:?}", e.texts());
+}
+
 /// Breadcrumbs split local and remote paths into (label, path) from the
 /// root, and clicking a segment opens that folder.
 #[test]

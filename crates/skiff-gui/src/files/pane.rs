@@ -166,6 +166,16 @@ pub fn format_time(t: SystemTime) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rem / 3600, rem % 3600 / 60)
 }
 
+/// The `COL_*` columns a listing shows: all three when `wide`; else Name
+/// and Size, or Name and Modified while sorted by Modified.
+pub fn shown_columns(wide: bool, sort: Option<Sort>) -> Vec<usize> {
+    match sort {
+        _ if wide => vec![COL_NAME, COL_SIZE, COL_MODIFIED],
+        Some(s) if s.column == COL_MODIFIED => vec![COL_NAME, COL_MODIFIED],
+        _ => vec![COL_NAME, COL_SIZE],
+    }
+}
+
 /// The listing's default order: by name, A to Z.
 pub const NAME_ASC: Sort = Sort { column: COL_NAME, dir: SortDir::Ascending };
 
@@ -1104,22 +1114,25 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
     let header = Rect::new(rect.x, rect.y, rect.w, hh);
     let footer = Rect::new(rect.x, rect.bottom() - fh, rect.w, fh);
     let list_r = Rect::new(rect.x, header.bottom(), rect.w, footer.y - header.bottom());
-    // Header: a top rule, then the sortable columns (Modified only when there is room).
+    // Header: a top rule, then the sortable columns. A narrow pane has room
+    // for two: Name and Size, or Name and Modified while sorted by it, so
+    // the sort column always shows.
     ui.painter().rect(Rect::new(rect.x, rect.y, rect.w, bw), p.border, 0.0);
-    let wide = rect.w > ui.px(380);
-    let mut columns = vec![
+    let all = [
         Column { title: "Name", width: L::Fill, sortable: true, align: Align::Start },
         Column { title: "Size", width: L::Px(84), sortable: true, align: Align::End },
+        Column { title: "Modified", width: L::Px(136), sortable: true, align: Align::Start },
     ];
-    if wide {
-        columns.push(Column { title: "Modified", width: L::Px(136), sortable: true, align: Align::Start });
-    }
-    let mut sort = pane.sort;
+    let shown = shown_columns(rect.w > ui.px(380), pane.sort);
+    let columns: Vec<Column> = shown.iter().map(|&c| all[c]).collect();
+    // `table_header` counts columns as drawn; `pane.sort` by `COL_*`.
+    let mut sort = pane.sort.and_then(|s| shown.iter().position(|&c| c == s.column).map(|v| Sort { column: v, ..s }));
     let head = table_header(ui, id.with("header"), Rect::new(header.x + pad, header.y, header.w - 2 * pad, header.h), &columns, &mut sort);
     if head.changed {
-        pane.set_sort(sort);
+        pane.set_sort(sort.map(|s| Sort { column: shown[s.column], ..s }));
     }
-    let cols = head.columns;
+    // Each `COL_*` column's rect, when shown.
+    let col = |c: usize| shown.iter().position(|&s| s == c).map(|v| head.columns[v]);
 
     // Type-ahead and the list's own shortcuts, before the rows are drawn.
     let rh = ui.px(tokens::ROW_H);
@@ -1182,7 +1195,7 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
     let muted = TextOpts { color: Some(p.muted), ..Default::default() };
     let r = select_list_named(ui, lid, list_r, &list_name, vis.len(), tokens::ROW_H, &mut pane.sel, row_name, |ui, row, i, _| {
         let e = &vis[i];
-        let c0 = cols[COL_NAME];
+        let Some(c0) = col(COL_NAME) else { return };
         let icon = if e.is_symlink {
             Icon::Link
         } else if e.is_dir {
@@ -1196,10 +1209,11 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
         let nx = ix + icon_px + ui.px(tokens::SPACE_SM);
         let name_r = Rect::new(nx, row.y, (c0.right() - nx - pad).max(0), row.h);
         text(ui, name_r, &e.name, TextOpts { elide: Elide::Middle, ..Default::default() });
-        let c1 = cols[COL_SIZE];
-        let size = if e.is_dir { "\u{2014}".to_string() } else { human_size(e.size) };
-        text(ui, Rect::new(c1.x, row.y, c1.w - pad, row.h), &size, TextOpts { align: Align::End, ..muted });
-        if let Some(c2) = cols.get(COL_MODIFIED)
+        if let Some(c1) = col(COL_SIZE) {
+            let size = if e.is_dir { "\u{2014}".to_string() } else { human_size(e.size) };
+            text(ui, Rect::new(c1.x, row.y, c1.w - pad, row.h), &size, TextOpts { align: Align::End, ..muted });
+        }
+        if let Some(c2) = col(COL_MODIFIED)
             && let Some(t) = e.modified
         {
             text(ui, Rect::new(c2.x + pad, row.y, c2.w - pad, row.h), &format_time(t), muted);
