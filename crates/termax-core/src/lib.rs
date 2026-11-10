@@ -4,6 +4,7 @@
 pub mod askpass;
 pub mod config;
 pub mod fs;
+pub mod history;
 pub mod hosts;
 pub mod sshconfig;
 pub mod sshver;
