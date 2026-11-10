@@ -103,12 +103,15 @@ pub struct FilesTab {
     pub panes: [Pane; 2],
     /// Copies started from this tab.
     pub transfers: TransferList,
+    /// Top edge of the transfer drawer as last drawn (None when hidden), so
+    /// toasts can stack above it instead of over its rows.
+    pub drawer_top: Option<i32>,
 }
 
 impl FilesTab {
     /// A tab with its two panes at `left` and `right` (they connect on first draw).
     pub fn new(left: Location, right: Location) -> Self {
-        FilesTab { panes: [Pane::new(left), Pane::new(right)], transfers: TransferList::default() }
+        FilesTab { panes: [Pane::new(left), Pane::new(right)], transfers: TransferList::default(), drawer_top: None }
     }
 
     /// Tab title: "left ↔ right" from the two location labels (the tab strip adds the icon).
@@ -219,6 +222,7 @@ pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
     let list_h = transfers::wanted_height(&tab.transfers).min(room.max(transfers::MIN_OPEN_H));
     let gap = tokens::SPACE_SM;
     let rows = ui.split_v(rect, &[L::Fill, L::Px(list_h)], if list_h > 0 { gap } else { 0 });
+    tab.drawer_top = (list_h > 0).then_some(rows[1].y);
     let cols = ui.split_h(rows[0], &[L::Frac(0.5), L::Frac(0.5)], gap);
     // Files dropped from the OS this frame.
     let dropped: Vec<PathBuf> = ui

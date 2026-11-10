@@ -1141,8 +1141,14 @@ impl GuiApp {
                         ssh_binary: &self.cfg.settings.ssh_binary,
                         ssh_version: self.ssh_version.flatten(),
                     };
+                    let mut notices = vec![];
                     if let Some(TabKind::Files(f)) = self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.kind) {
                         f.on_transfer(ev, &ctx);
+                        notices = f.take_notices();
+                    }
+                    // A finished copy batch becomes a toast.
+                    for (kind, text) in notices {
+                        self.notify(kind, text);
                     }
                 }
                 // Password / host-key questions: from a forward still running go
@@ -1263,7 +1269,15 @@ impl GuiApp {
         self.palette_ui(ui);
         // Toasts paint last, over everything (dialogs included).
         // Toasts stack above the status bar.
-        if let Some(ToastEvent::Action(_) | ToastEvent::Dismissed(_)) = toasts_in(ui, Id::new("toasts"), body, &mut self.toasts) {
+        // On a files tab they stack above its transfer drawer, not over its rows.
+        let mut toast_area = body;
+        if let Some(TabKind::Files(f)) = self.tabs.get(self.active).map(|t| &t.kind)
+            && let Some(top) = f.drawer_top
+            && top > body.y
+        {
+            toast_area.h = top - body.y;
+        }
+        if let Some(ToastEvent::Action(_) | ToastEvent::Dismissed(_)) = toasts_in(ui, Id::new("toasts"), toast_area, &mut self.toasts) {
             ui.request_repaint_in(Duration::ZERO);
         }
         self.save_geometry_when_due(ui);
@@ -1437,6 +1451,10 @@ impl GuiApp {
         }
         if show_settings {
             crate::settings::view(ui, content, self);
+            // Saves and deletes in Settings become toasts.
+            for (kind, text) in self.settings.take_notices() {
+                self.notify(kind, text);
+            }
         }
         if show_forwards {
             crate::forwards::view(ui, content, self);

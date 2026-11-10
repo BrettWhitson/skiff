@@ -418,7 +418,7 @@ fn prompt_card(ui: &mut Ui, at: Rect, st: &mut ForwardsState) -> i32 {
             Id::new("fwd-ask-input"),
             parts[0],
             &mut pr.input,
-            TextInputOpts { password: true, placeholder: "Password", label: "Password" },
+            TextInputOpts { password: true, placeholder: "Password", label: "Password", ..Default::default() },
         );
         if button_with(ui, Id::new("fwd-ask-ok"), parts[1], "OK", primary).clicked || t.submitted {
             done = Some(Some(std::mem::take(&mut pr.input)));
