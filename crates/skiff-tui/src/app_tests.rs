@@ -983,3 +983,23 @@ fn readline_alt_keys_reach_the_shell() {
     cmd(&mut t, '/');
     assert!(matches!(t.app.modal, Some(Modal::Search { .. })), "Alt+O / finds");
 }
+
+/// Shortcuts work in an SFTP tab: the prefix then `w` or plain `q` closes
+/// it, `?` opens help, and the prefix then `q` asks to quit.
+#[test]
+fn prefix_shortcuts_work_in_an_sftp_tab() {
+    let mut t = T::new("");
+    connecting_sftp_tab(&mut t);
+    let tabs = t.app.tabs.len();
+    cmd(&mut t, 'w');
+    assert_eq!(t.app.tabs.len(), tabs - 1, "prefix + w closes the sftp tab");
+    connecting_sftp_tab(&mut t);
+    t.key(KeyCode::Char('q'));
+    assert_eq!(t.app.tabs.len(), tabs - 1, "plain q closes the sftp tab");
+    connecting_sftp_tab(&mut t);
+    t.key(KeyCode::Char('?'));
+    assert!(matches!(t.app.modal, Some(Modal::Help { .. })), "? opens help");
+    t.key(KeyCode::Esc);
+    cmd(&mut t, 'q');
+    assert!(t.app.modal.is_some() || t.app.should_quit, "prefix + q quits");
+}

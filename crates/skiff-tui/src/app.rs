@@ -1732,6 +1732,15 @@ impl App {
     /// Keys in an SFTP tab: navigation, copy, file operations (which open a
     /// prompt or confirmation) and transfer control, on the focused pane.
     fn sftp_key(&mut self, key: KeyEvent) {
+        // Plain `q` closes the file tab and `?` shows help, as on the host list
+        // (the prefix shortcuts work here too).
+        if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            match key.code {
+                KeyCode::Char('q') => return self.close_active_tab(),
+                KeyCode::Char('?') => return self.modal = Some(Modal::Help { scroll: 0 }),
+                _ => {}
+            }
+        }
         let TabKind::Sftp(s) = &mut self.tabs[self.active].kind else {
             return;
         };

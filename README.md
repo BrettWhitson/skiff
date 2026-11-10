@@ -230,6 +230,7 @@ readline binds nearly every other Alt key, so they stay the shell's.
 | | `g` | Go to path |
 | | `X` | Cancel the newest running transfer (again for the next) |
 | | `.` / `r` / `x` | Toggle hidden files / refresh / clear finished transfers |
+| | `q` / `?` | Close the file tab / help |
 | File exists | `o` / `s` / `a` / `S` | Overwrite / skip / overwrite all / skip all |
 | | `c` or `Esc` | Cancel the transfer |
 

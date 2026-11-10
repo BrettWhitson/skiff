@@ -145,9 +145,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else {
         let hints = match &app.tabs[app.active].kind {
             TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear".to_string(),
-            TabKind::Hosts => {
-                "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · ? help".to_string()
-            }
+            TabKind::Hosts => format!(
+                "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · {} tabs · ? help · q quit",
+                app.keys.show_tabs()
+            ),
             TabKind::Terminal(_) => {
                 let k = &app.keys;
                 let split = if app.tabs[app.active].split.is_some() {
@@ -164,10 +165,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                     k.show(Action::Help)
                 )
             }
-            TabKind::Sftp(_) => {
-                "Tab pane · Enter open · Bksp up · c copy · X cancel copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh"
-                    .to_string()
-            }
+            TabKind::Sftp(_) => format!(
+                "Tab pane · Enter open · Bksp up · c copy · X cancel copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh · {} tabs · q close · ? help",
+                app.keys.show_tabs()
+            ),
         };
         Line::from(Span::styled(format!(" {hints}"), t.muted()))
     };
