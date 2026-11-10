@@ -26,6 +26,18 @@ use crate::switcher::{Cmd, Item, SwitcherState};
 use crate::term::TermTab;
 use crate::theme::{GuiTheme, from_def};
 
+/// Starts the askpass broker; its questions arrive as `Msg::Ask`.
+pub fn start_broker(engine: &Engine, helper: PathBuf) -> anyhow::Result<termax_core::askpass::Broker> {
+    let (broker, mut rx) = termax_core::askpass::Broker::start(engine.rt.handle(), helper)?;
+    let tx = engine.sender();
+    engine.rt.spawn(async move {
+        while let Some(req) = rx.recv().await {
+            tx.send(Msg::Ask(req));
+        }
+    });
+    Ok(broker)
+}
+
 /// How long geometry changes wait before being written to `state.toml`.
 const GEOMETRY_SAVE_DELAY: Duration = Duration::from_secs(1);
 
@@ -76,6 +88,8 @@ pub struct GuiApp {
     pub start_dir: String,
     /// Relays ssh password / host-key prompts into file panes.
     pub askpass: Option<termax_core::askpass::Broker>,
+    /// `ssh -V`, read when the first file tab opens.
+    ssh_version: Option<Option<(u32, u32)>>,
     /// The tab shown last frame (focus moves into a newly shown terminal).
     shown_tab: Option<u64>,
     ui_state: UiState,
@@ -121,6 +135,19 @@ impl GuiApp {
         let geometry_path = state::UiState::path_for(&cfg_path);
         let cfg_start = cfg.settings.local_start_dir.clone();
         let geometry = state::UiState::load(&geometry_path);
+        let engine = Engine::new(wake.clone());
+        // Only the real app (with a window) relays prompts: the helper is
+        // this executable, started by ssh.
+        let askpass = match (&wake, std::env::current_exe()) {
+            (Some(_), Ok(exe)) => match start_broker(&engine, exe) {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    warnings.push(format!("password prompts unavailable: {e:#}"));
+                    None
+                }
+            },
+            _ => None,
+        };
         GuiApp {
             baseline: cfg.clone(),
             cfg,
@@ -133,7 +160,7 @@ impl GuiApp {
             geometry_path,
             geometry_dirty: None,
             warnings,
-            engine: Engine::new(wake),
+            engine,
             tabs: vec![],
             active: 0,
             next_tab_id: 1,
@@ -146,7 +173,8 @@ impl GuiApp {
             view_actions: vec![],
             edit_target: None,
             start_dir: local_start_dir(&cfg_start),
-            askpass: None,
+            askpass,
+            ssh_version: None,
             shown_tab: None,
             ui_state: UiState::default(),
         }
@@ -174,6 +202,9 @@ impl GuiApp {
     }
 
     pub fn open_files(&mut self, left: Location, right: Location) -> u64 {
+        if self.ssh_version.is_none() {
+            self.ssh_version = Some(termax_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
+        }
         self.push_tab(TabKind::Files(Box::new(FilesTab::new(left, right))))
     }
 
@@ -443,6 +474,15 @@ impl GuiApp {
             }
             match m {
                 Msg::Notice { text, .. } => self.warn(text),
+                Msg::Ask(req) => {
+                    let tab = crate::files::parse_tag(&req.tag).map(|(t, _)| t);
+                    match self.tabs.iter_mut().find(|t| Some(t.id) == tab).map(|t| &mut t.kind) {
+                        Some(TabKind::Files(f)) => crate::files::route_ask(f, tab.unwrap_or(0), req),
+                        _ => {
+                            let _ = req.reply.send(None);
+                        }
+                    }
+                }
                 Msg::Files { tab, side, ev } => {
                     let ctx = crate::files::FilesCtx {
                         tab_id: tab,
@@ -451,6 +491,7 @@ impl GuiApp {
                         hosts: &self.hosts,
                         askpass: self.askpass.as_ref(),
                         ssh_binary: &self.cfg.settings.ssh_binary,
+                        ssh_version: self.ssh_version.flatten(),
                     };
                     if let Some(TabKind::Files(f)) = self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.kind) {
                         f.on_event(side, ev, &ctx);
@@ -578,6 +619,7 @@ impl GuiApp {
                     hosts: &self.hosts,
                     askpass: self.askpass.as_ref(),
                     ssh_binary: &self.cfg.settings.ssh_binary,
+                    ssh_version: self.ssh_version.flatten(),
                 };
                 crate::files::view(ui, content.inset(ui.px(6)), f, &ctx);
             }

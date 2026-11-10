@@ -1,6 +1,7 @@
 //! Background work: a tokio runtime plus a message channel back to the UI
 //! thread. Every send wakes the event loop, so the UI never polls.
 
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -16,6 +17,8 @@ pub enum Msg {
     Notice { tab: Option<u64>, text: String },
     /// Background file work for pane `side` of a file tab.
     Files { tab: u64, side: usize, ev: crate::files::FilesEvent },
+    /// ssh asks for a password / host-key answer (tag = "tab:side").
+    Ask(termax_core::askpass::AskRequest),
 }
 
 impl Msg {
@@ -23,6 +26,7 @@ impl Msg {
         match self {
             Msg::Notice { tab, .. } => *tab,
             Msg::Files { tab, .. } => Some(*tab),
+            Msg::Ask(req) => crate::files::parse_tag(&req.tag).map(|(t, _)| t),
         }
     }
 }
@@ -44,7 +48,9 @@ impl MsgSender {
 }
 
 pub struct Engine {
-    pub rt: Runtime,
+    /// Dropped with `shutdown_background`: closing a window or tab never
+    /// waits for a stuck connection.
+    pub rt: ManuallyDrop<Runtime>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     wake: Option<WakeFn>,
@@ -59,7 +65,7 @@ impl Engine {
             .build()
             .expect("tokio runtime");
         let (tx, rx) = channel();
-        Engine { rt, tx, rx, wake }
+        Engine { rt: ManuallyDrop::new(rt), tx, rx, wake }
     }
 
     pub fn sender(&self) -> MsgSender {
@@ -70,8 +76,16 @@ impl Engine {
         self.wake.clone()
     }
 
-    /// Everything queued so far.
+    /// Everything queued so far (call `drain` from the UI thread only).
     pub fn drain(&self) -> Vec<Msg> {
         self.rx.try_iter().collect()
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // SAFETY: `rt` is never used again after this.
+        let rt = unsafe { ManuallyDrop::take(&mut self.rt) };
+        rt.shutdown_background();
     }
 }

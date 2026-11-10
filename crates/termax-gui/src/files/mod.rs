@@ -1,7 +1,8 @@
 //! File-transfer tabs: two panes, each Local or any host.
 
-use termax_core::askpass::Broker;
+use termax_core::askpass::{AskRequest, Broker};
 use termax_core::fs::FileEntry;
+use termax_core::fs::connect::RemoteConn;
 use termax_core::hosts::HostEntry;
 use termax_ui::geom::Rect;
 use termax_ui::layout::Size as L;
@@ -12,7 +13,28 @@ use crate::engine::Engine;
 pub mod ops;
 pub mod pane;
 
-pub use pane::{Confirm, Pane, PaneState, format_time};
+pub use pane::{Confirm, Pane, PaneState, Prompt, format_time};
+
+/// The askpass tag naming pane `side` of tab `tab`.
+pub fn tag(tab: u64, side: usize) -> String {
+    format!("{tab}:{side}")
+}
+
+pub fn parse_tag(tag: &str) -> Option<(u64, usize)> {
+    let (t, s) = tag.split_once(':')?;
+    Some((t.parse().ok()?, s.parse().ok()?))
+}
+
+/// Shows an askpass question in the pane it belongs to; refuses it if
+/// that pane is gone.
+pub fn route_ask(tab: &mut FilesTab, tab_id: u64, req: AskRequest) {
+    match parse_tag(&req.tag) {
+        Some((t, side)) if t == tab_id && side < 2 => tab.panes[side].ask(req),
+        _ => {
+            let _ = req.reply.send(None);
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Location {
@@ -33,6 +55,7 @@ impl Location {
 pub enum FilesEvent {
     Listed { seq: u64, cwd: String, result: Result<Vec<FileEntry>, String> },
     OpDone { result: Result<(), String> },
+    Connected { seq: u64, result: Result<RemoteConn, String> },
 }
 
 /// What the file views need from the app for one frame.
@@ -45,6 +68,8 @@ pub struct FilesCtx<'a> {
     pub hosts: &'a [HostEntry],
     pub askpass: Option<&'a Broker>,
     pub ssh_binary: &'a str,
+    /// `ssh -V`; `None` if unknown (assumed new enough).
+    pub ssh_version: Option<(u32, u32)>,
 }
 
 pub struct FilesTab {

@@ -1,8 +1,13 @@
 //! One file pane: location picker, path bar, actions, listing.
 
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use termax_core::askpass::{AskKind, AskRequest};
 use termax_core::fs::endpoint::Endpoint;
+use termax_core::sshver::supports_askpass_require;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use termax_core::fs::path::is_safe_name;
 use termax_core::fs::{FileEntry, human_size, parent};
 use termax_ui::geom::{Point, Rect};
@@ -36,6 +41,32 @@ pub enum Confirm {
     NewFolder { input: String },
 }
 
+/// An ssh question shown inline in the pane that is connecting.
+pub struct Prompt {
+    /// The prompt exactly as ssh wrote it.
+    pub text: String,
+    pub kind: AskKind,
+    input: String,
+    reply: Option<oneshot::Sender<Option<String>>>,
+    cancelled: CancellationToken,
+    focus: bool,
+}
+
+impl Prompt {
+    fn answer(&mut self, a: Option<String>) {
+        if let Some(r) = self.reply.take() {
+            let _ = r.send(a);
+        }
+        self.input.clear();
+    }
+}
+
+impl Drop for Prompt {
+    fn drop(&mut self) {
+        self.answer(None); // an unanswered prompt is a cancel
+    }
+}
+
 pub struct Pane {
     pub loc: Location,
     pub ep: Option<Endpoint>,
@@ -52,6 +83,16 @@ pub struct Pane {
     pub seq: u64,
     /// Focus the text field of a just-opened bar next frame.
     focus_input: bool,
+    /// A password / host-key question from ssh.
+    pub prompt: Option<Prompt>,
+    /// The connection being made; aborting it kills ssh.
+    connecting: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for Pane {
+    fn drop(&mut self) {
+        self.abort_connect();
+    }
 }
 
 /// `YYYY-MM-DD HH:MM` (UTC).
@@ -90,6 +131,8 @@ impl Pane {
             banner: None,
             seq: 0,
             focus_input: false,
+            prompt: None,
+            connecting: None,
         }
     }
 
@@ -137,7 +180,26 @@ impl Pane {
 
     /// Switches this pane to another location (connects in the background).
     pub fn set_location(&mut self, loc: Location) {
-        *self = Pane { show_hidden: self.show_hidden, seq: self.seq + 1, ..Pane::new(loc) };
+        self.abort_connect();
+        self.prompt = None;
+        let (show_hidden, seq) = (self.show_hidden, self.seq + 1);
+        *self = Pane::new(loc);
+        self.show_hidden = show_hidden;
+        self.seq = seq;
+    }
+
+    fn abort_connect(&mut self) {
+        if let Some(h) = self.connecting.take() {
+            h.abort();
+        }
+    }
+
+    /// The user gave up on connecting (cancelled a prompt): stop ssh.
+    pub fn cancel_connect(&mut self) {
+        self.abort_connect();
+        self.prompt = None;
+        self.seq += 1; // ignore anything the dying attempt still sends
+        self.state = PaneState::Error("connection cancelled".into());
     }
 
     fn start(&mut self, ctx: &FilesCtx, side: usize) {
@@ -146,10 +208,30 @@ impl Pane {
                 self.ep = Some(Endpoint::Local);
                 self.navigate(ctx.start_dir.to_string(), ctx, side);
             }
-            Location::Host(_) => {
-                self.state = PaneState::Error("not connected".into());
+            Location::Host(h) => {
+                let can_prompt = ctx.askpass.is_some() && ctx.ssh_version.is_none_or(supports_askpass_require);
+                let mut launch = h.sftp_launch(ctx.ssh_binary, !can_prompt);
+                if can_prompt && let Some(b) = ctx.askpass {
+                    launch.env.extend(b.env(&super::tag(ctx.tab_id, side)));
+                }
+                let note = ctx.ssh_version.filter(|v| !supports_askpass_require(*v)).map(|(a, b)| {
+                    format!("termax needs OpenSSH 8.4 or newer for password prompts (found {a}.{b})")
+                });
+                self.seq += 1;
+                self.state = PaneState::Connecting;
+                self.connecting = Some(ops::connect(ctx.engine, ctx.tab_id, side, self.seq, launch, note));
             }
         }
+    }
+
+    /// Shows an ssh question in this pane.
+    pub fn ask(&mut self, req: AskRequest) {
+        if self.connecting.is_none() {
+            let _ = req.reply.send(None); // not connecting (any more)
+            return;
+        }
+        let AskRequest { prompt, kind, reply, cancelled, .. } = req;
+        self.prompt = Some(Prompt { text: prompt, kind, input: String::new(), reply: Some(reply), cancelled, focus: true });
     }
 
     pub fn on_event(&mut self, ev: FilesEvent, ctx: &FilesCtx, side: usize) {
@@ -169,6 +251,21 @@ impl Pane {
                         self.state = PaneState::Idle;
                     }
                     Err(e) => self.state = PaneState::Error(format!("{cwd}: {e}")),
+                }
+            }
+            FilesEvent::Connected { seq, result } => {
+                if seq != self.seq {
+                    return;
+                }
+                self.prompt = None;
+                self.connecting = None;
+                match result {
+                    Ok(conn) => {
+                        let home = conn.home.clone();
+                        self.ep = Some(Endpoint::Remote(Arc::new(conn)));
+                        self.navigate(home, ctx, side);
+                    }
+                    Err(e) => self.state = PaneState::Error(e),
                 }
             }
             FilesEvent::OpDone { result } => {
@@ -265,9 +362,15 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
     if let Some(msg) = banner {
         let radius = ui.px(4) as f32;
         ui.painter().rect(banner_r, p.danger.with_alpha(40), radius);
+        let disconnected = pane.ep.is_none() && pane.is_remote();
         let parts = ui.split_h(banner_r, &[L::Fill, L::Px(80)], 6);
         label(ui, Rect::new(parts[0].x + ui.px(8), parts[0].y, parts[0].w - ui.px(8), parts[0].h), &msg, Some(p.danger));
-        if button(ui, id.with("dismiss"), parts[1], "Dismiss").clicked {
+        if disconnected {
+            if button(ui, id.with("retry"), parts[1], "Retry").clicked {
+                let loc = pane.loc.clone();
+                pane.set_location(loc);
+            }
+        } else if button(ui, id.with("dismiss"), parts[1], "Dismiss").clicked {
             pane.banner = None;
             if matches!(pane.state, PaneState::Error(_)) {
                 pane.state = PaneState::Idle;
@@ -278,7 +381,76 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
         }
     }
 
-    listing(ui, id, list_r, pane, side, ctx);
+    if pane.prompt.as_ref().is_some_and(|p| p.cancelled.is_cancelled()) {
+        pane.prompt = None;
+    }
+    if pane.prompt.is_some() {
+        prompt_card(ui, id, list_r, pane);
+    } else {
+        listing(ui, id, list_r, pane, side, ctx);
+    }
+}
+
+/// The inline ssh question: prompt text, masked input (or Yes/No), OK/Cancel.
+fn prompt_card(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane) {
+    let p = ui.style().palette;
+    let Some(pr) = pane.prompt.as_mut() else { return };
+    let radius = ui.px(6) as f32;
+    ui.painter().rect(rect, p.surface, radius);
+    let pad = ui.px(14);
+    let px = ui.font_px();
+    let lh = ui.line_height(FontKind::Ui, px) + ui.px(4);
+    let mut y = rect.y + pad;
+    let title = format!("{} asks:", pane.loc.label());
+    ui.painter().text(Point::new(rect.x + pad, y), &title, FontKind::Ui, px, p.muted);
+    y += lh + ui.px(4);
+    for line in pr.text.lines().filter(|l| !l.trim().is_empty()) {
+        let shown = elide(ui, line.trim_end(), FontKind::Ui, px, rect.w - 2 * pad);
+        ui.painter().text(Point::new(rect.x + pad, y), &shown, FontKind::Ui, px, p.fg);
+        y += lh;
+    }
+    y += ui.px(6);
+    let row = Rect::new(rect.x + pad, y, (rect.w - 2 * pad).min(ui.px(520)), ui.px(30));
+    let iid = id.with("prompt-input");
+    let mut answer: Option<Option<String>> = None;
+    match pr.kind {
+        AskKind::Secret => {
+            let parts = ui.split_h(row, &[L::Fill, L::Px(70), L::Px(80)], 6);
+            if pr.focus {
+                ui.request_focus(iid);
+                pr.focus = false;
+            }
+            let r = text_input(ui, iid, parts[0], &mut pr.input, TextInputOpts { password: true, placeholder: "Password" });
+            if button(ui, id.with("prompt-ok"), parts[1], "OK").clicked || r.submitted {
+                answer = Some(Some(pr.input.clone()));
+            }
+            if button(ui, id.with("prompt-cancel"), parts[2], "Cancel").clicked {
+                answer = Some(None);
+            }
+        }
+        AskKind::Confirm => {
+            let parts = ui.split_h(row, &[L::Px(80), L::Px(80), L::Px(80), L::Fill], 6);
+            if button(ui, id.with("prompt-yes"), parts[0], "Yes").clicked {
+                answer = Some(Some("yes".into()));
+            }
+            if button(ui, id.with("prompt-no"), parts[1], "No").clicked {
+                answer = Some(Some("no".into()));
+            }
+            if button(ui, id.with("prompt-cancel"), parts[2], "Cancel").clicked {
+                answer = Some(None);
+            }
+        }
+    }
+    match answer {
+        Some(None) => pane.cancel_connect(),
+        Some(a) => {
+            if let Some(pr) = pane.prompt.as_mut() {
+                pr.answer(a);
+            }
+            pane.prompt = None;
+        }
+        None => {}
+    }
 }
 
 fn path_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx) {
