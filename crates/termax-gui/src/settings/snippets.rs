@@ -160,7 +160,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
 
     let mut rows = Rows::new(cols[1]);
     if let Some((target, first)) = st.confirm_discard {
-        let what = st.form.as_ref().and_then(|f| f.editing.clone()).map_or("the new snippet".to_string(), |n| n);
+        let what = st.form.as_ref().and_then(|f| f.editing.clone()).unwrap_or_else(|| "the new snippet".to_string());
         label(ui, rows.next(ui), &format!("Discard unsaved changes to {what}?"), None);
         let r = rows.next(ui);
         let b = ui.split_h(Rect::new(r.x, r.y, ui.px(240), r.h), &[L::Frac(0.5), L::Frac(0.5)], 8);
