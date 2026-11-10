@@ -116,7 +116,9 @@ fn piece(parser: &mut vt100::Parser, mut seg: &[u8]) -> u64 {
         screen.set_scrollback(1);
         let probe = screen.scrollback() == 1;
         let limit = if probe { len0.saturating_sub(1).max(1) } else { 1 };
-        let (now, rest) = seg.split_at(after_line_breaks(seg, limit));
+        let (_, cols) = screen.size();
+        let (_, col) = screen.cursor_position();
+        let (now, rest) = seg.split_at(after_rows(seg, limit, col, cols));
         seg = rest;
         parser.process(now);
         let screen = parser.screen_mut();
@@ -132,10 +134,47 @@ fn piece(parser: &mut vt100::Parser, mut seg: &[u8]) -> u64 {
     total
 }
 
-/// The length of `seg` up to and including its `n`th line break (all of it
-/// if it has no more).
-fn after_line_breaks(seg: &[u8], n: usize) -> usize {
-    seg.iter().enumerate().filter(|(_, b)| matches!(b, b'\n' | 0x0b | 0x0c)).nth(n - 1).map_or(seg.len(), |(i, _)| i + 1)
+/// The length of `seg` up to and including whatever may start its `n`th new
+/// row (all of it if nothing more can): a line break, or a character that
+/// auto-wraps past `cols` from cursor column `col`. Columns are overcounted
+/// rather than under (non-ASCII as wide, escape bytes as printable), so a
+/// part never pushes more rows than counted.
+fn after_rows(seg: &[u8], n: usize, col: u16, cols: u16) -> usize {
+    let cols = usize::from(cols.max(1));
+    // One past the cursor: a wrap may be pending at the right edge.
+    let (mut col, mut rows) = (usize::from(col) + 1, 0);
+    let mut i = 0;
+    while i < seg.len() {
+        let b = seg[i];
+        let (width, len) = match b {
+            b'\n' | 0x0b | 0x0c => {
+                rows += 1;
+                (0, 1)
+            }
+            b'\r' => {
+                col = 0;
+                (0, 1)
+            }
+            0x00..=0x1f | 0x7f => (0, 1),
+            0x20..=0x7e => (1, 1),
+            0xc0..=0xdf => (2, 2),
+            0xe0..=0xef => (2, 3),
+            0xf0..=0xff => (2, 4),
+            _ => (0, 1), // stray continuation byte
+        };
+        if width > 0 {
+            if col + width > cols {
+                rows += 1;
+                col = 0;
+            }
+            col += width;
+        }
+        i = (i + len).min(seg.len());
+        if rows >= n {
+            return i;
+        }
+    }
+    seg.len()
 }
 
 /// One search hit: `line` is a line number (see [`ScrollTracker`]; for
@@ -603,6 +642,21 @@ mod tests {
         assert_eq!(n, 28);
         feed(&mut p, &mut t, &mut n, &format!("9l{}", lines(32, 35)));
         assert_eq!((n, p.screen().scrollback()), (31, 0));
+    }
+
+    #[test]
+    fn tracker_counts_wrapped_rows_past_a_full_scrollback() {
+        let (mut p, mut t, mut n) = (vt100::Parser::new(5, 10, 10), ScrollTracker::default(), 0);
+        let mut reference = vt100::Parser::new(5, 10, 10_000);
+        let mut out = (0..30).map(|i| format!("l{i}\r\n")).collect::<String>();
+        out += &"x".repeat(200);
+        // The second read starts with a wrap pending at the right edge.
+        let more = format!("{}{}\r\nend\r\n", "x".repeat(5), "ü".repeat(33));
+        feed(&mut p, &mut t, &mut n, &out);
+        feed(&mut p, &mut t, &mut n, &more);
+        out += &more;
+        reference.process(out.as_bytes());
+        assert_eq!(n, history_len(reference.screen_mut()) as u64);
     }
 
     #[test]
