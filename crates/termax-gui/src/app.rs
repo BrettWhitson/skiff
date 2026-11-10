@@ -399,9 +399,14 @@ impl GuiApp {
         Ok(())
     }
 
-    /// Adds a copy of host `i` (named `<name>-copy`) next to it; returns its name.
-    pub fn duplicate_host(&mut self, i: usize) -> Result<String, String> {
-        let h = self.hosts.get(i).cloned().ok_or("That host is gone")?;
+    /// The listed host named `name`.
+    fn host_named(&self, name: &str) -> Result<HostEntry, String> {
+        self.hosts.iter().find(|h| h.name == name).cloned().ok_or_else(|| format!("{name} is gone"))
+    }
+
+    /// Adds a copy of host `name` (named `<name>-copy`) next to it; returns its name.
+    pub fn duplicate_host(&mut self, name: &str) -> Result<String, String> {
+        let h = self.host_named(name)?;
         let mut set = self.load_set();
         let taken = hostform::taken_names(&self.hosts);
         let form = hostform::duplicate(&h, &self.cfg, &set, &taken)?;
@@ -411,23 +416,24 @@ impl GuiApp {
         Ok(name)
     }
 
-    pub fn delete_host(&mut self, i: usize) -> Result<(), String> {
-        let h = self.hosts.get(i).cloned().ok_or("That host is gone")?;
+    pub fn delete_host(&mut self, name: &str) -> Result<(), String> {
+        let h = self.host_named(name)?;
         let mut set = self.load_set();
         let saved = hostform::delete(&h, &mut self.cfg, &mut set)?;
         self.apply_saved(saved, &mut set)
     }
 
-    fn set_host_hidden(&mut self, i: usize, hidden: bool) -> Result<(), String> {
-        let h = self.hosts.get(i).cloned().ok_or("That host is gone")?;
+    fn set_host_hidden(&mut self, name: &str, hidden: bool) -> Result<(), String> {
+        let h = self.host_named(name)?;
         let mut set = self.load_set();
         let saved = hostform::set_hidden(&h, hidden, &mut self.cfg, &mut set)?;
         self.apply_saved(saved, &mut set)
     }
 
-    fn move_host(&mut self, i: usize, doc: usize) -> Result<(), String> {
-        let h = self.hosts.get(i).cloned().ok_or("That host is gone")?;
+    fn move_host(&mut self, name: &str, file: &std::path::Path) -> Result<(), String> {
+        let h = self.host_named(name)?;
         let mut set = self.load_set();
+        let doc = set.docs.iter().position(|d| d.path == file).ok_or_else(|| format!("{} is no longer included", file.display()))?;
         set.move_host(&h.name, doc)?;
         self.apply_saved(Saved::Ssh(h.name), &mut set)
     }
@@ -438,26 +444,44 @@ impl GuiApp {
     }
 
     pub fn clear_history(&mut self) {
-        self.history.clear();
-        match self.history.save(&self.history_path) {
+        match self.history.update(&self.history_path, History::clear) {
             Ok(()) => self.warn("History cleared"),
             Err(e) => self.warn(format!("could not save history: {e:#}")),
         }
     }
 
     pub fn record(&mut self, name: &str, kind: ConnKind) {
-        self.history.record(name, kind, history::now());
-        if let Err(e) = self.history.save(&self.history_path) {
+        if let Err(e) = self.history.update(&self.history_path, |h| h.record(name, kind, history::now())) {
             self.warn(format!("could not save history: {e:#}"));
+        }
+    }
+
+    /// After host `old` was renamed to `new`: its saved and running
+    /// forwards, history and status follow it.
+    pub fn after_rename(&mut self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        if hostform::rename_forwards(&mut self.cfg, old, new) {
+            self.save_config();
+        }
+        for r in self.forwards.running.iter_mut().filter(|r| r.fwd.host == old) {
+            r.fwd.host = new.to_string();
+        }
+        if let Err(e) = self.history.update(&self.history_path, |h| h.rename(old, new)) {
+            self.warn(format!("could not save history: {e:#}"));
+        }
+        if let Some(s) = self.statuses.remove(old) {
+            self.statuses.insert(new.to_string(), s);
         }
     }
 
     /// Checks host `only`, or every listed host. Never runs on its own
     /// unless `status_checks = "on_start"`.
-    pub fn check_status(&mut self, only: Option<usize>) {
+    pub fn check_status(&mut self, only: Option<&str>) {
         let sets = hosts::probe_sets(&self.cfg);
         let idx: Vec<usize> = match only {
-            Some(i) => vec![i],
+            Some(n) => self.hosts.iter().position(|h| h.name == n).into_iter().collect(),
             None => hosts::visible(&self.hosts, self.geometry.show_hidden),
         };
         let items: Vec<(String, hosts::Probe)> =
@@ -472,7 +496,7 @@ impl GuiApp {
     }
 
     /// The sidebar's selected host.
-    pub fn sidebar_selected(&self) -> Option<usize> {
+    pub fn sidebar_selected(&self) -> Option<String> {
         self.sidebar.selected_host(&self.sidebar_ctx())
     }
 
@@ -536,49 +560,50 @@ impl GuiApp {
         for (name, kind) in done {
             self.record(&name, kind);
         }
+        self.forwards.prune(&self.cfg.forwards);
     }
 
     fn on_sidebar(&mut self, a: SidebarAction) {
         match a {
             SidebarAction::OpenTerminal(h) => {
-                if let Some(host) = self.hosts.get(h).cloned() {
+                if let Ok(host) = self.host_named(&h) {
                     self.open_terminal(&host);
                 }
             }
             SidebarAction::OpenFiles(h) => {
-                if let Some(host) = self.hosts.get(h).cloned() {
+                if let Ok(host) = self.host_named(&h) {
                     self.open_files(Location::Local, Location::Host(host));
                 }
             }
             SidebarAction::Edit(h) => {
-                self.edit_target = self.hosts.get(h).map(|h| h.name.clone());
+                self.edit_target = Some(h);
                 self.open_settings();
             }
             SidebarAction::Duplicate(h) => {
-                if let Err(e) = self.duplicate_host(h) {
+                if let Err(e) = self.duplicate_host(&h) {
                     self.warn(e);
                 }
             }
             SidebarAction::Delete(h) => {
-                if let Err(e) = self.delete_host(h) {
+                if let Err(e) = self.delete_host(&h) {
                     self.warn(e);
                 }
             }
             SidebarAction::SetHidden(h, hidden) => {
-                if let Err(e) = self.set_host_hidden(h, hidden) {
+                if let Err(e) = self.set_host_hidden(&h, hidden) {
                     self.warn(e);
                 }
             }
-            SidebarAction::MoveTo(h, doc) => {
-                if let Err(e) = self.move_host(h, doc) {
+            SidebarAction::MoveTo(h, file) => {
+                if let Err(e) = self.move_host(&h, &file) {
                     self.warn(e);
                 }
             }
             SidebarAction::Forward(h) => {
-                self.forwards.new_form(h);
+                self.forwards.new_form(&h);
                 self.open_forwards();
             }
-            SidebarAction::Check(h) => self.check_status(Some(h)),
+            SidebarAction::Check(h) => self.check_status(Some(&h)),
             SidebarAction::CheckAll => self.check_status(None),
             SidebarAction::SetSort(s) => {
                 self.geometry.sort = s;
@@ -1097,7 +1122,7 @@ impl GuiApp {
             None => "no tabs".into(),
         };
         // The host under the mouse is described in words (not only by its dot).
-        let hovered = self.sidebar.hovered.and_then(|i| self.hosts.get(i)).map(|h| {
+        let hovered = self.sidebar.hovered.as_ref().and_then(|n| self.hosts.iter().find(|h| &h.name == n)).map(|h| {
             let s = crate::sidebar::describe(h, self.statuses.get(&h.name), &self.history);
             format!("{}: {s}", h.name)
         });

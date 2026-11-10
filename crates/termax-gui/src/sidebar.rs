@@ -27,19 +27,22 @@ enum Row {
     Host(usize),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the user asked for. Hosts are named, not indexed: the host list
+/// can be rebuilt (an outside edit, a save) between a click and the action,
+/// or while a menu or confirmation is open.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarAction {
-    OpenTerminal(usize),
-    OpenFiles(usize),
-    Forward(usize),
-    Check(usize),
+    OpenTerminal(String),
+    OpenFiles(String),
+    Forward(String),
+    Check(String),
     CheckAll,
-    Edit(usize),
-    Duplicate(usize),
-    /// Move a host into ssh config file `.1` (index into the app's file list).
-    MoveTo(usize, usize),
-    SetHidden(usize, bool),
-    Delete(usize),
+    Edit(String),
+    Duplicate(String),
+    /// Move a host into ssh config file `.1`.
+    MoveTo(String, PathBuf),
+    SetHidden(String, bool),
+    Delete(String),
     SetSort(SortMode),
     ToggleShowHidden,
     OpenForwards,
@@ -62,11 +65,14 @@ pub struct Sidebar {
     pub filter: String,
     /// Selected row in the flattened list.
     selected: Option<usize>,
+    /// The selected host's name, so the selection follows it when the
+    /// rows change.
+    selected_name: Option<String>,
     collapsed: HashSet<String>,
-    menu_host: Option<usize>,
-    confirm_delete: Option<usize>,
+    menu_host: Option<String>,
+    confirm_delete: Option<String>,
     /// The host under the mouse (the status bar describes it).
-    pub hovered: Option<usize>,
+    pub hovered: Option<String>,
 }
 
 fn group_of(h: &HostEntry) -> String {
@@ -84,12 +90,9 @@ pub fn describe(h: &HostEntry, status: Option<&Status>, hist: &History) -> Strin
 }
 
 impl Sidebar {
-    /// Host index of the selected row.
-    pub fn selected_host(&self, ctx: &SidebarCtx) -> Option<usize> {
-        match self.selected.and_then(|i| self.rows(ctx).get(i).cloned()) {
-            Some(Row::Host(h)) => Some(h),
-            _ => None,
-        }
+    /// Name of the selected host.
+    pub fn selected_host(&self, ctx: &SidebarCtx) -> Option<String> {
+        self.selected_name.clone().filter(|n| ctx.hosts.iter().any(|h| &h.name == n))
     }
 
     fn rows(&self, ctx: &SidebarCtx) -> Vec<Row> {
@@ -166,6 +169,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let fr = text_input(ui, Id::new("sidebar-filter"), head[0], &mut sb.filter, TextInputOpts { password: false, placeholder: "Filter hosts", ..Default::default() });
     if fr.changed {
         sb.selected = None;
+        sb.selected_name = None;
     }
     let sorts = [SortMode::Name, SortMode::Recent];
     let mut si = sorts.iter().position(|s| *s == ctx.sort).unwrap_or(0);
@@ -192,6 +196,11 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     }
 
     let rows = sb.rows(ctx);
+    let host_row = |name: &str| rows.iter().position(|r| matches!(r, Row::Host(h) if hosts[*h].name == name));
+    // Keep the selection on the same host when the rows changed.
+    if let Some(name) = &sb.selected_name {
+        sb.selected = host_row(name);
+    }
     let before = sb.selected;
     let px = ui.font_px();
     let small = px * 0.85;
@@ -220,7 +229,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
             Row::Host(hi) => {
                 let h = &hosts[*hi];
                 if r.contains(mouse) {
-                    hovered = Some(*hi);
+                    hovered = Some(h.name.clone());
                 }
                 status_dot(ui, Rect::new(r.x + ui.px(6), r.y, ui.px(8), r.h), ctx.statuses.get(&h.name));
                 let x = r.x + ui.px(20);
@@ -263,6 +272,10 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
         }
         sb.selected = before.filter(|&b| b < rows.len() && matches!(rows[b], Row::Host(_)));
     }
+    sb.selected_name = match sb.selected.and_then(|i| rows.get(i)) {
+        Some(Row::Host(h)) => Some(hosts[*h].name.clone()),
+        _ => None,
+    };
     if let Some(i) = lr.activated
         && let Some(Row::Header(g)) = rows.get(i)
         && !sb.collapsed.remove(g)
@@ -273,22 +286,22 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
         && let Some(Row::Host(h)) = sb.selected.and_then(|i| rows.get(i))
         && ui.input_mut().take_key(&Key::Delete, Modifiers::NONE)
     {
-        sb.confirm_delete = Some(*h);
+        sb.confirm_delete = Some(hosts[*h].name.clone());
     }
     if let Some(i) = lr.activated
         && let Some(Row::Host(h)) = rows.get(i)
     {
-        action = Some(SidebarAction::OpenTerminal(*h));
+        action = Some(SidebarAction::OpenTerminal(hosts[*h].name.clone()));
     }
     let menu = Id::new("sidebar-menu");
     let move_menu = Id::new("sidebar-move-menu");
     if let Some((i, at)) = lr.context
         && let Some(Row::Host(h)) = rows.get(i)
     {
-        sb.menu_host = Some(*h);
+        sb.menu_host = Some(hosts[*h].name.clone());
         open_context_menu(ui, menu, at);
     }
-    let host = sb.menu_host.and_then(|h| hosts.get(h));
+    let host = sb.menu_host.as_ref().and_then(|n| hosts.iter().find(|h| &h.name == n));
     let ssh = host.is_some_and(|h| h.source == Source::SshConfig);
     let hidden = host.is_some_and(|h| h.hidden);
     let items = [
@@ -302,7 +315,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
         MenuItem { label: if hidden { "Unhide" } else { "Hide" }, shortcut: None, enabled: true },
         MenuItem { label: "Delete", shortcut: None, enabled: true },
     ];
-    if let (Some(choice), Some(h)) = (context_menu(ui, menu, &items), sb.menu_host) {
+    if let (Some(choice), Some(h)) = (context_menu(ui, menu, &items), host.map(|h| h.name.clone())) {
         match choice {
             0 => action = Some(SidebarAction::OpenTerminal(h)),
             1 => action = Some(SidebarAction::OpenFiles(h)),
@@ -326,12 +339,12 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
         .zip(ctx.files)
         .map(|(n, f)| MenuItem { label: n, shortcut: None, enabled: current.as_ref() != Some(f) })
         .collect();
-    if let (Some(doc), Some(h)) = (context_menu(ui, move_menu, &move_items), sb.menu_host) {
-        action = Some(SidebarAction::MoveTo(h, doc));
+    if let (Some(doc), Some(h)) = (context_menu(ui, move_menu, &move_items), host.map(|h| h.name.clone())) {
+        action = Some(SidebarAction::MoveTo(h, ctx.files[doc].clone()));
     }
 
-    if let Some(h) = sb.confirm_delete {
-        match hosts.get(h) {
+    if let Some(h) = sb.confirm_delete.clone() {
+        match hosts.iter().find(|x| x.name == h) {
             None => sb.confirm_delete = None,
             Some(host) => {
                 let radius = ui.px(6) as f32;

@@ -233,8 +233,7 @@ fn main() {
 
     // 6. Forwards tab, with status dots in the sidebar (fixtures only).
     for name in ["file-server", "staging-api"] {
-        let i = s.app.hosts.iter().position(|h| h.name == name).unwrap();
-        s.app.check_status(Some(i));
+        s.app.check_status(Some(name));
     }
     let listen = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let fwd = termax_core::forward::Forward {

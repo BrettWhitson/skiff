@@ -114,7 +114,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     if button(ui, Id::new("settings-conn-dup"), btns[1], "Duplicate").clicked
         && let Some(i) = current
     {
-        match app.duplicate_host(i) {
+        match app.duplicate_host(&app.hosts[i].name.clone()) {
             Ok(name) => st.edit_host(&name, app),
             Err(e) => st.error = Some(e),
         }
@@ -136,7 +136,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
         let r = rows.next(ui);
         let b = ui.split_h(Rect::new(r.x, r.y, ui.px(220), r.h), &[L::Frac(0.5), L::Frac(0.5)], 8);
         if button(ui, Id::new("settings-conn-del-yes"), b[0], "Delete").clicked {
-            if let Err(e) = app.delete_host(i) {
+            if let Err(e) = app.delete_host(&app.hosts[i].name.clone()) {
                 st.error = Some(e);
             }
             st.form = None;
@@ -231,11 +231,15 @@ fn save(form: &mut Form, app: &mut GuiApp) -> Result<String, String> {
         };
     }
     let taken = hostform::taken_names(&app.hosts);
+    let old = form.form.original_name(&app.cfg);
     // Edit a copy: if the write fails, the form can be saved again as is.
     let mut set = form.set.clone();
     let saved = form.form.save(&mut app.cfg, &mut set, &taken)?;
     let name = saved.name().to_string();
     app.apply_saved(saved, &mut set)?;
+    if let Some(old) = old {
+        app.after_rename(&old, &name);
+    }
     form.set = set;
     form.dirty = false;
     form.editing = Some(name.clone());
