@@ -3,6 +3,7 @@
 pub mod app;
 pub mod engine;
 pub mod files;
+pub mod os;
 pub mod forwards;
 pub mod keys;
 pub mod settings;

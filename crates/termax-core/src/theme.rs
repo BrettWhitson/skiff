@@ -47,13 +47,15 @@ fn def(name: &str, c: [&str; 10], ansi: [&str; 16]) -> ThemeDef {
 pub fn builtin() -> Vec<ThemeDef> {
     vec![
         def("terminal", ["reset", "reset", "cyan", "darkgray", "gray", "cyan", "black", "green", "yellow", "red"], ["#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5", "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff"]),
-        def("midnight", ["#0f1117", "#d6deeb", "#7fdbca", "#637777", "#2a3140", "#1d3b53", "#ffffff", "#addb67", "#ecc48d", "#ef5350"], ["#011627", "#ef5350", "#22da6e", "#c5e478", "#82aaff", "#c792ea", "#21c7a8", "#ffffff", "#575656", "#ef5350", "#22da6e", "#ffeb95", "#82aaff", "#c792ea", "#7fdbca", "#ffffff"]),
-        def("dracula", ["#282a36", "#f8f8f2", "#bd93f9", "#6272a4", "#44475a", "#44475a", "#f8f8f2", "#50fa7b", "#f1fa8c", "#ff5555"], ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2", "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5", "#d6acff", "#ff92df", "#a4ffff", "#ffffff"]),
-        def("nord", ["#2e3440", "#d8dee9", "#88c0d0", "#616e88", "#434c5e", "#4c566a", "#eceff4", "#a3be8c", "#ebcb8b", "#bf616a"], ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0", "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"]),
-        def("gruvbox", ["#282828", "#ebdbb2", "#fabd2f", "#928374", "#504945", "#504945", "#fbf1c7", "#b8bb26", "#fe8019", "#fb4934"], ["#282828", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984", "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"]),
-        def("solarized-dark", ["#002b36", "#93a1a1", "#268bd2", "#586e75", "#073642", "#073642", "#eee8d5", "#859900", "#b58900", "#dc322f"], ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5", "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"]),
-        def("catppuccin", ["#1e1e2e", "#cdd6f4", "#cba6f7", "#6c7086", "#45475a", "#45475a", "#cdd6f4", "#a6e3a1", "#f9e2af", "#f38ba8"], ["#45475a", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#bac2de", "#585b70", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#a6adc8"]),
-        def("paper", ["#fafafa", "#383a42", "#4078f2", "#a0a1a7", "#d0d0d0", "#e5e5e6", "#202227", "#50a14f", "#c18401", "#e45649"], ["#383a42", "#e45649", "#50a14f", "#c18401", "#4078f2", "#a626a4", "#0184bc", "#a0a1a7", "#4f525e", "#e06c75", "#98c379", "#d19a66", "#61afef", "#c678dd", "#56b6c2", "#ffffff"]),
+        def("midnight", ["#0f1117", "#d6deeb", "#7fdbca", "#738587", "#2a3140", "#1d3b53", "#ffffff", "#addb67", "#ecc48d", "#ef5350"], ["#011627", "#ef5350", "#22da6e", "#c5e478", "#82aaff", "#c792ea", "#21c7a8", "#ffffff", "#575656", "#ef5350", "#22da6e", "#ffeb95", "#82aaff", "#c792ea", "#7fdbca", "#ffffff"]),
+        def("dracula", ["#282a36", "#f8f8f2", "#bd93f9", "#8f9abb", "#44475a", "#44475a", "#f8f8f2", "#50fa7b", "#f1fa8c", "#ff5555"], ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2", "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5", "#d6acff", "#ff92df", "#a4ffff", "#ffffff"]),
+        def("nord", ["#2e3440", "#d8dee9", "#88c0d0", "#9ba5b8", "#434c5e", "#4c566a", "#eceff4", "#a3be8c", "#ebcb8b", "#bf616a"], ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0", "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"]),
+        def("gruvbox", ["#282828", "#ebdbb2", "#fabd2f", "#a39480", "#504945", "#504945", "#fbf1c7", "#b8bb26", "#fe8019", "#fb4934"], ["#282828", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984", "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"]),
+        def("solarized-dark", ["#002b36", "#93a1a1", "#268bd2", "#859596", "#073642", "#073642", "#eee8d5", "#859900", "#b58900", "#dc322f"], ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5", "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"]),
+        def("catppuccin", ["#1e1e2e", "#cdd6f4", "#cba6f7", "#868ca4", "#45475a", "#45475a", "#cdd6f4", "#a6e3a1", "#f9e2af", "#f38ba8"], ["#45475a", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#bac2de", "#585b70", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#a6adc8"]),
+        def("paper", ["#fafafa", "#383a42", "#4078f2", "#6c6d74", "#d0d0d0", "#e5e5e6", "#202227", "#50a14f", "#c18401", "#e45649"], ["#383a42", "#e45649", "#50a14f", "#c18401", "#4078f2", "#a626a4", "#0184bc", "#a0a1a7", "#4f525e", "#e06c75", "#98c379", "#d19a66", "#61afef", "#c678dd", "#56b6c2", "#ffffff"]),
+        def("high-contrast", ["#000000", "#ffffff", "#ffd700", "#c8c8c8", "#a0a0a0", "#ffd700", "#000000", "#55ff55", "#ffd700", "#ff6b6b"], ["#000000", "#ff5555", "#55ff55", "#ffff55", "#5c9cff", "#ff55ff", "#55ffff", "#e0e0e0", "#a0a0a0", "#ff7777", "#77ff77", "#ffff77", "#88bbff", "#ff77ff", "#77ffff", "#ffffff"]),
+        def("high-contrast-light", ["#ffffff", "#000000", "#0000c0", "#3d3d3d", "#5a5a5a", "#0000c0", "#ffffff", "#006400", "#6b4f00", "#b00020"], ["#000000", "#b00000", "#006400", "#6b4f00", "#0000c0", "#8b008b", "#005f73", "#3a3a3a", "#5a5a5a", "#c00000", "#007000", "#7a5c00", "#0000e0", "#a000a0", "#006b80", "#000000"]),
     ]
 }
 
@@ -96,6 +98,44 @@ pub fn parse_color(s: &str) -> Option<Rgb> {
     NAMES.iter().position(|n| *n == s).map(|i| Rgb::Indexed(i as u8))
 }
 
+/// `#rrggbb` as RGB; `None` for names, indices and `reset`.
+pub fn hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    match parse_color(s)? {
+        Rgb::Rgb(r, g, b) if s.trim().starts_with('#') => Some((r, g, b)),
+        _ => None,
+    }
+}
+
+/// WCAG 2.1 contrast ratio between two colors (1 to 21).
+pub fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+    fn lum((r, g, b): (u8, u8, u8)) -> f32 {
+        let ch = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+    }
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// `a` moved toward `b` by `t` (0 to 1), per channel.
+pub fn mix(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    (m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
+}
+
+/// The theme to use for configured name `name`: `"auto"` (and the default
+/// `"terminal"`) become `high-contrast` while the OS high-contrast mode is
+/// on; otherwise `"auto"` is `"terminal"`.
+pub fn effective_name(name: &str, os_high_contrast: bool) -> &str {
+    match name {
+        "auto" | "terminal" if os_high_contrast => "high-contrast",
+        "auto" => "terminal",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +165,40 @@ mod tests {
                 assert!(parse_color(c).is_some(), "{}: {c}", d.name);
             }
         }
+    }
+
+    #[test]
+    fn themes_meet_contrast() {
+        let mut bad = vec![];
+        for d in builtin() {
+            let c = |s: &str| hex_rgb(s);
+            let (Some(bg), Some(fg), Some(muted), Some(accent), Some(border)) = (c(&d.bg), c(&d.fg), c(&d.muted), c(&d.accent), c(&d.border)) else {
+                continue; // named terminal colors: the terminal decides
+            };
+            let (sel_bg, sel_fg) = (c(&d.selection_bg).unwrap(), c(&d.selection_fg).unwrap());
+            let surface = mix(bg, fg, 0.04); // the GUI's panel color
+            let hc = d.name.starts_with("high-contrast");
+            let text = if hc { 7.0 } else { 4.5 };
+            let checks = [
+                ("fg/bg", contrast(fg, bg), text),
+                ("fg/surface", contrast(fg, surface), text),
+                ("muted/bg", contrast(muted, bg), text),
+                ("muted/surface", contrast(muted, surface), text),
+                ("selection", contrast(sel_fg, sel_bg), text),
+                ("accent/bg", contrast(accent, bg), 3.0),
+                ("border/bg", contrast(border, bg), if hc { 3.0 } else { 0.0 }),
+            ];
+            for (what, got, min) in checks {
+                if got < min {
+                    bad.push(format!("{} {what}: {got:.2} < {min}", d.name));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+        let names: Vec<String> = builtin().into_iter().map(|d| d.name).collect();
+        assert!(names.contains(&"high-contrast".into()) && names.contains(&"high-contrast-light".into()), "{names:?}");
+        assert_eq!(effective_name("auto", true), "high-contrast");
+        assert_eq!(effective_name("auto", false), "terminal");
+        assert_eq!(effective_name("nord", true), "nord", "a chosen theme stays");
     }
 }

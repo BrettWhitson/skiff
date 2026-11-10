@@ -133,7 +133,7 @@ pub fn find_theme(cfg: &Config) -> ThemeDef {
     cfg.themes
         .iter()
         .chain(builtin().iter())
-        .find(|t| t.name == cfg.settings.theme)
+        .find(|t| t.name == termax_core::theme::effective_name(&cfg.settings.theme, crate::os::high_contrast()))
         .cloned()
         .unwrap_or_else(|| builtin().remove(0))
 }

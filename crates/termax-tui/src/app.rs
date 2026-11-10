@@ -164,6 +164,8 @@ impl App {
 
     fn apply_theme_name(&mut self, name: &str) {
         let themes = self.all_themes();
+        // The host terminal owns its colors, so "auto" is simply "terminal".
+        let name = termax_core::theme::effective_name(name, false);
         match themes.iter().find(|t| t.name == name) {
             Some(def) => match Theme::from_def(def) {
                 Ok(t) => self.theme = t,
