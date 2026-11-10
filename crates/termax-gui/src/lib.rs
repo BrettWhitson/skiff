@@ -5,5 +5,6 @@ pub mod engine;
 pub mod files;
 pub mod keys;
 pub mod sidebar;
+pub mod switcher;
 pub mod term;
 pub mod theme;

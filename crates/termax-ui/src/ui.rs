@@ -156,6 +156,11 @@ pub struct UiState {
 }
 
 impl UiState {
+    /// The focused widget.
+    pub fn focused(&self) -> Option<Id> {
+        self.focus
+    }
+
     /// A drag-and-drop is in progress.
     pub fn dragging(&self) -> bool {
         self.drag.is_some()

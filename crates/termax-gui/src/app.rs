@@ -22,6 +22,7 @@ use crate::engine::{Engine, Msg};
 use crate::files::{FilesTab, Location};
 use crate::keys::{Action, Keymap};
 use crate::sidebar::{Sidebar, SidebarAction, sidebar};
+use crate::switcher::{Cmd, Item, SwitcherState};
 use crate::term::TermTab;
 use crate::theme::{GuiTheme, from_def};
 
@@ -61,6 +62,12 @@ pub struct GuiApp {
     pub sidebar: Sidebar,
     /// Opened by Ctrl+Shift+K / "+" (rendered by the quick switcher).
     pub switcher_open: bool,
+    switcher: SwitcherState,
+    switcher_was_open: bool,
+    /// Where focus goes back to when the switcher closes.
+    switcher_return_focus: Option<Id>,
+    /// Settings should start a new connection form.
+    pub new_connection: bool,
     /// Actions for the active view (copy, paste, zoom), consumed by it.
     pub view_actions: Vec<Action>,
     /// Connection the settings screen should open for editing.
@@ -116,6 +123,10 @@ impl GuiApp {
             next_tab_id: 1,
             sidebar: Sidebar::default(),
             switcher_open: false,
+            switcher: SwitcherState::default(),
+            switcher_was_open: false,
+            switcher_return_focus: None,
+            new_connection: false,
             view_actions: vec![],
             edit_target: None,
             shown_tab: None,
@@ -249,6 +260,95 @@ impl GuiApp {
         }
     }
 
+    /// Switches to theme `name` and saves it.
+    pub fn apply_theme(&mut self, name: &str) {
+        self.cfg.settings.theme = name.to_string();
+        self.theme = from_def(&find_theme(&self.cfg));
+        self.style = style_for(&self.theme, &self.cfg);
+        self.save_config();
+    }
+
+    /// Re-reads `config.toml` (after an outside edit, or on request).
+    pub fn reload_config(&mut self) {
+        match Config::load_or_create(&self.cfg_path) {
+            Ok(cfg) => {
+                self.baseline = cfg.clone();
+                self.cfg = cfg;
+                self.theme = from_def(&find_theme(&self.cfg));
+                self.style = style_for(&self.theme, &self.cfg);
+                let (km, warnings) = Keymap::platform(&self.cfg.keys);
+                self.keymap = km;
+                for w in warnings {
+                    self.warn(w);
+                }
+                self.rebuild_hosts();
+            }
+            Err(e) => self.warn(format!("config not reloaded: {e:#}")),
+        }
+    }
+
+    pub fn theme_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = builtin().into_iter().map(|t| t.name).collect();
+        for t in &self.cfg.themes {
+            if !names.contains(&t.name) {
+                names.push(t.name.clone());
+            }
+        }
+        names
+    }
+
+    fn on_switch(&mut self, item: Item) {
+        match item {
+            Item::Host(i) => {
+                if let Some(h) = self.hosts.get(i).cloned() {
+                    self.open_terminal(&h);
+                }
+            }
+            Item::HostFiles(i) => {
+                if let Some(h) = self.hosts.get(i).cloned() {
+                    self.open_files(Location::Local, Location::Host(h));
+                }
+            }
+            Item::Tab(id) => {
+                if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                    self.active = i;
+                }
+            }
+            Item::Theme(name) => self.apply_theme(&name),
+            Item::Command(Cmd::NewConnection) => {
+                self.edit_target = None;
+                self.new_connection = true;
+                self.open_settings();
+            }
+            Item::Command(Cmd::Settings) => self.open_settings(),
+            Item::Command(Cmd::ReloadConfig) => self.reload_config(),
+        }
+    }
+
+    fn switcher_ui(&mut self, ui: &mut Ui) {
+        if self.switcher_open && !self.switcher_was_open {
+            self.switcher = SwitcherState { just_opened: true, ..Default::default() };
+            self.switcher_return_focus = ui.focused();
+        }
+        self.switcher_was_open = self.switcher_open;
+        if !self.switcher_open {
+            return;
+        }
+        let tabs: Vec<(u64, String)> = (0..self.tabs.len()).map(|i| (self.tabs[i].id, self.tab_title(i))).collect();
+        let items = crate::switcher::rank(&self.switcher.query, &self.hosts, &tabs, &self.theme_names());
+        let out = crate::switcher::show(ui, &mut self.switcher, &items);
+        if out.close {
+            self.switcher_open = false;
+            self.switcher_was_open = false;
+            if let Some(f) = self.switcher_return_focus.take() {
+                ui.request_focus(f);
+            }
+        }
+        if let Some(item) = out.chosen {
+            self.on_switch(item);
+        }
+    }
+
     // ----- geometry ---------------------------------------------------
 
     fn geometry_changed(&mut self) {
@@ -357,6 +457,7 @@ impl GuiApp {
         self.main_area(ui, main);
         self.view_actions.clear(); // only the active view may use them
         self.status_bar(ui, status);
+        self.switcher_ui(ui);
         self.save_geometry_when_due(ui);
     }
 
