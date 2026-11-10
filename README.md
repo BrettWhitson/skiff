@@ -138,8 +138,9 @@ they were. Before every write it:
 
 - refuses if the file changed on disk since it was read ("reopen to see the
   new version") — your edit in another editor always wins;
-- copies the old file to `backups/<file>-<date>-<time>.bak` next to
-  `config.toml` (the 10 newest are kept);
+- copies the old file to `backups/<file>-<path hash>-<date>-<time>.bak` next
+  to `config.toml` (the 10 newest of each file are kept; the hash keeps two
+  files named `config` in different folders apart);
 - writes a temp file and renames it over the original, so a crash never
   leaves half a file (on Unix the file keeps its permissions; a new one is 0600).
 
@@ -150,14 +151,20 @@ OpenSSH ignores it.
 Some hosts are shown but left alone, with the reason: a host that shares a
 `Host` line with others (`Host web db`), a host defined in more than one place,
 and wildcard or `Match` blocks. New hosts go before the first wildcard
-`Host *` / `Match` block, so your defaults keep applying to them.
+`Host *` / `Match` block, so your defaults keep applying to them; a
+duplicate goes right after the original. Moving a host to another file takes
+the comment lines directly above it along. Renaming a host also renames it in
+saved forwards and in the connection history.
 
 **Status** (`p` in the TUI, "Check status" in the GUI) connects to each host's
 port and reads the `SSH-` greeting — no login. It is off until you ask
 (`status_checks = "on_start"` runs it at start) because probing many servers
-unprompted can trip intrusion alarms. Hosts reached through `ProxyJump` /
-`ProxyCommand` (including ones inherited from `Host *`) show "unknown" rather
-than being probed directly.
+unprompted can trip intrusion alarms. A host reached through `ProxyJump`
+(including one inherited from `Host *`) is never probed itself: termax checks
+its first jump host the same way and shows "via bastion: reachable" (or why
+the jump host is down). It never logs in to the jump host or runs ssh
+through it, so the host behind it may still be down. Hosts behind a
+`ProxyCommand` show "unknown".
 
 **History.** termax remembers when you last connected to each host
 (`history.toml` next to `config.toml`): sort by Recent (`o` in the TUI, the
@@ -167,8 +174,12 @@ Settings → General → Clear history forgets it.
 **Port forwards** (`f` on a host in the TUI, "Port forward…" in the GUI) run
 `ssh -N -o ExitOnForwardFailure=yes -L/-R/-D …` and are saved as `[[forward]]`.
 In the TUI a forward runs in its own tab (close the tab to stop it); in the
-GUI the Forwards tab starts and stops them and asks for passwords inline.
-Forwards stop when termax exits.
+GUI the Forwards tab starts and stops them (Save keeps a forward for later, Save
+and start runs it; Delete asks first) and asks for passwords inline. A forward
+counts toward history once it is up, not when ssh starts.
+Forwards stop when termax exits, even when it is killed (on Windows through a
+job object, on Linux through a parent-death signal; on macOS this is best
+effort, so a killed termax can leave a forward running until ssh notices).
 
 Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`,
 `nord`, `gruvbox`, `solarized-dark`, `catppuccin`, `paper`.
@@ -385,7 +396,8 @@ password prompts, cancellable transfers, overwrite prompts and remappable keys.
   `sftp_batch_mode = true` it uses keys or an agent and fails instead of prompting
   for a password. A future step is an `SSH_ASKPASS` helper that prompts inside termax.
 - Keybindings are fixed. A `[keys]` config section would make them remappable.
-- The status check never probes through jump hosts (those show "unknown").
+- The status check can't see past a jump host: for `ProxyJump` hosts it reports
+  only whether the first jump host answers, and `ProxyCommand` hosts show "unknown".
 - The mouse goes only to programs that ask for it (no tab clicks or own selection).
 - Transfers can't be cancelled, and there's no overwrite confirmation.
 - The scrollback is view-only (search scrolls to matches but doesn't highlight them).
