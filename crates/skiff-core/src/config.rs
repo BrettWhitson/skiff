@@ -489,7 +489,6 @@ fn apply_key_changes(target: &mut dyn TableLike, old: &toml::Table, new: &toml::
 }
 
 /// Detects changes to a file by modification time.
-/// Detects changes to a file by modification time.
 pub struct FileWatcher {
     /// The watched file.
     path: PathBuf,
