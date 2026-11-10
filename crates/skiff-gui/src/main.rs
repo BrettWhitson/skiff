@@ -51,6 +51,6 @@ fn main() -> anyhow::Result<()> {
             }
             app
         },
-        WindowOptions { title: "Skiff".into(), app_id: "skiff".into(), size, fonts },
+        WindowOptions { title: "Skiff".into(), app_id: "skiff".into(), size, fonts, icon: Some((skiff_ui::logo::rgba(64), 64)) },
     )
 }

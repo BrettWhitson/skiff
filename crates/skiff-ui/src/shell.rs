@@ -74,6 +74,9 @@ pub struct WindowOptions {
     pub size: (u32, u32),
     /// Fonts the app starts with.
     pub fonts: Fonts,
+    /// Window / taskbar icon: square straight-RGBA pixels and their side
+    /// length (e.g. `logo::rgba(64)`), or none for the platform default.
+    pub icon: Option<(Vec<u8>, u32)>,
 }
 
 /// Wakes the shell from another thread (e.g. when a transfer progresses).
@@ -347,6 +350,8 @@ struct Shell<A: App> {
     /// Current title (follows `FrameCtx::title` changes).
     opts_title: String,
     opts_app_id: String,
+    /// The window icon from `WindowOptions`.
+    opts_icon: Option<(Vec<u8>, u32)>,
     opts_size: (u32, u32),
     fonts: Fonts,
     gfx: Option<Gfx>,
@@ -407,6 +412,12 @@ impl<A: App> Shell<A> {
             .with_inner_size(LogicalSize::new(self.opts_size.0, self.opts_size.1))
             .with_visible(false);
         let attrs = with_app_id(attrs, &self.opts_app_id);
+        // A bad icon only costs the icon, never the window.
+        let icon = self.opts_icon.clone().and_then(|(rgba, size)| winit::window::Icon::from_rgba(rgba, size, size).ok());
+        // Windows keeps a separate (large) taskbar icon.
+        #[cfg(windows)]
+        let attrs = winit::platform::windows::WindowAttributesExtWindows::with_taskbar_icon(attrs, icon.clone());
+        let attrs = attrs.with_window_icon(icon);
         let window = Rc::new(el.create_window(attrs).context("creating window")?);
         let adapter = accesskit_winit::Adapter::with_event_loop_proxy(el, &window, self.proxy.clone());
         window.set_visible(true);
@@ -597,6 +608,7 @@ pub fn run_with_waker<A: App + 'static>(make: impl FnOnce(Waker) -> A, opts: Win
         opts_title: opts.title,
         opts_app_id: opts.app_id,
         opts_size: opts.size,
+        opts_icon: opts.icon,
         fonts: opts.fonts,
         gfx: None,
         state: ShellState::default(),

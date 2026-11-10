@@ -26,5 +26,5 @@ impl App for DemoApp {
 fn main() -> anyhow::Result<()> {
     let fonts = Fonts::load(None, None)?;
     let app = DemoApp { state: UiState::default(), style: Style::dark_default(), demo: Demo::default() };
-    run(app, WindowOptions { title: "skiff-ui demo".into(), app_id: "skiff-ui-demo".into(), size: (1100, 700), fonts })
+    run(app, WindowOptions { title: "skiff-ui demo".into(), app_id: "skiff-ui-demo".into(), size: (1100, 700), fonts, icon: None })
 }

@@ -60,5 +60,8 @@ impl App for Hello {
 /// Loads system fonts and opens the window.
 fn main() -> anyhow::Result<()> {
     let fonts = skiff_ui::text::Fonts::load(None, None)?;
-    run(Hello::default(), WindowOptions { title: "skiff-ui hello".into(), app_id: "skiff-ui-hello".into(), size: (720, 240), fonts })
+    run(
+        Hello::default(),
+        WindowOptions { title: "skiff-ui hello".into(), app_id: "skiff-ui-hello".into(), size: (720, 240), fonts, icon: None },
+    )
 }
