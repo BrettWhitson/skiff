@@ -1238,6 +1238,11 @@ impl<'a> Ui<'a> {
         self.capture.is_none_or(|c| c == id || self.modals.iter().any(|(m, ids)| *m == c && ids.contains(&id)))
     }
 
+    /// The widget holding the keyboard (captured last frame), if any.
+    pub fn keyboard_owner(&self) -> Option<Id> {
+        self.capture
+    }
+
     /// Moves focus to the next widget in the Tab order at the end of the frame.
     pub fn focus_next(&mut self) {
         self.focus_move = Some(true);

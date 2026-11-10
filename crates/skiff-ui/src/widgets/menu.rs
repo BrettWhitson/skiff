@@ -88,10 +88,29 @@ struct MenuState {
     rect: Rect,
 }
 
+/// Where the last menu to take the keyboard records its id (see
+/// `menu_holds_keyboard`).
+fn owner_slot() -> Id {
+    Id::new("context-menu-keyboard-owner")
+}
+
+/// Routes the keyboard to menu `id` and notes it as the menu holding it.
+fn hold_keyboard(ui: &mut Ui, id: Id) {
+    ui.capture_keyboard(id);
+    *ui.memory::<Option<Id>>(owner_slot()) = Some(id);
+}
+
+/// Whether an open context menu holds the keyboard (since last frame), so
+/// app shortcuts should stand aside and let the menu's own shortcuts act.
+pub fn menu_holds_keyboard(ui: &mut Ui) -> bool {
+    let owner = ui.keyboard_owner();
+    owner.is_some() && *ui.memory::<Option<Id>>(owner_slot()) == owner
+}
+
 /// Opens menu `id` at `at` and routes the keyboard to it.
 pub fn open_context_menu(ui: &mut Ui, id: Id, at: Point) {
     *ui.memory::<MenuState>(id) = MenuState { open: true, at, hover: None, fresh: true, rect: Rect::default() };
-    ui.capture_keyboard(id);
+    hold_keyboard(ui, id);
 }
 
 /// Closes menu `id` without a choice.
@@ -341,7 +360,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     if chosen.is_some() || close {
         st.open = false;
     } else {
-        ui.capture_keyboard(id);
+        hold_keyboard(ui, id);
     }
     *ui.memory::<MenuState>(id) = st;
     chosen
