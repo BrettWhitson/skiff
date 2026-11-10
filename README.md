@@ -82,6 +82,7 @@ sftp_batch_mode = true      # SFTP fails instead of prompting (see below)
 show_hidden_files = false
 # local_start_dir = "~/Downloads"
 status_checks = "manual"    # or "on_start": check which hosts are reachable at start
+confirm_multiline_paste = true  # ask before pasting several lines into a terminal
 
 [[connection]]
 name = "homelab"
@@ -95,6 +96,12 @@ extra_args = ["-A"]
 remote_dir = "/srv"
 tags = ["home"]
 # hidden = true             # left out of host lists (the CLI still finds it)
+
+[[snippet]]
+name = "follow logs"
+command = "journalctl -f"
+host = "homelab"            # optional: only in this host's terminals
+run = true                  # press Enter after typing it
 
 [[forward]]
 name = "web admin"
@@ -189,6 +196,8 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | | `Space` | Toggle "Save to" / Hidden |
 | | `Enter` in Other options | Add a line |
 | Terminal | `Shift+PgUp` / `Shift+PgDn` | Scrollback |
+| | `Alt+F` | Find in the output (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
+| | `Alt+S` | Snippets (`Enter` sends) |
 | | `Enter` after disconnect | Reconnect |
 | SFTP | `Tab` / `←` `→` | Switch pane |
 | | `Enter` / `Backspace` | Open directory / go up |
@@ -201,6 +210,28 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 
 All other keys in a terminal tab go straight to the remote shell. Only `Alt+`
 shortcuts are intercepted.
+
+### Terminal tabs (both apps)
+
+- **Find** searches the scrollback and screen as you type. It ignores case
+  unless the query has a capital letter. The newest match is shown first;
+  stepping goes to older ones, and closing returns to live output.
+- **Paste warning.** Pasting text with a line break into a shell that hasn't
+  turned on bracketed paste would run each line, so termax asks first
+  ("Paste 3 lines into homelab?"). Programs that use bracketed paste (most
+  modern shells and editors) are never interrupted. In the GUI, focus starts
+  on Cancel, so a reflexive Enter doesn't paste; in the TUI press `y`. Windows
+  consoles have no bracketed paste, so the TUI there treats a burst of 8+
+  keys with a line break as a paste. Turn the prompt off with
+  `confirm_multiline_paste = false`.
+- **Mouse reporting.** When a program asks for the mouse (vim, htop, tmux,
+  less with `--mouse`), clicks, drags and the wheel go to it. Hold `Shift` to
+  select text instead. In the TUI the mouse is only captured while such a
+  program runs, so your terminal's own selection works the rest of the time.
+- **Snippets** are saved commands (`[[snippet]]` in the config, see above).
+  They are listed in the GUI quick switcher ("Snippet: …") and under `Alt+S`
+  in the TUI. A snippet with `host` only appears in that host's terminals. A
+  multi-line snippet goes through the paste warning.
 
 ## GUI (`termax-gui`)
 
@@ -226,7 +257,10 @@ cargo run -p termax-gui --release
   stored. This uses `SSH_ASKPASS_REQUIRE`, so it needs OpenSSH 8.4 or newer;
   with an older `ssh`, use keys or an agent.
 - **Settings** (`Ctrl+Shift+,`) edits connections, theme, fonts, keybindings
-  and general options. Edits to `config.toml` made outside termax are picked
+  and general options. Under Appearance, "Choose terminal font…" and "Choose
+  interface font…" list the installed fonts (the terminal list shows only
+  monospace ones; per-user installed fonts included), with a filter box;
+  picking one applies it at once. Edits to `config.toml` made outside termax are picked
   up within a second while the window has focus.
 
 | Action | Windows / Linux | macOS |
@@ -236,6 +270,7 @@ cargo run -p termax-gui --release
 | Close tab | `Ctrl+Shift+W` | `Cmd+W` |
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+PgDn` / `Ctrl+PgUp` | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Cmd+Shift+]` / `Cmd+Shift+[` |
 | Copy / paste in a terminal | `Ctrl+Shift+C` / `Ctrl+Shift+V` | `Cmd+C` / `Cmd+V` |
+| Find in a terminal (`Enter` / `F3` older, `Shift+Enter` / `Shift+F3` newer, `Esc` close) | `Ctrl+Shift+F` | `Cmd+F` |
 | Zoom in / out / reset | `Ctrl+Shift+=` / `Ctrl+Shift+-` / `Ctrl+Shift+0` | `Cmd+=` / `Cmd+-` / `Cmd+0` |
 | Toggle sidebar | `Ctrl+Shift+B` | `Cmd+B` |
 | Settings | `Ctrl+Shift+,` | `Cmd+,` |
@@ -256,8 +291,9 @@ cursor_blink = true                           # blinking terminal cursor
 
 [keys]
 # action = "chord" or "chord1, chord2"; actions: quick_switcher, new_tab,
-# close_tab, next_tab, prev_tab, copy, paste, zoom_in, zoom_out, zoom_reset,
-# toggle_sidebar, settings, ui_scale_up, ui_scale_down, ui_scale_reset
+# close_tab, next_tab, prev_tab, copy, paste, find, zoom_in, zoom_out,
+# zoom_reset, toggle_sidebar, settings, ui_scale_up, ui_scale_down,
+# ui_scale_reset
 close_tab = "ctrl+shift+q"
 ```
 
@@ -350,7 +386,7 @@ password prompts, cancellable transfers, overwrite prompts and remappable keys.
   for a password. A future step is an `SSH_ASKPASS` helper that prompts inside termax.
 - Keybindings are fixed. A `[keys]` config section would make them remappable.
 - The status check never probes through jump hosts (those show "unknown").
-- No mouse support yet (tab clicks, scrolling, selection).
+- The mouse goes only to programs that ask for it (no tab clicks or own selection).
 - Transfers can't be cancelled, and there's no overwrite confirmation.
-- Terminal tabs have no search, and the scrollback is view-only.
+- The scrollback is view-only (search scrolls to matches but doesn't highlight them).
 - Split panes (two sessions side by side in one tab) aren't supported.

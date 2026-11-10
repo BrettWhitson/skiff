@@ -8,7 +8,7 @@ mod ui;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
 use crossterm::execute;
 
 use crate::app::App;
@@ -104,6 +104,13 @@ fn main() -> Result<()> {
 
     // ratatui::init installs a panic hook that restores the terminal.
     let mut terminal = ratatui::init();
+    // ratatui's hook restores raw mode and the screen; also give the mouse
+    // and paste modes back if termax panics.
+    let restore = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+        restore(info);
+    }));
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let result = run(&mut terminal, &mut app);
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
@@ -116,20 +123,31 @@ fn main() -> Result<()> {
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
-    loop {
+    let mut mouse = false;
+    let result = (|| loop {
         terminal.draw(|f| ui::draw(f, app))?;
+        // Capture the mouse only while a program in the active terminal asked
+        // for it, so the user's terminal keeps its own selection otherwise.
+        let want = app.wants_mouse();
+        if want != mouse {
+            mouse = want;
+            let _ = if want { execute!(std::io::stdout(), EnableMouseCapture) } else { execute!(std::io::stdout(), DisableMouseCapture) };
+        }
         if app.should_quit {
             return Ok(());
         }
         if event::poll(Duration::from_millis(30))? {
             // Handle everything already queued before redrawing (fast typing / pastes).
-            loop {
-                app.handle_event(event::read()?);
-                if app.should_quit || !event::poll(Duration::ZERO)? {
-                    break;
-                }
+            let mut batch = vec![event::read()?];
+            while event::poll(Duration::ZERO)? {
+                batch.push(event::read()?);
             }
+            app.handle_batch(batch);
         }
         app.drain_messages();
+    })();
+    if mouse {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
     }
+    result
 }

@@ -70,6 +70,7 @@ pub fn draw_screen(
     px: f32,
     cursor: Option<CursorDraw>,
     sel: Option<&TermSelection>,
+    marks: &[(usize, usize, usize, bool)],
 ) {
     let selection = ui.style().palette.selection;
     let offset = screen.scrollback() as i64;
@@ -83,6 +84,18 @@ pub fn draw_screen(
                 if sel.contains(r as i64 - offset, c as u16) {
                     cell.bg = selection;
                 }
+            }
+        }
+    }
+    // Search hits: all on the selection colour, the current one on the accent.
+    for &(r, col, len, current) in marks {
+        let Some(cells) = rows.get_mut(r) else { continue };
+        for cell in cells.iter_mut().skip(col).take(len) {
+            if current {
+                cell.bg = theme.palette.accent;
+                cell.fg = theme.term_bg;
+            } else {
+                cell.bg = selection;
             }
         }
     }

@@ -45,7 +45,7 @@ pub struct SelectState {
     /// Raw press and current pointer cells; word/line modes expand these.
     raw: Option<(Pos, Pos)>,
     mode: Option<SelMode>,
-    dragging: bool,
+    pub dragging: bool,
     moved: bool,
     last_click: Option<(Instant, Pos)>,
     clicks: u8,

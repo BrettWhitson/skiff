@@ -4473,6 +4473,7 @@ dependencies = [
  "arboard",
  "fontdue",
  "softbuffer",
+ "ttf-parser",
  "winit",
 ]
 

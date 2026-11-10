@@ -111,6 +111,8 @@ pub struct Settings {
     pub status_checks: StatusChecks,
     /// TUI without box-drawing borders and symbols (for screen readers).
     pub tui_plain: bool,
+    /// Ask before pasting several lines into a program without bracketed paste.
+    pub confirm_multiline_paste: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -134,6 +136,7 @@ impl Default for Settings {
             local_start_dir: None,
             status_checks: StatusChecks::Manual,
             tui_plain: false,
+            confirm_multiline_paste: true,
         }
     }
 }
@@ -216,6 +219,9 @@ pub struct Config {
     pub keys: BTreeMap<String, String>,
     #[serde(rename = "forward", skip_serializing_if = "Vec::is_empty")]
     pub forwards: Vec<crate::forward::Forward>,
+    /// Saved commands (`[[snippet]]`).
+    #[serde(rename = "snippet", skip_serializing_if = "Vec::is_empty")]
+    pub snippets: Vec<crate::termx::Snippet>,
     #[serde(rename = "connection", skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<Connection>,
     #[serde(rename = "theme", skip_serializing_if = "Vec::is_empty")]
@@ -318,7 +324,7 @@ impl Config {
             apply_key_changes(table, &old_t, &new_t, new_table);
         }
 
-        for name in ["connection", "theme", "forward"] {
+        for name in ["connection", "theme", "forward", "snippet"] {
             let list = |v: &toml::Value| -> Vec<toml::Table> {
                 v.get(name)
                     .and_then(|a| a.as_array())

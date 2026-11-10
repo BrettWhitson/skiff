@@ -1,5 +1,6 @@
 //! App-level tests driven through the toolkit Harness. No network: the
-//! config disables `~/.ssh/config` and no terminal is ever spawned here.
+//! config disables `~/.ssh/config`; the only terminal spawned goes to the
+//! local test server (`switcher_runs_snippet`).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -398,4 +399,39 @@ fn ui_scale_shortcuts_persist() {
     assert_eq!(f.app.cfg.gui.ui_scale, 1.2);
     f.frame(vec![Event::KeyDown { key: Key::Char('0'), mods: ctrl_alt, text: None }]);
     assert_eq!(f.app.cfg.gui.ui_scale, 1.0);
+}
+
+#[test]
+fn switcher_runs_snippet() {
+    let cfg = CONFIG.replace("[[connection]]", "[[snippet]]\nname = \"greet\"\ncommand = \"echo snippet-ran\"\n\n[[connection]]");
+    let mut f = Fixture::with_config(&cfg);
+    // A terminal on the local test server (never a real host).
+    let fx = termax_testserver::TestFixture::with_shell(termax_testserver::FixtureAuth::Key).unwrap();
+    let mut args = fx.ssh_options();
+    args.push("-tt".into());
+    args.push(fx.destination());
+    let host = f.app.hosts[0].clone();
+    f.app.push_tab(TabKind::Terminal(Box::new(TermTab::with_command(host, "ssh".into(), args, 500))));
+    f.frame(vec![]);
+    let screen = |f: &Fixture| match &f.app.tabs[f.app.active].kind {
+        TabKind::Terminal(t) => t.session.as_ref().map(|s| s.parser.lock().unwrap().screen().contents()).unwrap_or_default(),
+        _ => String::new(),
+    };
+    let wait = |f: &mut Fixture, s: &str| {
+        let start = Instant::now();
+        while !screen(f).contains(s) {
+            assert!(start.elapsed() < Duration::from_secs(15), "waiting for {s:?}: {}", screen(f));
+            std::thread::sleep(Duration::from_millis(30));
+            f.frame(vec![]);
+        }
+    };
+    wait(&mut f, "termax-testserver shell");
+    f.app.do_action(Action::QuickSwitcher);
+    f.frame(vec![]);
+    f.frame(vec![Event::Text("snippet gr".into())]);
+    f.frame(vec![]);
+    assert!(f.try_find("Snippet: greet").is_some(), "{:?}", f.texts());
+    f.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    wait(&mut f, "echo snippet-ran");
 }

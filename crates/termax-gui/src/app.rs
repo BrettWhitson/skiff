@@ -658,6 +658,12 @@ impl GuiApp {
             Item::Command(Cmd::Forwards) => self.open_forwards(),
             Item::Command(Cmd::CheckStatus) => self.check_status(None),
             Item::Command(Cmd::ReloadConfig) => self.reload_config(),
+            Item::Snippet(i) => {
+                let Some(snippet) = self.cfg.snippets.get(i).cloned() else { return };
+                if let Some(TabKind::Terminal(t)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
+                    t.send_snippet(&snippet);
+                }
+            }
         }
     }
 
@@ -674,6 +680,17 @@ impl GuiApp {
         let ctx = crate::switcher::RankCtx {
             show_hidden: self.geometry.show_hidden,
             recent: self.history.recent(crate::switcher::RECENT_HOSTS),
+            snippets: match self.tabs.get(self.active).map(|t| &t.kind) {
+                Some(TabKind::Terminal(t)) => self
+                    .cfg
+                    .snippets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.host.as_deref().is_none_or(|h| h == t.host.name))
+                    .map(|(i, s)| (i, s.name.clone()))
+                    .collect(),
+                _ => vec![],
+            },
         };
         let items = crate::switcher::rank(&self.switcher.query, &self.hosts, &tabs, &self.theme_names(), &ctx);
         let out = crate::switcher::show(ui, &mut self.switcher, &items);
@@ -738,7 +755,7 @@ impl GuiApp {
                 self.style = style_for(&self.theme, &self.cfg);
                 self.save_config();
             }
-            Action::Copy | Action::Paste | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
+            Action::Copy | Action::Paste | Action::Find | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
                 self.view_actions.push(a)
             }
             _ => {}
@@ -974,6 +991,7 @@ impl GuiApp {
         match &mut tab.kind {
             TabKind::Terminal(t) => {
                 t.announce = self.cfg.gui.announce_output;
+                t.confirm_paste = self.cfg.settings.confirm_multiline_paste;
                 t.blink = self.cfg.gui.cursor_blink && crate::os::animations();
                 let id = Id::new(("term", tab.id));
                 if newly_shown {

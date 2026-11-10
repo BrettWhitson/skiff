@@ -1,5 +1,6 @@
 //! Host-list flows driven through `App::handle_event`. Every config and ssh
-//! config is a temp file; nothing here connects anywhere.
+//! config is a temp file; terminal tests connect only to the local
+//! termax-testserver fixture.
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use termax_core::config::Config;
@@ -219,4 +220,102 @@ fn cursor_follows_selected_host() {
     let buf = term.backend().buffer();
     let row: String = (pos.x..pos.x + 4).map(|x| buf[(x, pos.y)].symbol().to_string()).collect();
     assert!(row.starts_with('›'), "selection marked by a symbol, not only color: {row:?}");
+}
+
+fn alt(t: &mut T, c: char) {
+    t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)));
+}
+
+/// A terminal tab on the local test server (never a real host).
+fn fixture_terminal(t: &mut T) -> termax_testserver::TestFixture {
+    let fx = termax_testserver::TestFixture::with_shell(termax_testserver::FixtureAuth::Key).unwrap();
+    let mut args = fx.ssh_options();
+    args.push("-tt".into());
+    args.push(fx.destination());
+    let s = TerminalSession::spawn("ssh", &args, 24, 80, 1000).unwrap();
+    t.app.push_tab("fx".into(), TabKind::Terminal(Box::new(s)));
+    wait_screen(t, "termax-testserver shell");
+    fx
+}
+
+fn screen(t: &T) -> String {
+    match &t.app.tabs[t.app.active].kind {
+        TabKind::Terminal(s) => {
+            let mut p = s.parser.lock().unwrap();
+            termax_core::termx::screen_lines(&mut p).0.join("\n")
+        }
+        _ => String::new(),
+    }
+}
+
+fn wait_screen(t: &T, s: &str) {
+    let start = std::time::Instant::now();
+    while !screen(t).contains(s) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(15), "waiting for {s:?}: ...{}", screen(t).chars().rev().take(300).collect::<String>().chars().rev().collect::<String>());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+}
+
+#[test]
+fn tui_search_scrolls_and_counts() {
+    let mut t = T::new("");
+    let _fx = fixture_terminal(&mut t);
+    let mut text = String::from("needle\r");
+    for i in 0..60 {
+        text.push_str(&format!("row{i}\r"));
+    }
+    if let TabKind::Terminal(s) = &mut t.app.tabs[t.app.active].kind {
+        s.write(text.as_bytes());
+    }
+    wait_screen(&t, "row59");
+    alt(&mut t, 'f');
+    t.typed("needle");
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"));
+    let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else { panic!() };
+    assert!(s.scroll_offset() > 0, "scrolled back to the match");
+    t.key(KeyCode::Esc);
+    let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else { panic!() };
+    assert_eq!(s.scroll_offset(), 0, "Esc returns to live output");
+}
+
+#[test]
+fn tui_multiline_paste_confirms() {
+    let mut t = T::new("");
+    let _fx = fixture_terminal(&mut t);
+    t.app.handle_event(Event::Paste("a\nb".into()));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste { .. }, .. })));
+}
+
+#[test]
+fn tui_snippet_picker_sends() {
+    let mut t = T::new("");
+    t.app.cfg.snippets.push(termax_core::termx::Snippet { name: "greet".into(), command: "echo hi-snippet".into(), host: None, run: false });
+    let _fx = fixture_terminal(&mut t);
+    alt(&mut t, 's');
+    assert!(matches!(t.app.modal, Some(Modal::Snippets { .. })));
+    t.key(KeyCode::Enter);
+    assert!(t.app.modal.is_none());
+    wait_screen(&t, "echo hi-snippet");
+}
+
+fn press_keys(text: &str) -> Vec<Event> {
+    text.chars()
+        .map(|c| {
+            let code = if c == '\r' { KeyCode::Enter } else { KeyCode::Char(c) };
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+        })
+        .collect()
+}
+
+#[test]
+fn tui_key_burst_is_a_paste() {
+    // Windows consoles deliver a paste as a burst of key presses.
+    let mut t = T::new("");
+    let _fx = fixture_terminal(&mut t);
+    t.app.paste_bursts = true;
+    t.app.handle_batch(press_keys("ls\r"));
+    assert!(t.app.modal.is_none(), "a few keys typed quickly are just typing");
+    t.app.handle_batch(press_keys("echo one\recho two\r"));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste { .. }, .. })));
 }

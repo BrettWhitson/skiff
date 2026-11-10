@@ -32,7 +32,7 @@ fn empty_query_lists_tabs_first() {
 
 #[test]
 fn switcher_lists_recent_first() {
-    let ctx = RankCtx { show_hidden: false, recent: vec!["beta".into()] };
+    let ctx = RankCtx { recent: vec!["beta".into()], ..Default::default() };
     let r = rank("", &hosts(), &[], &[], &ctx);
     let found: Vec<&Item> = r.iter().map(|x| &x.0).filter(|i| matches!(i, Item::Host(_))).collect();
     assert_eq!(found, [&Item::Host(1)], "only recent hosts on an empty query");
