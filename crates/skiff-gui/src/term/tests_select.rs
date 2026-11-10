@@ -178,10 +178,12 @@ fn copy_and_paste_through_clipboard() {
 fn wheel_scrolls_and_key_snaps_back() {
     let mut l = Live::new();
     l.tab.confirm_paste = false; // the multi-line paste is just test setup
-    let lines: String = (0..60).map(|i| format!("line{i}\r")).collect();
+    // The echo is complete once the unterminated last word is back: nothing
+    // arrives later to move the scrollback under the wheel.
+    let lines: String = (0..60).map(|i| format!("line{i}\r")).collect::<String>() + "paste-done";
     l.h.clipboard.text = Some(lines);
     l.frame(vec![], vec![Action::Paste]);
-    l.wait_for("line59");
+    l.wait_for("paste-done");
     l.frame(vec![Event::MouseMove(Point::new(400, 200)), Event::Wheel { dx: 0.0, dy: 48.0 }], vec![]);
     assert_eq!(l.tab.session.as_ref().unwrap().scroll_offset(), 3, "one notch = 3 lines back");
     l.h.style.zoom = 2.0; // the interface zoom leaves wheel lines alone
