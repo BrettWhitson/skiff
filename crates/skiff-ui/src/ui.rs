@@ -19,10 +19,11 @@ use crate::clipboard::Clipboard;
 use crate::color::Color;
 use crate::display::{DisplayList, Prim};
 use crate::geom::{Point, Rect, Size};
+use crate::icons::Icon;
 use crate::input::{CursorIcon, Event, Key, Modifiers, MouseButton};
 use crate::layout;
 use crate::shell::FrameCtx;
-use crate::style::Style;
+use crate::style::{Style, TextRole, tokens};
 use crate::text::cache::GlyphCache;
 use crate::text::layout as text_layout;
 use crate::text::{FontKind, Fonts};
@@ -196,9 +197,28 @@ pub struct UiState {
     region_focus: HashMap<Id, Id>,
     /// Focus moved by keyboard: the focus ring shows until the next click.
     focus_visible: bool,
+    /// A fixed time frames run at instead of the clock (tests).
+    clock: Option<Instant>,
+    /// When this state was created: animations measure phase from it.
+    epoch: Instant,
+    /// The modal scope open at the end of the last frame.
+    modal: Option<Id>,
+    /// Frames run so far (the current one included).
+    frames: u64,
 }
 
 impl UiState {
+    /// Runs following frames at time `t` (`None`: the real clock), so tests
+    /// can step animations and timers deterministically.
+    pub fn set_clock(&mut self, t: Option<Instant>) {
+        self.clock = t;
+    }
+
+    /// Focus was last moved by keyboard, so the focus ring is showing.
+    pub fn focus_visible(&self) -> bool {
+        self.focus_visible
+    }
+
     /// The focused widget.
     pub fn focused(&self) -> Option<Id> {
         self.focus
@@ -229,8 +249,44 @@ impl Default for UiState {
             drag: None,
             region_focus: HashMap::new(),
             focus_visible: false,
+            clock: None,
+            epoch: Instant::now(),
+            modal: None,
+            frames: 0,
         }
     }
+}
+
+/// The focus target after a Tab step inside a focus trap (a modal dialog):
+/// `mv` is `Some(forward)` for Tab / Shift+Tab. Focus outside `order` is
+/// pulled to `fallback` (if it is in `order`) or the first entry; steps
+/// wrap at both ends. `None` when `order` is empty.
+pub fn trap_focus(order: &[Id], focus: Option<Id>, mv: Option<bool>, fallback: Option<Id>) -> Option<Id> {
+    let n = order.len();
+    if n == 0 {
+        return None;
+    }
+    let cur = focus.and_then(|f| order.iter().position(|&o| o == f));
+    let pulled = fallback.filter(|f| order.contains(f)).unwrap_or(order[0]);
+    Some(match (cur, mv) {
+        (None, _) => pulled,
+        (Some(i), None) => order[i],
+        (Some(i), Some(true)) => order[(i + 1) % n],
+        (Some(i), Some(false)) => order[(i + n - 1) % n],
+    })
+}
+
+/// A tween kept in widget memory by `Ui::animate`.
+#[derive(Debug, Clone, Copy, Default)]
+struct Tween {
+    /// Value when the current transition started.
+    from: f32,
+    /// Where it is heading.
+    to: f32,
+    /// When the current transition started.
+    start: Option<Instant>,
+    /// The animation has run before (its first value is not animated).
+    seen: bool,
 }
 
 /// Longest gap between two clicks that still counts as a double click.
@@ -294,6 +350,13 @@ impl Painter<'_> {
             });
         }
         w
+    }
+
+    /// Draws `icon` filling the square `rect` (its smaller side is the size).
+    pub fn icon(&mut self, rect: Rect, icon: Icon, color: Color) {
+        if !rect.is_empty() && color.a > 0 {
+            self.list.push(Prim::Icon { rect, icon, color });
+        }
     }
 
     /// Clips the following primitives to `r` until the matching `pop_clip`.
@@ -370,6 +433,15 @@ pub struct Ui<'a> {
     region_stack: Vec<usize>,
     /// F6 / Shift+F6 (or `cycle_region`) seen: move to the next / previous region.
     region_move: Option<bool>,
+    /// This frame's time (the real clock or `UiState::set_clock`).
+    now: Instant,
+    /// Modal scopes open this frame, innermost last, each with its
+    /// focusable widgets in order (see `Ui::modal`).
+    modals: Vec<(Id, Vec<Id>)>,
+    /// How many of `modals` are being laid out right now.
+    modal_depth: usize,
+    /// The last modal laid out this frame (traps focus at the end).
+    trap: Option<(Id, Vec<Id>)>,
 }
 
 /// The style's zoom limited to 0.25..=4.
@@ -519,7 +591,13 @@ impl<'a> Ui<'a> {
         let input = Input { events, mouse: st.mouse, left_down: st.left, right_down: st.right, mods: st.mods };
         let window = Rect::new(0, 0, size.w, size.h);
         let dpi_scale = scale / clamped_zoom(&style);
+        let now = st.clock.unwrap_or_else(Instant::now);
+        st.frames += 1;
         Ui {
+            now,
+            modals: vec![],
+            modal_depth: 0,
+            trap: None,
             dpi_scale,
             st,
             list,
@@ -555,6 +633,30 @@ impl<'a> Ui<'a> {
     /// this frame's hits for the next one. Returns the repaint request, the
     /// cursor and the accessibility tree.
     fn finish(mut self) -> (Option<Duration>, CursorIcon, Option<Tree>) {
+        // A modal is open: Tab cycles within it and focus cannot leave it.
+        self.st.modal = self.trap.as_ref().map(|(m, _)| *m);
+        if let Some((mid, ids)) = self.trap.take() {
+            let mut mv = self.focus_move;
+            let owner = self.capture.is_none_or(|c| c == mid || ids.contains(&c));
+            for e in &self.input.events {
+                if let Event::KeyDown { key: Key::Tab, mods, .. } = e
+                    && owner
+                    && !mods.ctrl
+                    && !mods.alt
+                    && !mods.logo
+                {
+                    mv = Some(!mods.shift);
+                }
+            }
+            let fallback = self.st.region_focus.get(&mid).copied();
+            self.st.focus = trap_focus(&ids, self.st.focus, mv, fallback);
+            if let Some(f) = self.st.focus {
+                self.st.region_focus.insert(mid, f);
+            }
+            self.focus_move = None;
+            self.region_move = None;
+            self.input.events.retain(|e| !matches!(e, Event::KeyDown { key: Key::Tab | Key::F(6), .. }));
+        }
         // Tab / Shift+Tab nobody took moves focus.
         let mut mv = self.focus_move;
         let captured = self.capture.is_some();
@@ -668,18 +770,20 @@ impl<'a> Ui<'a> {
         self.region_move = Some(forward);
     }
 
-    /// A 2px accent ring just outside the focused widget, while focus is
-    /// being moved by keyboard. It is drawn on the widget's own layer, so an
-    /// open menu or popup covers the ring of a widget below it.
+    /// A 2px focus-colour ring 2px outside the focused widget, while focus
+    /// is being moved by keyboard (never after a mouse click; the
+    /// accessibility focus is reported either way). It is drawn on the
+    /// widget's own layer, so an open menu or popup covers the ring of a
+    /// widget below it.
     fn draw_focus_ring(&mut self) {
         let Some(f) = self.st.focus.filter(|_| self.st.focus_visible) else { return };
         let Some(h) = self.hits.iter().rev().find(|h| h.id == f).copied() else { return };
-        let w = self.px(2).max(2);
-        let gap = self.px(1).max(1);
+        let w = self.px(tokens::FOCUS_RING).max(2);
+        let gap = self.px(tokens::FOCUS_GAP).max(1);
         let r = h.rect;
         let ring = Rect::new(r.x - gap - w, r.y - gap - w, r.w + 2 * (gap + w), r.h + 2 * (gap + w));
         let radius = self.style.radius * self.scale + (gap + w) as f32;
-        let color = self.style.palette.accent;
+        let color = self.style.palette.focus;
         let list = if h.layer > 0 { &mut self.overlay_list } else { &mut *self.list };
         list.push(Prim::Border { rect: ring, color, width: w, radius });
     }
@@ -757,6 +861,11 @@ impl<'a> Ui<'a> {
         self.hits.push(Hit { id, rect: area, layer: self.layer, sense });
         if sense.focus {
             self.focusables.push(id);
+            if self.modal_depth > 0
+                && let Some((_, ids)) = self.modals.last_mut()
+            {
+                ids.push(id);
+            }
             if let Some(&ri) = self.region_stack.last() {
                 self.regions[ri].1.push(id);
             }
@@ -802,6 +911,75 @@ impl<'a> Ui<'a> {
     /// The UI font size in physical pixels.
     pub fn font_px(&self) -> f32 {
         self.style.font_px * self.scale
+    }
+
+    /// The font and physical size of a type-scale role.
+    pub fn text_style(&self, role: TextRole) -> (FontKind, f32) {
+        (role.font(), self.style.text_px(role) * self.scale)
+    }
+
+    /// This frame's time (fixed per frame; see `UiState::set_clock`).
+    pub fn now(&self) -> Instant {
+        self.now
+    }
+
+    /// The number of this frame (1 for the first); a widget drawn in frame
+    /// `n` and not `n - 1` has just (re)appeared.
+    pub fn frame_no(&self) -> u64 {
+        self.st.frames
+    }
+
+    /// Focus was last moved by keyboard, so the focus ring is showing
+    /// (widgets show keyboard-only affordances such as tooltips on focus).
+    pub fn focus_visible(&self) -> bool {
+        self.st.focus_visible
+    }
+
+    /// Progress (0..=1, eased out) of a transition that began at `start`
+    /// and lasts `ms`; 1 at once under reduced motion. Asks for repaints
+    /// until it completes.
+    pub fn ease_since(&mut self, start: Instant, ms: u64) -> f32 {
+        if self.style.reduce_motion {
+            return 1.0;
+        }
+        let k = (self.now.saturating_duration_since(start).as_secs_f32() * 1000.0 / ms.max(1) as f32).min(1.0);
+        if k < 1.0 {
+            self.request_repaint_in(Duration::from_millis(16));
+        }
+        1.0 - (1.0 - k).powi(3)
+    }
+
+    /// Animations are off (`Style::reduce_motion`).
+    pub fn reduce_motion(&self) -> bool {
+        self.style.reduce_motion
+    }
+
+    /// Time since the UI state was created, for looping animations.
+    pub fn anim_time(&self) -> Duration {
+        self.now.saturating_duration_since(self.st.epoch)
+    }
+
+    /// A value easing (ease-out cubic) towards `target` over `ms`
+    /// milliseconds whenever `target` changes, remembered under `id`.
+    /// The first value, and every value under reduced motion, is `target`
+    /// at once. Asks for repaints while moving.
+    pub fn animate(&mut self, id: Id, target: f32, ms: u64) -> f32 {
+        let (now, reduce) = (self.now, self.style.reduce_motion);
+        let mut t = *self.memory::<Tween>(id);
+        if reduce || !t.seen {
+            t = Tween { from: target, to: target, start: None, seen: true };
+        } else if t.to != target {
+            // Restart from wherever the running transition is now.
+            t = Tween { from: tween_value(&t, now, ms), to: target, start: Some(now), seen: true };
+        }
+        let v = tween_value(&t, now, ms);
+        if v == target {
+            t.start = None;
+        } else {
+            self.request_repaint_in(Duration::from_millis(16));
+        }
+        *self.memory::<Tween>(id) = t;
+        v
     }
 
     /// The monospace font size in physical pixels.
@@ -895,6 +1073,48 @@ impl<'a> Ui<'a> {
         self.painter().pop_clip();
         self.clip = saved;
         r
+    }
+
+    /// Runs `f` as a modal scope with id `id` (dialogs): the keyboard is
+    /// captured for it, Tab / Shift+Tab cycle only through the focusable
+    /// widgets registered inside, and focus that lands outside (a click on
+    /// the scrim, a widget that vanished) returns to where it last was in
+    /// the scope, or its first widget. Call it every frame while open,
+    /// usually inside `overlay`.
+    pub fn modal<R>(&mut self, id: Id, f: impl FnOnce(&mut Ui) -> R) -> R {
+        self.modals.push((id, vec![]));
+        self.modal_depth += 1;
+        self.capture_keyboard(id);
+        let r = f(self);
+        self.modal_depth -= 1;
+        self.trap = self.modals.pop();
+        r
+    }
+
+    /// Ends modal scope `id` this frame (it was just answered): no focus
+    /// trap at the end of the frame and the keyboard is released, so focus
+    /// can return to where it was before.
+    pub fn release_modal(&mut self, id: Id) {
+        if self.trap.as_ref().is_some_and(|(m, _)| *m == id) {
+            self.trap = None;
+        }
+        if self.next_capture == Some(id) {
+            self.next_capture = None;
+        }
+    }
+
+    /// A modal scope is open this frame (so far) or was last frame (its
+    /// keyboard capture): app shortcuts should stand aside.
+    pub fn modal_open(&self) -> bool {
+        self.modal_depth > 0 || self.trap.is_some() || self.st.modal.is_some()
+    }
+
+    /// Paints the standard overlay shadow (`tokens::SHADOW_*`) under
+    /// `rect` on the current layer; draw the opaque overlay right after.
+    pub fn elevate(&mut self, rect: Rect, radius: f32) {
+        let (dy, blur) = (self.px(tokens::SHADOW_Y), self.px(tokens::SHADOW_BLUR));
+        let color = Color::rgba(0, 0, 0, tokens::SHADOW_ALPHA);
+        self.painter().prim(Prim::Shadow { rect, radius, dy, blur, color });
     }
 
     /// Runs `f` on the overlay layer: drawn after everything else and hit
@@ -1005,9 +1225,10 @@ impl<'a> Ui<'a> {
         self.next_capture = Some(id);
     }
 
-    /// Whether widget `id` may act on keyboard input this frame.
+    /// Whether widget `id` may act on keyboard input this frame: nothing
+    /// owns the keyboard, `id` does, or `id` is inside the modal that does.
     pub fn keys_for(&self, id: Id) -> bool {
-        self.capture.is_none_or(|c| c == id)
+        self.capture.is_none_or(|c| c == id || self.modals.iter().any(|(m, ids)| *m == c && ids.contains(&id)))
     }
 
     /// Moves focus to the next widget in the Tab order at the end of the frame.
@@ -1040,6 +1261,14 @@ impl<'a> Ui<'a> {
     pub fn clipboard(&mut self) -> &mut dyn Clipboard {
         &mut *self.clipboard
     }
+}
+
+/// The value of tween `t` at `now`, eased out over `ms`.
+fn tween_value(t: &Tween, now: Instant, ms: u64) -> f32 {
+    let Some(start) = t.start else { return t.to };
+    let k = (now.saturating_duration_since(start).as_secs_f32() * 1000.0 / ms.max(1) as f32).min(1.0);
+    let e = 1.0 - (1.0 - k).powi(3);
+    if k >= 1.0 { t.to } else { t.from + (t.to - t.from) * e }
 }
 
 /// Offscreen driver for widget tests.
@@ -1144,6 +1373,11 @@ pub mod testing {
         /// The DPI scale frames run with.
         pub fn scale(&self) -> f32 {
             self.scale
+        }
+
+        /// Runs following frames at time `t` (`None`: the real clock).
+        pub fn set_clock(&mut self, t: Option<Instant>) {
+            self.state.set_clock(t);
         }
 
         /// Changes the window size for the following frames.
