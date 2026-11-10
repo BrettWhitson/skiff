@@ -257,7 +257,7 @@ reach the shell (a letter shortcut also works with Caps Lock on).
   selection.
 - **Snippets** are saved commands (`[[snippet]]` in the config, see above).
   They are listed in the GUI quick switcher ("Snippet: …") and under `Alt+S`
-  in the TUI. A snippet with `host` only appears in that host's terminals. A
+  in the TUI. In the GUI, Settings > Snippets adds, edits and deletes them. A snippet with `host` only appears in that host's terminals. A
   multi-line snippet goes through the paste warning.
 
 ## GUI (`termax-gui`)
@@ -276,6 +276,14 @@ cargo run -p termax-gui --release
   open a terminal or file transfer, forward a port, check its status, edit,
   duplicate, move it to another ssh config file, hide or delete it.
 - **Tabs** hold terminals, file transfers and settings. Drag a tab to move it.
+- **Split panes**: `Ctrl+Shift+D` splits a terminal tab side by side and
+  `Ctrl+Shift+E` one above the other (also in the terminal's right-click
+  menu); each pane is its own session to the same host, with its own find
+  bar, selection and paste prompt. Click a pane, press `F6`, or
+  `Ctrl+Shift+O` to move between panes; `Ctrl+Shift+X` closes the focused
+  pane (the last one closes the tab). Drag a divider to resize, or focus it
+  (`F6` reaches it) and use the arrow keys. Copy, paste, find, zoom and
+  snippets go to the focused pane, which has an accent outline.
 - **File transfer** shows two panes; each can be Local or any host, so
   remote↔remote copies work too. Drag files between panes (or from Explorer /
   Finder onto a pane), or select and press `F5` / `Copy →`. Transfers list
@@ -283,8 +291,11 @@ cargo run -p termax-gui --release
 - **Passwords** are asked for inline in the pane that needs them and are never
   stored. This uses `SSH_ASKPASS_REQUIRE`, so it needs OpenSSH 8.4 or newer;
   with an older `ssh`, use keys or an agent.
-- **Settings** (`Ctrl+Shift+,`) edits connections, theme, fonts, keybindings
-  and general options. Under Appearance, "Choose terminal font…" and "Choose
+- **Settings** (`Ctrl+Shift+,`) edits connections, theme, fonts, keybindings,
+  snippets and general options. The Snippets page lists the snippets; each has
+  a name (unique), a command (one input per line), an optional host it is
+  limited to and whether Enter is pressed after it. `Delete` (or the Delete
+  button) asks before removing one. Under Appearance, "Choose terminal font…" and "Choose
   interface font…" list the installed fonts (the terminal list shows only
   monospace ones; per-user installed fonts included), with a filter box;
   picking one applies it at once. Edits to `config.toml` made outside termax are picked
@@ -301,6 +312,9 @@ cargo run -p termax-gui --release
 | Zoom in / out / reset | `Ctrl+Shift+=` / `Ctrl+Shift+-` / `Ctrl+Shift+0` | `Cmd+=` / `Cmd+-` / `Cmd+0` |
 | Toggle sidebar | `Ctrl+Shift+B` | `Cmd+B` |
 | Settings | `Ctrl+Shift+,` | `Cmd+,` |
+| Split pane right / down | `Ctrl+Shift+D` / `Ctrl+Shift+E` | `Cmd+D` / `Cmd+Shift+D` |
+| Next pane | `Ctrl+Shift+O` (or `F6`) | `Cmd+]` (or `F6`) |
+| Close pane | `Ctrl+Shift+X` | `Cmd+Alt+W` |
 
 \* Plain `Ctrl`+letter belongs to the shell inside a terminal tab, so `Ctrl+K`
 opens the switcher only outside terminals.
@@ -320,7 +334,7 @@ cursor_blink = true                           # blinking terminal cursor
 # action = "chord" or "chord1, chord2"; actions: quick_switcher, new_tab,
 # close_tab, next_tab, prev_tab, copy, paste, find, zoom_in, zoom_out,
 # zoom_reset, toggle_sidebar, settings, ui_scale_up, ui_scale_down,
-# ui_scale_reset
+# ui_scale_reset, split_right, split_down, focus_next_pane, close_pane
 close_tab = "ctrl+shift+q"
 ```
 
@@ -367,7 +381,9 @@ state. Hosts are read as "web, online 23 ms, ops@10.0.0.5". A terminal tab is a
 terminal whose text the screen reader can read, and new output is announced
 politely: at most once every half second, the last 20 lines (2,000 characters),
 without the echo of what you typed. `announce_output = "focused"` limits that to
-the focused tab and `false` turns it off. A repeated message (the same
+the focused tab and `false` turns it off. The panes of a split tab are
+regions named "Pane 1 of 2: web" whose terminals are "Terminal: web, pane 1 of
+2"; dividers are splitters whose value is the first pane's share. A repeated message (the same
 warning twice, identical output) is read again. A host opens with the screen
 reader's default action (or Enter) on its row; a mouse click only selects it.
 The tree is only built while a screen reader is connected. Tested with the offscreen tree here; please report
@@ -377,7 +393,8 @@ anything a screen reader gets wrong.
 
 | Key | Does |
 |---|---|
-| `F6` / `Shift+F6` | Next / previous area: hosts, tabs, content (also out of a terminal) |
+| `F6` / `Shift+F6` | Next / previous area: hosts, tabs, content (also out of a terminal); each pane of a split terminal is its own area, then the pane dividers |
+| `←` `→` / `↑` `↓` on a pane divider | Move the divider (5% per press) |
 | `Tab` / `Shift+Tab` | Next / previous control within the area (wraps around) |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move in lists; `←` `→` switch tabs on the tab strip |
 | `Enter` | Open the selected row; `Enter` / `Space` press buttons and checkboxes, and edit a file pane's path |
@@ -426,4 +443,3 @@ password prompts, cancellable transfers, overwrite prompts and remappable keys.
 - The status check can't see past a jump host: for `ProxyJump` hosts it reports
   only whether the first jump host answers, and `ProxyCommand` hosts show "unknown".
 - Transfers can't be cancelled, and there's no overwrite confirmation.
-- Split panes (two sessions side by side in one tab) aren't supported.
