@@ -49,6 +49,12 @@ First release under the name Skiff (formerly termax).
 
 ### Added
 
+- **App icon.** A Skiff mark (a small boat whose sail is a `>` prompt) as
+  the GUI's window and taskbar icon, in the Windows `.exe` files of
+  `skiff-gui` and `skiff`, and as files under `assets/`: SVG, PNGs from 16
+  to 1024 px, `.ico`, `.icns`, and a Linux `.desktop` entry with hicolor
+  icons (see the README's Install section).
+
 - **TUI refresh.** Rounded borders with the focused panel in the accent
   color and titles (counts, sort, status) in the borders; a two-group
   footer (the tab's keys, then the keys after the prefix behind an

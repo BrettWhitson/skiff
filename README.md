@@ -45,6 +45,20 @@ cargo run -p skiff-ssh --release     # TUI
 cargo run -p skiff-gui --release     # GUI
 ```
 
+On Windows the `.exe` files carry the Skiff icon. On Linux, add a menu
+entry with the icon (per user; use `/usr/share` instead of
+`~/.local/share` for everyone):
+
+```bash
+cp -r assets/linux/icons ~/.local/share/
+cp assets/linux/skiff.desktop ~/.local/share/applications/
+gtk-update-icon-cache ~/.local/share/icons/hicolor 2>/dev/null || true
+```
+
+On macOS, `assets/icon/skiff.icns` is ready for an app bundle. The icon
+files are generated from one definition; after changing it run
+`cargo run -p skiff-ui --release --example gen_icons`.
+
 Skiff isn't on crates.io yet. Once it is, the TUI will install with
 `cargo install skiff-ssh` (the name `skiff` there belongs to an unrelated
 project).

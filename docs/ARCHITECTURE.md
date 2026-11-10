@@ -254,6 +254,15 @@ middle / start elision) are showcased in the toolkit demo
 only after keyboard navigation; `Style::reduce_motion` (from the OS
 animation setting) stops pulses and transitions.
 
+The app icon is drawn by `logo.rs` from a few shapes (a rounded tile, the
+`>` sail as a round-capped stroke, the hull as a curve), covered by signed
+distance at any size; up to 32 px a bolder variant on a 16-unit grid keeps
+edges on whole pixels. The GUI passes `logo::rgba(64)` to the shell as the
+window icon. `examples/gen_icons.rs` writes every file under `assets/`
+(SVG, PNGs, `.ico`, `.icns`, the Windows `skiff.res` and the Linux hicolor
+tree); the `skiff-gui` and `skiff` build scripts link `skiff.res` into the
+`.exe` on MSVC targets and do nothing elsewhere.
+
 ### GUI pages
 
 The Files, Forwards and Settings tabs are built from those components.
@@ -291,4 +300,5 @@ notices also go out through `SettingsState::take_notices`.
 | Toolkit core | `skiff-ui/src/{ui,shell,display,canvas,layout,input}.rs` |
 | Toolkit text, widgets, a11y | `skiff-ui/src/text/`, `skiff-ui/src/widgets/`, `skiff-ui/src/{a11y,a11y_kit}.rs` |
 | Toolkit design system | `skiff-ui/src/{style,icons,demo}.rs` |
+| App icon | `skiff-ui/src/logo.rs`, `skiff-ui/examples/gen_icons.rs`, `assets/`, `skiff-{gui,tui}/build.rs` |
 | Test server | `skiff-testserver/src/{server,sftp_fs,fixture}.rs` |
