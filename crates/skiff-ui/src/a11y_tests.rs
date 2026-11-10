@@ -1,3 +1,7 @@
+//! Tests that widgets publish the right accessibility nodes and react to
+//! screen-reader actions, plus keyboard focus movement (Tab, F6, Shift+F10)
+//! and the focus indicators drawn for it.
+
 use crate::a11y::{A11yAction, Role};
 use crate::geom::Rect;
 use crate::input::{Event, Key, Modifiers};
@@ -5,10 +9,13 @@ use crate::ui::Id;
 use crate::ui::testing::Harness;
 use crate::widgets::{TextInputOpts, button, checkbox, list_named, text_input};
 
+/// A key press with no modifiers.
 fn key(k: Key) -> Event {
     Event::KeyDown { key: k, mods: Modifiers::NONE, text: None }
 }
 
+/// Buttons, text inputs and checkboxes appear under the root with their
+/// roles and state, and Tab focus is reflected in the tree.
 #[test]
 fn button_and_input_nodes() {
     let mut h = Harness::new(400, 300, 1.0);
@@ -31,6 +38,7 @@ fn button_and_input_nodes() {
     assert_eq!(h.tree().focus, Some(Id::new("save")));
 }
 
+/// A password field is published as a password input and never exposes its value.
 #[test]
 fn password_value_hidden() {
     let mut h = Harness::new(400, 100, 1.0);
@@ -44,6 +52,7 @@ fn password_value_hidden() {
     assert_eq!(n.value, None);
 }
 
+/// Screen-reader Click presses a button and SetValue replaces a text input's text.
 #[test]
 fn a11y_click_and_set_value() {
     let mut h = Harness::new(400, 100, 1.0);
@@ -61,6 +70,7 @@ fn a11y_click_and_set_value() {
     assert_eq!(h.tree().find("Query").and_then(|n| n.value.clone()).as_deref(), Some("abc"));
 }
 
+/// A named list publishes each row as a list item with its selection state.
 #[test]
 fn list_items_named_and_selected() {
     let mut h = Harness::new(400, 300, 1.0);
@@ -76,10 +86,13 @@ fn list_items_named_and_selected() {
     assert_eq!(t.find("alpha").and_then(|n| n.selected), Some(false));
 }
 
+/// A key press with Shift held.
 fn shift(k: Key) -> Event {
     Event::KeyDown { key: k, mods: Modifiers { shift: true, ..Modifiers::NONE }, text: None }
 }
 
+/// Tab cycles within a region, F6 / Shift+F6 jump between regions, and a
+/// region restores the control that last had focus in it.
 #[test]
 fn f6_moves_between_regions_and_back() {
     let mut h = Harness::new(400, 300, 1.0);
@@ -109,6 +122,7 @@ fn f6_moves_between_regions_and_back() {
     assert_eq!(h.tree().find("Left").map(|n| n.role), Some(Role::Region));
 }
 
+/// A focused button gets a 2px accent ring drawn outside its bounds.
 #[test]
 fn focus_ring_drawn_for_focused_button() {
     use crate::display::Prim;
@@ -126,6 +140,7 @@ fn focus_ring_drawn_for_focused_button() {
     assert!(ring, "a 2px accent ring outside the button");
 }
 
+/// The selected row of a focused list shows a thin accent bar on its left edge.
 #[test]
 fn focused_list_row_has_left_bar() {
     use crate::display::Prim;
@@ -146,6 +161,7 @@ fn focused_list_row_has_left_bar() {
     assert!(bar(&h), "the focused row has a left bar");
 }
 
+/// The focus ring is painted before overlay content, so a menu covers it.
 #[test]
 fn focus_ring_stays_below_overlays() {
     use crate::display::Prim;
@@ -164,6 +180,8 @@ fn focus_ring_stays_below_overlays() {
     assert!(ring.expect("ring drawn") < menu.expect("menu drawn"), "the menu covers the ring");
 }
 
+/// Shift+F10 and the Menu key ask for the selected row's context menu at
+/// a point inside that row.
 #[test]
 fn shift_f10_reports_context_row() {
     use crate::widgets::{ListResponse, list};
@@ -181,6 +199,8 @@ fn shift_f10_reports_context_row() {
     assert_eq!(run(&mut h, vec![key(Key::ContextMenu)]).map(|c| c.0), Some(1));
 }
 
+/// The tab strip takes Tab focus, Left/Right switch tabs, and its icon-only
+/// buttons have accessible names.
 #[test]
 fn tab_strip_takes_focus_and_arrows() {
     use crate::widgets::{TabTitle, tabs};
@@ -200,6 +220,8 @@ fn tab_strip_takes_focus_and_arrows() {
     assert_eq!(run(&mut h, vec![key(Key::Left)]), 0);
 }
 
+/// A screen-reader Focus on a row leaves focus on the list itself, so arrow
+/// keys keep working.
 #[test]
 fn a11y_focus_on_row_keeps_list_focus() {
     let mut h = Harness::new(400, 300, 1.0);
@@ -218,6 +240,8 @@ fn a11y_focus_on_row_keeps_list_focus() {
     assert_eq!(run(&mut h, vec![key(Key::Down)]), Some(1), "arrows still move the list");
 }
 
+/// Repeating the same announcement toggles the invisible repeat mark so the
+/// text changes each time; new text is passed through unchanged.
 #[test]
 fn repeated_announcement_still_changes_the_text() {
     use crate::a11y::{REPEAT_MARK, fresh_announcement};

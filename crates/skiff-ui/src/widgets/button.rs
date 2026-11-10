@@ -1,3 +1,6 @@
+//! Push buttons, and the keyboard activation (Space/Enter) shared with
+//! other clickable widgets.
+
 use crate::a11y::Role;
 use crate::color::Color;
 use crate::geom::{Point, Rect};
@@ -35,6 +38,7 @@ pub fn button(ui: &mut Ui, id: Id, rect: Rect, text: &str) -> Response {
     let p = ui.style().palette;
     let radius = ui.style().radius * ui.scale();
     let [(_, rest), (_, hover), (_, pressed)] = button_backgrounds(&p);
+    // Pressed beats hovered beats resting; the focused state shows on the border.
     let bg = if r.pressed {
         pressed
     } else if r.hovered {
@@ -46,6 +50,7 @@ pub fn button(ui: &mut Ui, id: Id, rect: Rect, text: &str) -> Response {
     let bw = ui.px(1).max(1);
     let px = ui.font_px();
     let pad = ui.px(ui.style().padding);
+    // Elide the label to the inner width, then centre it in both directions.
     let shown = elide(ui, text, FontKind::Ui, px, rect.w - 2 * pad);
     let w = ui.measure(&shown, FontKind::Ui, px).ceil() as i32;
     let lh = ui.line_height(FontKind::Ui, px);

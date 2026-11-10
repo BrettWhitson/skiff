@@ -1,3 +1,7 @@
+//! Tests for the basic widgets: buttons, text inputs (editing, clipboard,
+//! passwords, Unicode), checkboxes and labels, driven through the test
+//! `Harness`.
+
 use std::cell::{Cell, RefCell};
 
 use super::*;
@@ -12,22 +16,27 @@ const CTRL: Modifiers = Modifiers { ctrl: true, shift: false, alt: false, logo: 
 const SHIFT: Modifiers = Modifiers { ctrl: false, shift: true, alt: false, logo: false };
 const NONE: Modifiers = Modifiers::NONE;
 
+/// A left click at `p` within one frame (move, press, release).
 fn click(p: Point) -> Vec<Event> {
     vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)]
 }
 
+/// A single key press with `mods`.
 fn key(k: Key, mods: Modifiers) -> Vec<Event> {
     vec![Event::KeyDown { key: k, mods, text: None }]
 }
 
+/// Typed text.
 fn text(s: &str) -> Vec<Event> {
     vec![Event::Text(s.into())]
 }
 
+/// Every string the last frame drew, in drawing order.
 fn texts(h: &Harness) -> Vec<String> {
     h.list().prims.iter().filter_map(|p| if let Prim::Text { text, .. } = p { Some(text.clone()) } else { None }).collect()
 }
 
+/// A button reports clicks from the mouse and from Space/Enter when focused.
 #[test]
 fn button_click_and_keyboard_activate() {
     let mut h = Harness::new(300, 100, 1.0);
@@ -46,6 +55,7 @@ fn button_click_and_keyboard_activate() {
     assert!(texts(&h).iter().any(|t| t == "OK"));
 }
 
+/// A text field's value and its last response flags, shared with the frame closure.
 struct Field {
     value: RefCell<String>,
     changed: Cell<bool>,
@@ -53,14 +63,17 @@ struct Field {
 }
 
 impl Field {
+    /// A field holding `v`, with no flags set.
     fn new(v: &str) -> Self {
         Field { value: RefCell::new(v.into()), changed: Cell::new(false), submitted: Cell::new(false) }
     }
+    /// The current value.
     fn get(&self) -> String {
         self.value.borrow().clone()
     }
 }
 
+/// A frame closure drawing `field` as a text input (masked when `password`).
 fn field_ui(field: &Field, password: bool) -> impl FnMut(&mut Ui) + '_ {
     move |ui: &mut Ui| {
         let r = text_input(
@@ -81,6 +94,8 @@ fn focused(h: &mut Harness, f: &mut impl FnMut(&mut Ui)) {
     h.frame(click(Point::new(15, 20)), f);
 }
 
+/// Typing inserts, Shift+Left selects and typing replaces the selection,
+/// Home/End move, Enter submits, and an unfocused field ignores typing.
 #[test]
 fn text_input_typing_and_selection() {
     let mut h = Harness::new(300, 100, 1.0);
@@ -112,6 +127,7 @@ fn text_input_typing_and_selection() {
     assert_eq!(field.get(), "xhelp!");
 }
 
+/// A click lands the cursor at the nearest character boundary.
 #[test]
 fn text_input_click_places_cursor() {
     let mut h = Harness::new(300, 100, 1.0);
@@ -125,6 +141,7 @@ fn text_input_click_places_cursor() {
     assert_eq!(field.get(), "abc_def");
 }
 
+/// Ctrl+A/C/X/V and paste events work, and pasted newlines become spaces.
 #[test]
 fn text_input_clipboard_cut_copy_paste() {
     let mut h = Harness::new(300, 100, 1.0);
@@ -141,6 +158,7 @@ fn text_input_clipboard_cut_copy_paste() {
     assert_eq!(field.get(), "hello world! line2", "newlines become spaces");
 }
 
+/// Character and word deletion and selection never split multibyte characters.
 #[test]
 fn text_input_unicode_editing() {
     let mut h = Harness::new(300, 100, 1.0);
@@ -170,6 +188,7 @@ fn text_input_unicode_editing() {
     assert_eq!(field.get(), "ö");
 }
 
+/// A password field draws only bullets and refuses copy and cut.
 #[test]
 fn password_input_never_paints_plaintext() {
     let mut h = Harness::new(300, 100, 1.0);
@@ -189,6 +208,7 @@ fn password_input_never_paints_plaintext() {
     assert_eq!(field.get(), "s3cret");
 }
 
+/// Clicking the box or its label, or pressing Space, toggles a checkbox.
 #[test]
 fn checkbox_toggles() {
     let mut h = Harness::new(300, 100, 1.0);
@@ -207,6 +227,7 @@ fn checkbox_toggles() {
     assert!(v.get(), "clicking the label toggles too");
 }
 
+/// A label too wide for its rect is elided with "…"; a short one is drawn whole.
 #[test]
 fn label_truncates_with_ellipsis() {
     let mut h = Harness::new(300, 100, 1.0);
@@ -217,6 +238,7 @@ fn label_truncates_with_ellipsis() {
     assert_eq!(texts(&h), vec!["abcd…".to_string(), "short".to_string()]);
 }
 
+/// Widgets in a zero-size window neither panic nor draw anything.
 #[test]
 fn zero_size_frame_is_noop() {
     let mut h = Harness::new(0, 0, 1.0);
@@ -235,6 +257,8 @@ fn zero_size_frame_is_noop() {
     assert!(h.render().pixels.is_empty());
 }
 
+/// A text field leaves Ctrl+Shift chords unhandled for the app, while
+/// consuming the keys it does handle.
 #[test]
 fn ctrl_shift_shortcuts_are_left_for_the_app() {
     let mut h = Harness::new(300, 100, 1.0);

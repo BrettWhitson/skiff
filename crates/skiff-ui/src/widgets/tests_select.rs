@@ -1,3 +1,6 @@
+//! Tests for the multi-select list and drag-and-drop, plus the dropdown,
+//! progress bar and modifier tracking.
+
 use std::cell::Cell;
 
 use super::*;
@@ -14,18 +17,22 @@ fn row(i: i32) -> Point {
     Point::new(50, i * 20 + 10)
 }
 
+/// A left click at `p` with `mods` held (sent as a modifiers event first).
 fn click_with(p: Point, mods: Modifiers) -> Vec<Event> {
     vec![Event::Modifiers(mods), Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)]
 }
 
+/// A key press with `mods`.
 fn keyd(k: Key, mods: Modifiers) -> Vec<Event> {
     vec![Event::KeyDown { key: k, mods, text: None }]
 }
 
+/// The selected rows in order.
 fn set(sel: &Selection) -> Vec<usize> {
     sel.iter().collect()
 }
 
+/// Runs one frame of a 200px-tall select list with `rows` rows and returns its response.
 fn run_list(h: &mut Harness, sel: &mut Selection, rows: usize, events: Vec<Event>) -> SelectListResponse {
     let mut out = SelectListResponse::default();
     h.frame(events, &mut |ui: &mut Ui| {
@@ -34,6 +41,8 @@ fn run_list(h: &mut Harness, sel: &mut Selection, rows: usize, events: Vec<Event
     out
 }
 
+/// Click selects one row, Ctrl-click toggles, and Shift-click selects the
+/// range from the anchor.
 #[test]
 fn click_ctrl_shift_selection() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -51,6 +60,8 @@ fn click_ctrl_shift_selection() {
     assert_eq!(set(&sel), vec![5, 7, 8]);
 }
 
+/// Shift+arrows extend the selection, a plain arrow collapses it, Ctrl+A
+/// selects all, and Enter activates the cursor row.
 #[test]
 fn shift_arrow_extends_and_ctrl_a_all() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -69,6 +80,7 @@ fn shift_arrow_extends_and_ctrl_a_all() {
     assert_eq!(r.activated, Some(4));
 }
 
+/// Clamping drops selected rows, anchor and cursor that no longer exist.
 #[test]
 fn selection_clamps_when_rows_shrink() {
     let mut sel = Selection::default();
@@ -80,6 +92,8 @@ fn selection_clamps_when_rows_shrink() {
     assert!(sel.anchor.is_none_or(|a| a < 5));
 }
 
+/// Pressing a row in a multi-selection keeps it (a drag may follow); a
+/// release without dragging collapses to that row.
 #[test]
 fn pressing_selected_row_keeps_multi_selection_until_release() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -116,6 +130,8 @@ fn dnd_frame(h: &mut Harness, sel: &mut Selection, events: Vec<Event>, got: &mut
     started
 }
 
+/// Moving past the threshold with a row pressed starts one drag, and
+/// releasing over a drop target delivers the selected rows to it alone.
 #[test]
 fn drag_from_selected_row_delivers_payload() {
     let mut h = Harness::new(500, 300, 1.0);
@@ -134,6 +150,7 @@ fn drag_from_selected_row_delivers_payload() {
     assert!(!h.state.dragging());
 }
 
+/// Escape cancels a drag, so the later release drops nothing.
 #[test]
 fn escape_cancels_drag() {
     let mut h = Harness::new(500, 300, 1.0);
@@ -148,6 +165,7 @@ fn escape_cancels_drag() {
     assert_eq!(got, [None, None]);
 }
 
+/// Clicking a dropdown opens its menu and clicking an item selects it.
 #[test]
 fn dropdown_changes_selection() {
     let mut h = Harness::new(400, 300, 1.0);
@@ -167,6 +185,7 @@ fn dropdown_changes_selection() {
     assert!(changed);
 }
 
+/// A select list draws only the visible rows of a huge list.
 #[test]
 fn select_list_virtualizes() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -178,6 +197,7 @@ fn select_list_virtualizes() {
     assert!(calls.get() <= 11, "{} rows drawn", calls.get());
 }
 
+/// A 50% bar is accent-filled on its left half only.
 #[test]
 fn progress_bar_fills_fraction() {
     let mut h = Harness::new(200, 40, 1.0);
@@ -188,6 +208,7 @@ fn progress_bar_fills_fraction() {
     assert_ne!(c.pixel(150, 15), accent);
 }
 
+/// A modifiers event updates the modifier state widgets read from input.
 #[test]
 fn modifiers_event_updates_input_mods() {
     let mut h = Harness::new(100, 100, 1.0);

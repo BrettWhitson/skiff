@@ -8,35 +8,46 @@ use crate::input::{Event, Key, Modifiers};
 use crate::text::FontKind;
 use crate::ui::{Id, Sense, Ui};
 
+/// One entry in a context menu.
 #[derive(Debug, Clone, Copy)]
 pub struct MenuItem<'a> {
     pub label: &'a str,
+    /// Shortcut text drawn right-aligned (display only; it is not bound here).
     pub shortcut: Option<&'a str>,
+    /// Disabled items are drawn muted and cannot be hovered or chosen.
     pub enabled: bool,
 }
 
+/// A menu's state, kept in widget memory under the menu's id.
 #[derive(Debug, Clone, Copy, Default)]
 struct MenuState {
     open: bool,
+    /// The requested top-left corner (the menu flips to stay on screen).
     at: Point,
+    /// The highlighted item (mouse hover or arrow keys).
     hover: Option<usize>,
     /// Opened this frame: the click that opened it must not close it.
     fresh: bool,
 }
 
+/// Opens menu `id` at `at` and routes the keyboard to it.
 pub fn open_context_menu(ui: &mut Ui, id: Id, at: Point) {
     *ui.memory::<MenuState>(id) = MenuState { open: true, at, hover: None, fresh: true };
     ui.capture_keyboard(id);
 }
 
+/// Closes menu `id` without a choice.
 pub fn close_context_menu(ui: &mut Ui, id: Id) {
     ui.memory::<MenuState>(id).open = false;
 }
 
+/// Whether menu `id` is currently open.
 pub fn menu_is_open(ui: &mut Ui, id: Id) -> bool {
     ui.memory::<MenuState>(id).open
 }
 
+/// The next enabled item after `from` (or before it, going backwards),
+/// wrapping around; `None` when no item is enabled.
 fn step(items: &[MenuItem], from: Option<usize>, forward: bool) -> Option<usize> {
     let n = items.len();
     if n == 0 {
@@ -61,6 +72,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     let px = ui.font_px();
     let row_h = ui.px(26);
     let pad = ui.px(10);
+    // Wide enough for the widest label plus its shortcut, at least 160px.
     let mut w = ui.px(160);
     for it in items {
         let lw = ui.measure(it.label, FontKind::Ui, px).ceil() as i32;
@@ -69,6 +81,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     }
     let h = row_h * items.len() as i32;
     let win = ui.window_rect();
+    // Flip left/up when the menu would run off the right/bottom of the window.
     let x = if st.at.x + w > win.right() { (st.at.x - w).max(0) } else { st.at.x };
     let y = if st.at.y + h > win.bottom() { (st.at.y - h).max(0) } else { st.at.y };
     let menu = Rect::new(x, y, w, h);
@@ -77,6 +90,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
         st.hover = None;
     }
     let mut chosen = None;
+    // Keyboard: Escape closes, Up/Down move the highlight, Enter picks it.
     let mut close = false;
     if ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
         close = true;
@@ -91,6 +105,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
         chosen = st.hover.filter(|&i| items.get(i).is_some_and(|it| it.enabled));
     }
     let mouse_moved = ui.input().events.iter().any(|e| matches!(e, Event::MouseMove(_)));
+    // A click outside closes it, except the click that just opened it.
     if !st.fresh && ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(_, p) if !menu.contains(*p))) {
         close = true;
     }
@@ -100,6 +115,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     let lh = ui.line_height(FontKind::Ui, px);
     ui.overlay(|ui| {
         ui.a11y_group(id.with("a11y"), Role::Menu, "", |ui| {
+            // The whole menu claims hover so widgets beneath it are not hot.
             ui.interact(id, menu, Sense::hover());
             let focus = st.hover.map_or(id.with("a11y"), |h| id.with(h));
             ui.a11y_focus(focus);
@@ -115,6 +131,8 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
                 let row = Rect::new(menu.x, menu.y + i as i32 * row_h, menu.w, row_h);
                 let sense = if it.enabled { Sense::click() } else { Sense::hover() };
                 let rr = ui.interact(id.with(i), row, sense);
+                // Hover follows the mouse only when it moves, so the keyboard highlight
+                // is not stolen by a pointer resting over the menu.
                 if it.enabled && rr.hovered && mouse_moved {
                     st.hover = Some(i);
                 }
@@ -139,6 +157,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
         })
     });
 
+    // Keep the keyboard while open; closing releases it.
     st.fresh = false;
     if chosen.is_some() || close {
         st.open = false;
@@ -149,11 +168,13 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     chosen
 }
 
+/// The drop shadow rect: the menu offset down-right by 2-6px.
 fn ui_shadow(r: Rect) -> Rect {
     let d = (r.h / 40).clamp(2, 6);
     Rect::new(r.x + d, r.y + d, r.w, r.h)
 }
 
+/// How far the hover highlight is inset inside its row.
 fn ui_inset(r: Rect) -> i32 {
     (r.h / 12).max(1)
 }

@@ -1,5 +1,6 @@
-//! Converts the toolkit's accessibility tree into AccessKit updates, and
-//! AccessKit action requests back into toolkit events.
+//! Converts the toolkit's accessibility tree (`a11y`) into AccessKit
+//! updates, and AccessKit action requests back into toolkit events. The
+//! shell calls these when talking to the platform adapter.
 
 use accesskit::{Action, ActionData, ActionRequest, Live, NodeId, Toggled, TreeId, TreeInfo, TreeUpdate};
 
@@ -7,6 +8,7 @@ use crate::a11y::{A11yAction, Node, Role, Tree};
 use crate::input::Event;
 use crate::ui::Id;
 
+/// The AccessKit role for a toolkit role.
 fn role(r: Role) -> accesskit::Role {
     use accesskit::Role as K;
     match r {
@@ -33,6 +35,8 @@ fn role(r: Role) -> accesskit::Role {
     }
 }
 
+/// Builds the AccessKit node for `n`: label, value, bounds, states and the
+/// actions its role supports. An unnamed window root takes `root_title`.
 fn node(n: &Node, root_title: &str) -> accesskit::Node {
     let mut k = accesskit::Node::new(role(n.role));
     let name = if n.role == Role::Window && n.name.is_empty() { root_title } else { &n.name };
@@ -42,6 +46,7 @@ fn node(n: &Node, root_title: &str) -> accesskit::Node {
     if let Some(v) = &n.value {
         k.set_value(v.as_str());
     }
+    // AccessKit wants edges (x0,y0)-(x1,y1) rather than origin and size.
     let b = n.bounds;
     k.set_bounds(accesskit::Rect { x0: b.x as f64, y0: b.y as f64, x1: b.right() as f64, y1: b.bottom() as f64 });
     if let Some(s) = n.selected {
@@ -62,6 +67,7 @@ fn node(n: &Node, root_title: &str) -> accesskit::Node {
     if !n.children.is_empty() {
         k.set_children(n.children.iter().map(|c| NodeId(c.0)).collect::<Vec<_>>());
     }
+    // Advertise only the actions the widget for this role actually handles.
     match n.role {
         Role::Button | Role::CheckBox | Role::ComboBox => {
             k.add_action(Action::Click);
@@ -116,6 +122,8 @@ mod tests {
     use super::*;
     use crate::geom::Rect;
 
+    /// Roles, labels, children, selection, bounds and focus survive the
+    /// conversion, and an unnamed root takes the window title.
     #[test]
     fn to_update_maps_roles_and_focus() {
         let mut root = Node::new(crate::a11y::ROOT, Role::Window, "");
@@ -138,6 +146,8 @@ mod tests {
         assert_eq!(get(12).bounds().map(|r| r.y1), Some(40.0));
     }
 
+    /// Supported requests map to `Event::A11y` for the target; unsupported
+    /// ones are dropped.
     #[test]
     fn action_requests_become_events() {
         let req = |action, data| ActionRequest { action, target_tree: TreeId::ROOT, target_node: NodeId(7), data };

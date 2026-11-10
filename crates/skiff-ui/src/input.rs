@@ -1,4 +1,5 @@
-//! The toolkit's own input types (positions in physical pixels).
+//! The toolkit's own input types (positions in physical pixels). The shell
+//! translates winit events into these; widgets only ever see `Event`.
 
 use std::path::PathBuf;
 
@@ -8,10 +9,12 @@ use crate::a11y::A11yAction;
 use crate::geom::Point;
 use crate::ui::Id;
 
+/// A key, independent of keyboard layout for named keys.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
     /// A printable key, lower-cased (`'a'`, `'1'`, `'/'`).
     Char(char),
+    /// A function key, `F(1)` to `F(12)`.
     F(u8),
     Left,
     Right,
@@ -30,18 +33,22 @@ pub enum Key {
     Space,
     /// The Menu / Application key.
     ContextMenu,
+    /// A key with no dedicated variant: multi-character logical text.
     Other(String),
 }
 
+/// Which modifier keys are held.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Modifiers {
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
+    /// The Windows / Super / Command key.
     pub logo: bool,
 }
 
 impl Modifiers {
+    /// No modifiers held.
     pub const NONE: Modifiers = Modifiers { ctrl: false, shift: false, alt: false, logo: false };
 
     /// The app-shortcut modifier set from the spec: Ctrl+Shift on
@@ -51,6 +58,7 @@ impl Modifiers {
     }
 }
 
+/// A mouse button; `Other` carries the platform's button number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
@@ -73,19 +81,23 @@ pub enum CursorIcon {
     Wait,
 }
 
+/// One input event delivered to a frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    /// A key was pressed (or auto-repeated); `text` is what it would type, if anything.
     KeyDown {
         key: Key,
         mods: Modifiers,
         text: Option<String>,
     },
+    /// A key was released.
     KeyUp {
         key: Key,
         mods: Modifiers,
     },
     /// Text to insert (typed characters, IME commits).
     Text(String),
+    /// The cursor moved to this position.
     MouseMove(Point),
     MouseDown(MouseButton, Point),
     MouseUp(MouseButton, Point),
@@ -94,9 +106,13 @@ pub enum Event {
         dx: f32,
         dy: f32,
     },
+    /// Clipboard text to insert.
     Paste(String),
+    /// A file was dragged onto the window and dropped.
     FileDropped(PathBuf),
+    /// The window lost keyboard focus.
     FocusLost,
+    /// The window gained keyboard focus.
     FocusGained,
     /// The held modifier keys changed (needed for Ctrl/Shift-click).
     Modifiers(Modifiers),
@@ -107,6 +123,8 @@ pub enum Event {
     },
 }
 
+/// The toolkit key for a winit named key; `None` for keys the toolkit
+/// ignores (bare modifiers, media keys and so on).
 pub fn map_named_key(k: &NamedKey) -> Option<Key> {
     use NamedKey as N;
     Some(match k {
@@ -156,6 +174,8 @@ mod tests {
     use super::*;
     use winit::keyboard::NamedKey;
 
+    /// Named keys map to their variants, character keys are lower-cased, and
+    /// multi-character text becomes `Key::Other`.
     #[test]
     fn winit_key_mapping() {
         assert_eq!(map_named_key(&NamedKey::Enter), Some(Key::Enter));

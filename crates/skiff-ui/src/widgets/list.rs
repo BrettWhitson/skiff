@@ -8,8 +8,10 @@ use crate::ui::{Id, Response, Sense, Ui};
 
 use super::scroll::{scroll_area, scroll_into_view};
 
+/// What happened to a list this frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ListResponse {
+    /// The list's own interaction (focus, hover) as a whole.
     pub response: Response,
     /// Enter or double-click on this row.
     pub activated: Option<usize>,
@@ -52,10 +54,13 @@ pub fn list_named(
     let rh = ui.px(row_h).max(1);
     let sid = id.with("scroll");
     let mut out = ListResponse { response: r, ..Default::default() };
+    // Keep the selection valid when the row count shrinks.
     if selected.is_some_and(|s| s >= rows) {
         *selected = rows.checked_sub(1);
     }
 
+    // Keyboard: arrows, Page Up/Down, Home/End move the selection; Enter
+    // activates; Shift+F10 or the Menu key ask for the selected row's menu.
     let mut menu_key = false;
     if r.focused && rows > 0 && ui.keys_for(id) {
         let page = (rect.h / rh).max(1) as usize;
@@ -63,6 +68,7 @@ pub fn list_named(
         let mut moved = false;
         for e in &events {
             if let Event::KeyDown { key: Key::F(10), mods, .. } | Event::KeyDown { key: Key::ContextMenu, mods, .. } = e {
+                // Shift+F10 or Menu, with no Ctrl/Alt/Logo; plain F10 is left to others.
                 let f10 = matches!(e, Event::KeyDown { key: Key::F(10), .. });
                 if !mods.ctrl && !mods.alt && !mods.logo && (mods.shift || !f10) {
                     menu_key = true;
@@ -92,15 +98,19 @@ pub fn list_named(
                 moved = true;
             }
         }
+        // Scroll so the newly selected row is fully visible.
         if moved && let Some(s) = *selected {
             let top = s as i32 * rh;
             scroll_into_view(ui, sid, top, top + rh, rect.h);
         }
     }
 
+    // Content height saturates at i32::MAX for huge row counts.
     let content_h = (rows as i64 * rh as i64).min(i32::MAX as i64) as i32;
     ui.a11y_group(id, Role::List, name, |ui| {
         scroll_area(ui, sid, rect, content_h, |ui, vis, off| {
+            // Only the rows overlapping the viewport: from the one at the scroll
+            // offset to the last one partly visible.
             let first = (off / rh) as usize;
             let last = (((off + vis.h + rh - 1) / rh) as usize).min(rows);
             let p = ui.style().palette;
@@ -108,6 +118,7 @@ pub fn list_named(
                 let row = Rect::new(vis.x, vis.y + i as i32 * rh - off, vis.w, rh);
                 let rid = id.with(i);
                 let rr = ui.interact(rid, row, Sense::click());
+                // A screen-reader click selects and activates; the mouse only selects.
                 if ui.a11y_clicked(rid) {
                     *selected = Some(i);
                     ui.request_focus(id);
@@ -125,6 +136,8 @@ pub fn list_named(
                     out.context = Some((i, ui.input().mouse));
                 }
                 let is_sel = *selected == Some(i);
+                // Rows are not focus targets themselves; the selected row stands in for
+                // the list's focus in the accessibility tree.
                 if ui.a11y_on() {
                     let nm = row_name(i);
                     if let Some(n) = ui.a11y_node(rid, Role::ListItem, &nm) {
@@ -134,9 +147,11 @@ pub fn list_named(
                         ui.a11y_focus_child(id, rid);
                     }
                 }
+                // A keyboard-opened menu appears just below the selected row.
                 if is_sel && menu_key {
                     out.context = Some((i, Point::new(row.x + ui.px(8), row.bottom())));
                 }
+                // Selection is dimmed while the list does not have focus.
                 if is_sel {
                     let c = if ui.has_focus(id) { p.selection } else { p.selection.mix(p.surface, 0.5) };
                     ui.painter().rect(row, c, 0.0);

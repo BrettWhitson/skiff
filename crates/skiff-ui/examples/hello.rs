@@ -1,4 +1,5 @@
 //! Smallest skiff-ui app: a window showing its size and the last event.
+//! Draws straight into the display list, without `Ui` or widgets.
 //! `cargo run -p skiff-ui --example hello`
 
 use skiff_ui::color::Color;
@@ -8,19 +9,24 @@ use skiff_ui::shell::{App, FrameCtx, WindowOptions, run};
 use skiff_ui::text::FontKind;
 use skiff_ui::text::layout::{line_height, measure};
 
+/// The example app's state.
 #[derive(Default)]
 struct Hello {
+    /// Debug text of the last event received.
     last: String,
+    /// Frames run so far.
     frames: u64,
 }
 
 impl App for Hello {
+    /// Draws a card with the window size, scale, frame count and last event.
     fn frame(&mut self, ctx: &mut FrameCtx) {
         self.frames += 1;
         if let Some(e) = ctx.events.last() {
             self.last = format!("{e:?}");
         }
         ctx.background = Color::hex(0x1e1f29);
+        // Logical sizes times the DPI scale give physical pixels.
         let s = ctx.scale;
         let px = 16.0 * s;
         let pad = (24.0 * s) as i32;
@@ -32,6 +38,7 @@ impl App for Hello {
             format!("skiff-ui · {}×{} px · scale {:.2} · frame {}", ctx.size.w, ctx.size.h, ctx.scale, self.frames),
             format!("last event: {}", self.last),
         ];
+        // One clipped text prim per line; the bounds come from measuring the text.
         for (i, text) in lines.iter().enumerate() {
             let origin = Point::new(card.x + pad / 2, card.y + pad / 2 + i as i32 * (lh + 6));
             let font = if i == 0 { FontKind::Ui } else { FontKind::Mono };
@@ -50,6 +57,7 @@ impl App for Hello {
     }
 }
 
+/// Loads system fonts and opens the window.
 fn main() -> anyhow::Result<()> {
     let fonts = skiff_ui::text::Fonts::load(None, None)?;
     run(Hello::default(), WindowOptions { title: "skiff-ui hello".into(), app_id: "skiff-ui-hello".into(), size: (720, 240), fonts })

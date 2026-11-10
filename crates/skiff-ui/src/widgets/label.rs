@@ -1,3 +1,6 @@
+//! Single-line text labels and the eliding ("…") used by every widget that
+//! draws text into a fixed width.
+
 use crate::color::Color;
 use crate::geom::{Point, Rect};
 use crate::text::FontKind;
@@ -20,6 +23,7 @@ pub fn elide(ui: &mut Ui, text: &str, font: FontKind, px: f32, max_w: i32) -> St
             hi = mid - 1;
         }
     }
+    // Not even the ellipsis fits: draw nothing.
     if lo == 0 && ui.measure("…", font, px) > max_w as f32 {
         return String::new();
     }
@@ -27,6 +31,7 @@ pub fn elide(ui: &mut Ui, text: &str, font: FontKind, px: f32, max_w: i32) -> St
 }
 
 /// Draws text with `font`, vertically centred in `rect`, elided to fit.
+/// Mono text uses the terminal font size. Returns the drawn width.
 pub fn label_with(ui: &mut Ui, rect: Rect, text: &str, font: FontKind, color: Color) -> i32 {
     let px = if font == FontKind::Mono { ui.mono_px() } else { ui.font_px() };
     let shown = elide(ui, text, font, px, rect.w);
@@ -37,6 +42,7 @@ pub fn label_with(ui: &mut Ui, rect: Rect, text: &str, font: FontKind, color: Co
 
 /// A single line of UI text, vertically centred in `rect` and elided
 /// with "…" when too wide. `color` defaults to the palette foreground.
+/// Returns the drawn width in pixels.
 pub fn label(ui: &mut Ui, rect: Rect, text: &str, color: Option<Color>) -> i32 {
     let c = color.unwrap_or(ui.style().palette.fg);
     label_with(ui, rect, text, FontKind::Ui, c)

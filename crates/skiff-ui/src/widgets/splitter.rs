@@ -1,4 +1,6 @@
 //! Horizontal splitter: a draggable divider between two panes.
+//! Draggable only with the mouse; the stored width is in logical pixels so
+//! it survives scale changes.
 
 use crate::geom::Rect;
 use crate::input::{CursorIcon, Event, MouseButton};
@@ -10,6 +12,7 @@ use crate::ui::{Id, Sense, Ui};
 pub fn splitter_h(ui: &mut Ui, id: Id, rect: Rect, first: &mut f32, min: f32, max: f32) -> (Rect, Rect) {
     let s = ui.scale();
     let gap = ui.px(5).max(1);
+    // The clamp range shrinks to fit the room; `min` gives way when even it does not fit.
     let room = ((rect.w - gap) as f32 / s).max(0.0);
     let hi = max.min(room).max(min.min(room));
     let lo = min.min(hi);
@@ -17,11 +20,14 @@ pub fn splitter_h(ui: &mut Ui, id: Id, rect: Rect, first: &mut f32, min: f32, ma
     // narrow or minimized window never loses the user's width.
     let mut w = (first.clamp(lo, hi) * s).round() as i32;
 
+    // The grab handle is a `gap`-wide strip at the divider.
     let handle = Rect::new(rect.x + w, rect.y, gap, rect.h);
     let r = ui.interact(id, handle, Sense::drag());
     let mouse = ui.input().mouse;
     let down_now = ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(MouseButton::Left, _)));
     if r.pressed {
+        // On the press frame remember where in the handle the mouse grabbed it,
+        // then keep that offset while dragging so the divider does not jump.
         if down_now {
             *ui.memory::<i32>(id) = mouse.x - handle.x;
         } else {
@@ -35,6 +41,7 @@ pub fn splitter_h(ui: &mut Ui, id: Id, rect: Rect, first: &mut f32, min: f32, ma
         ui.set_cursor_icon(CursorIcon::ResizeH);
     }
     let p = ui.style().palette;
+    // Draw a 1px line centred in the handle, highlighted while hovered or dragged.
     let line = ui.px(1).max(1);
     let c = if r.hovered || r.pressed { p.accent } else { p.border };
     ui.painter().rect(Rect::new(rect.x + w + (gap - line) / 2, rect.y, line, rect.h), c, 0.0);

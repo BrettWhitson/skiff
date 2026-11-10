@@ -1,3 +1,6 @@
+//! Tests for container widgets: scroll areas, the virtualized list, tabs,
+//! the splitter and context menus, plus a full-window render timing check.
+
 use std::cell::Cell;
 use std::time::Instant;
 
@@ -9,22 +12,27 @@ use crate::ui::{Id, Ui};
 
 const NONE: Modifiers = Modifiers::NONE;
 
+/// A left click at `p` within one frame.
 fn click(p: Point) -> Vec<Event> {
     vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)]
 }
 
+/// A right click at `p` within one frame.
 fn right_click(p: Point) -> Vec<Event> {
     vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Right, p), Event::MouseUp(MouseButton::Right, p)]
 }
 
+/// A key press without modifiers.
 fn key(k: Key) -> Vec<Event> {
     vec![Event::KeyDown { key: k, mods: NONE, text: None }]
 }
 
+/// A vertical wheel scroll with the mouse inside the test areas.
 fn wheel(dy: f32) -> Vec<Event> {
     vec![Event::MouseMove(Point::new(50, 50)), Event::Wheel { dx: 0.0, dy }]
 }
 
+/// The wheel scrolls and the offset clamps to the content; short content never scrolls.
 #[test]
 fn scroll_wheel_and_clamp() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -51,6 +59,7 @@ fn scroll_wheel_and_clamp() {
     assert_eq!(off.get(), 0);
 }
 
+/// Dragging the scrollbar thumb scrolls proportionally faster than the drag.
 #[test]
 fn scrollbar_drag_moves_content() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -67,6 +76,8 @@ fn scrollbar_drag_moves_content() {
     assert!(off.get() > 300, "offset {}", off.get());
 }
 
+/// A frame closure for a 100,000-row list recording how many rows were drawn,
+/// the selection, and the last activated and context-clicked rows.
 fn list_ui<'a>(
     calls: &'a Cell<usize>,
     sel: &'a Cell<Option<usize>>,
@@ -90,6 +101,7 @@ fn list_ui<'a>(
     }
 }
 
+/// Only visible rows are drawn, at any scroll position, so frames stay fast.
 #[test]
 fn list_virtualizes_rows() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -106,6 +118,8 @@ fn list_virtualizes_rows() {
     assert!(t.elapsed().as_millis() < 500, "frames should not depend on row count");
 }
 
+/// Click, arrows, Page Down, Home/End, Enter, right-click and double-click
+/// select and activate the expected rows, scrolling the selection into view.
 #[test]
 fn list_keyboard_navigation() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -139,6 +153,8 @@ fn list_keyboard_navigation() {
     assert_eq!(act.get(), Some(4));
 }
 
+/// Tabs activate on click, reorder by dragging, close via their close
+/// button (only when closable), and report the plus button.
 #[test]
 fn tabs_close_and_reorder() {
     let mut h = Harness::new(600, 100, 1.0);
@@ -182,6 +198,7 @@ fn tabs_close_and_reorder() {
     assert!(last.take().plus_clicked);
 }
 
+/// Dragging the splitter clamps to min/max, and the width stays logical on HiDPI.
 #[test]
 fn splitter_drag_respects_min_max() {
     let mut h = Harness::new(800, 400, 1.0);
@@ -211,6 +228,8 @@ fn splitter_drag_respects_min_max() {
     assert_eq!(panes.get().0.w, 300);
 }
 
+/// Menus choose by keyboard (skipping disabled items) or click, swallow
+/// clicks meant for widgets below, and close on Escape or an outside click.
 #[test]
 fn context_menu_select_and_dismiss() {
     let mut h = Harness::new(400, 400, 1.0);
@@ -270,12 +289,14 @@ fn context_menu_select_and_dismiss() {
     assert_eq!(chosen.get(), None);
 }
 
+/// Runs an empty frame and reports whether menu `id` is open.
 fn is_menu_open(h: &mut Harness, id: Id) -> bool {
     let open = Cell::new(false);
     h.frame(vec![], &mut |ui: &mut Ui| open.set(menu_is_open(ui, id)));
     open.get()
 }
 
+/// A full 1920x1080 repaint of the demo stays under 50ms.
 #[test]
 fn full_frame_render_time_1080p() {
     let mut h = Harness::new(1920, 1080, 1.0);
@@ -291,6 +312,7 @@ fn full_frame_render_time_1080p() {
     assert!(ms < 50.0, "full repaint took {ms:.1} ms");
 }
 
+/// While a context menu is open its keys do not also move or activate the list.
 #[test]
 fn open_menu_captures_keys_from_focused_list() {
     let mut h = Harness::new(400, 400, 1.0);
@@ -327,6 +349,7 @@ fn open_menu_captures_keys_from_focused_list() {
     assert_eq!(sel.get(), Some(3));
 }
 
+/// A highlight left past the end of a shrunken item list is dropped, not chosen.
 #[test]
 fn menu_items_shrinking_while_open_does_not_panic() {
     let mut h = Harness::new(400, 400, 1.0);
@@ -348,6 +371,7 @@ fn menu_items_shrinking_while_open_does_not_panic() {
     assert_eq!(r.get(), None);
 }
 
+/// Shrinking the window (even to zero) does not change the stored splitter width.
 #[test]
 fn splitter_width_survives_shrink_and_restore() {
     let mut h = Harness::new(1000, 400, 1.0);

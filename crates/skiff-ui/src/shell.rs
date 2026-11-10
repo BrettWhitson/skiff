@@ -26,20 +26,27 @@ use crate::text::cache::GlyphCache;
 
 /// Everything an app gets (and can ask for) during one frame.
 pub struct FrameCtx<'a> {
+    /// Input since the last frame, in toolkit form.
     pub events: Vec<Event>,
     /// Window size in physical pixels.
     pub size: Size,
+    /// Physical pixels per logical pixel (the window's DPI factor).
     pub scale: f32,
+    /// Where the frame's drawing goes; the shell renders it afterwards.
     pub list: &'a mut DisplayList,
     pub fonts: &'a Fonts,
+    /// Rasterized glyphs, shared across frames.
     pub cache: &'a mut GlyphCache,
     pub clipboard: &'a mut dyn Clipboard,
     /// Ask for another frame after this long (animations, caret blink).
     pub request_redraw_in: Option<Duration>,
+    /// Set to change the window title.
     pub title: Option<String>,
+    /// Set to close the window and end the event loop.
     pub quit: bool,
     /// Background painted beneath the display list.
     pub background: Color,
+    /// Mouse cursor shape to show.
     pub cursor: CursorIcon,
     /// Set to swap fonts after this frame: the shell drops cached glyphs,
     /// repaints everything and immediately runs another frame.
@@ -50,18 +57,22 @@ pub struct FrameCtx<'a> {
     pub a11y_tree: Option<crate::a11y::Tree>,
 }
 
+/// An application driven by the shell: one `frame` call per redraw.
 pub trait App {
+    /// Builds the frame: reads `ctx.events`, fills `ctx.list`, sets requests.
     fn frame(&mut self, ctx: &mut FrameCtx);
     /// Called once when the event loop is shutting down (save state here).
     fn exit(&mut self) {}
 }
 
+/// How to open the main window.
 pub struct WindowOptions {
     pub title: String,
     /// Window class (Windows, X11) / app id (Wayland) desktops group windows by.
     pub app_id: String,
     /// Initial size in logical pixels.
     pub size: (u32, u32),
+    /// Fonts the app starts with.
     pub fonts: Fonts,
 }
 
@@ -72,18 +83,21 @@ pub struct Waker(EventLoopProxy<UserEvent>);
 /// Events the shell's event loop receives from other threads.
 #[derive(Debug)]
 pub enum UserEvent {
+    /// Just run another frame.
     Wake,
     /// The screen reader adapter wants something.
     A11y(accesskit_winit::Event),
 }
 
 impl From<accesskit_winit::Event> for UserEvent {
+    /// Wraps an AccessKit adapter event (needed by the adapter's event-loop proxy).
     fn from(e: accesskit_winit::Event) -> Self {
         UserEvent::A11y(e)
     }
 }
 
 impl Waker {
+    /// Queues a frame; harmless if the event loop has already exited.
     pub fn wake(&self) {
         let _ = self.0.send_event(UserEvent::Wake);
     }
@@ -92,10 +106,13 @@ impl Waker {
 /// Input-translation state carried between winit events.
 #[derive(Default)]
 pub struct ShellState {
+    /// Modifier keys currently held (winit reports them separately from keys).
     pub mods: Modifiers,
+    /// Last pointer position; button events carry it.
     pub cursor: Point,
 }
 
+/// Converts a winit mouse button; Back / Forward become `Other(3)` / `Other(4)`.
 fn map_button(b: winit::event::MouseButton) -> MouseButton {
     use winit::event::MouseButton as B;
     match b {
@@ -112,6 +129,7 @@ fn map_button(b: winit::event::MouseButton) -> MouseButton {
 const WHEEL_LINE_PX: f32 = 48.0;
 
 /// Translates one winit window event into toolkit events.
+/// Wheel deltas in lines are scaled to physical pixels.
 pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Event> {
     match ev {
         WindowEvent::ModifiersChanged(m) => {
@@ -119,6 +137,7 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
             st.mods = Modifiers { ctrl: s.control_key(), shift: s.shift_key(), alt: s.alt_key(), logo: s.super_key() };
             vec![Event::Modifiers(st.mods)]
         }
+        // Keys: unmapped named keys are dropped; a release becomes KeyUp only.
         WindowEvent::KeyboardInput { event, .. } => {
             let key = match &event.logical_key {
                 WKey::Named(n) => match map_named_key(n) {
@@ -132,6 +151,9 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
             if event.state == ElementState::Released {
                 return vec![Event::KeyUp { key, mods }];
             }
+            // Typed text (none if it holds control characters). It also becomes Text
+            // unless a shortcut modifier is held (Ctrl+Alt counts as AltGr, so it
+            // types) or the key is Enter / Tab, which widgets handle as keys.
             let text = event.text.as_ref().map(|t| t.to_string()).filter(|t| t.chars().all(|c| !c.is_control()));
             let mut out = vec![Event::KeyDown { key: key.clone(), mods, text: text.clone() }];
             if let Some(t) = text
@@ -169,6 +191,7 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
             vec![Event::FocusLost]
         }
         WindowEvent::Focused(true) => vec![Event::FocusGained],
+        // The pointer left the window: park it off-window so nothing stays hovered.
         WindowEvent::CursorLeft { .. } => {
             st.cursor = Point::new(-1, -1);
             vec![Event::MouseMove(st.cursor)]
@@ -210,13 +233,16 @@ fn frame_once(
         a11y_tree: None,
     };
     app.frame(&mut ctx);
+    // Take what the app set before rendering, since `ctx` borrows `list`.
     let (redraw_in, title, quit, bg, cursor, replace_fonts, tree) =
         (ctx.request_redraw_in, ctx.title.take(), ctx.quit, ctx.background, ctx.cursor, ctx.replace_fonts.take(), ctx.a11y_tree.take());
     let damage = renderer.render(list, canvas, fonts, cache, bg);
     FrameOut { damage, redraw_in, title, quit, cursor, replace_fonts, tree }
 }
 
+/// What one frame produced: changed screen areas plus the app's requests.
 struct FrameOut {
+    /// Canvas areas repainted this frame.
     damage: Vec<Rect>,
     redraw_in: Option<Duration>,
     title: Option<String>,
@@ -250,6 +276,7 @@ pub(crate) struct Offscreen {
 }
 
 impl Offscreen {
+    /// A `size` canvas at `scale`, with a memory clipboard.
     pub fn new(size: Size, scale: f32, fonts: Fonts) -> Self {
         Self {
             canvas: Canvas::new(size.w, size.h),
@@ -262,6 +289,7 @@ impl Offscreen {
         }
     }
 
+    /// Runs one frame (accessibility off) and applies a font swap.
     fn frame(&mut self, app: &mut dyn App, events: Vec<Event>) -> FrameOut {
         let mut out = frame_once(
             app,
@@ -280,6 +308,7 @@ impl Offscreen {
     }
 }
 
+/// Converts the toolkit cursor to winit's.
 fn winit_cursor(c: CursorIcon) -> winit::window::CursorIcon {
     use winit::window::CursorIcon as W;
     match c {
@@ -304,6 +333,7 @@ pub fn render_offscreen(app: &mut impl App, size: Size, scale: f32, frames: Vec<
     off.canvas
 }
 
+/// The window and its presentation surface, created on `resumed`.
 struct Gfx {
     window: Rc<Window>,
     surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
@@ -311,25 +341,35 @@ struct Gfx {
     adapter: accesskit_winit::Adapter,
 }
 
+/// The winit application handler: owns the app, the window and the frame state.
 struct Shell<A: App> {
     app: A,
+    /// Current title (follows `FrameCtx::title` changes).
     opts_title: String,
     opts_app_id: String,
     opts_size: (u32, u32),
     fonts: Fonts,
     gfx: Option<Gfx>,
     state: ShellState,
+    /// Events queued since the last frame.
     pending: Vec<Event>,
+    /// The rendered frame; copied to the window surface where damaged.
     canvas: Canvas,
     list: DisplayList,
     renderer: TileRenderer,
     cache: GlyphCache,
     clipboard: SystemClipboard,
+    /// When the app asked to be redrawn next.
     redraw_at: Option<Instant>,
+    /// We asked for the pending redraw (vs. the OS asking).
     requested: bool,
+    /// The OS asked for a redraw: present even if nothing changed.
     os_redraw: bool,
+    /// The cursor currently set on the window.
     cursor: CursorIcon,
+    /// A fatal error; ends the loop and is returned from `run`.
     error: Option<anyhow::Error>,
+    /// Hands the AccessKit adapter a way back into the event loop.
     proxy: EventLoopProxy<UserEvent>,
     /// A screen reader asked for the tree and hasn't gone away.
     a11y_active: bool,
@@ -351,6 +391,7 @@ fn with_app_id(attrs: winit::window::WindowAttributes, id: &str) -> winit::windo
 }
 
 impl<A: App> Shell<A> {
+    /// Asks winit for a redraw and remembers that we asked.
     fn request_redraw(&mut self) {
         self.requested = true;
         if let Some(g) = &self.gfx {
@@ -358,6 +399,7 @@ impl<A: App> Shell<A> {
         }
     }
 
+    /// Creates the window, the AccessKit adapter and the softbuffer surface.
     fn create_window(&mut self, el: &ActiveEventLoop) -> Result<()> {
         // Hidden until the screen reader adapter is attached (AccessKit's rule).
         let attrs = Window::default_attributes()
@@ -375,6 +417,8 @@ impl<A: App> Shell<A> {
         Ok(())
     }
 
+    /// Runs a frame at the window's current size and scale, applies the app's
+    /// requests, and copies the damaged canvas areas to the screen.
     fn redraw(&mut self, el: &ActiveEventLoop) -> Result<()> {
         let Some(gfx) = self.gfx.as_mut() else { return Ok(()) };
         let phys = gfx.window.inner_size();
@@ -398,6 +442,7 @@ impl<A: App> Shell<A> {
         );
         apply_font_swap(&mut out, &mut self.fonts, &mut self.cache, &mut self.renderer);
         let FrameOut { damage, redraw_in, title, quit, cursor, tree, .. } = out;
+        // Apply what the app asked for: title, accessibility tree, cursor, quit.
         if let Some(t) = title {
             gfx.window.set_title(&t);
             self.opts_title = t;
@@ -426,6 +471,7 @@ impl<A: App> Shell<A> {
         // A buffer that does not hold the previous frame gets a full copy.
         let full = buf.age() != 1;
         let rects: Vec<Rect> = if full { vec![self.canvas.bounds()] } else { damage };
+        // Copy damaged rows from the canvas into the window buffer.
         let width = w as usize;
         for r in &rects {
             for y in r.y..r.bottom() {
@@ -448,6 +494,7 @@ impl<A: App> Shell<A> {
         buf.present_with_damage(&sb).map_err(|e| anyhow::anyhow!("present: {e}"))
     }
 
+    /// Stores a fatal error and ends the event loop.
     fn fail(&mut self, el: &ActiveEventLoop, e: anyhow::Error) {
         self.error = Some(e);
         el.exit();
@@ -455,10 +502,12 @@ impl<A: App> Shell<A> {
 }
 
 impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
+    /// Lets the app save state before the loop ends.
     fn exiting(&mut self, _el: &ActiveEventLoop) {
         self.app.exit();
     }
 
+    /// A `redraw_in` deadline passed: run a frame.
     fn new_events(&mut self, _el: &ActiveEventLoop, cause: StartCause) {
         if let StartCause::ResumeTimeReached { .. } = cause {
             self.redraw_at = None;
@@ -466,6 +515,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         }
     }
 
+    /// Creates the window the first time the app is resumed.
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.gfx.is_none()
             && let Err(e) = self.create_window(el)
@@ -474,6 +524,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         }
     }
 
+    /// Handles wakeups and screen-reader requests (activation, actions).
     fn user_event(&mut self, _el: &ActiveEventLoop, ev: UserEvent) {
         use accesskit_winit::WindowEvent as A;
         match ev {
@@ -487,6 +538,8 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         self.request_redraw();
     }
 
+    /// Feeds winit events to the AccessKit adapter, then handles close,
+    /// redraw, resize, or translates them into input for the next frame.
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if let Some(g) = self.gfx.as_mut() {
             g.adapter.process_event(&g.window, &event);
@@ -519,6 +572,7 @@ impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
         }
     }
 
+    /// Sleeps until the next event, or until the app's requested redraw time.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         el.set_control_flow(match self.redraw_at {
             Some(t) => ControlFlow::WaitUntil(t),
@@ -575,16 +629,19 @@ mod tests {
     use crate::geom::Rect;
     use crate::text::test_fonts;
 
+    /// A test app that fills the window red and counts its frames.
     struct Red {
         frames: usize,
     }
     impl App for Red {
+        /// Pushes a full-window red rect.
         fn frame(&mut self, ctx: &mut FrameCtx) {
             self.frames += 1;
             ctx.list.push(Prim::Rect { rect: Rect::from_size(ctx.size), color: Color::hex(0xff0000), radius: 0.0 });
         }
     }
 
+    /// `render_offscreen` runs one frame per event batch and returns the pixels.
     #[test]
     fn offscreen_renders_app_frames() {
         let mut app = Red { frames: 0 };
@@ -593,10 +650,12 @@ mod tests {
         assert_eq!(c.pixel(50, 40), 0xff0000);
     }
 
+    /// A test app that draws text and swaps fonts on its second frame.
     struct Swapper {
         n: usize,
     }
     impl App for Swapper {
+        /// Draws "abc"; asks for new fonts on frame 2.
         fn frame(&mut self, ctx: &mut FrameCtx) {
             self.n += 1;
             ctx.list.push(Prim::Text {
@@ -613,6 +672,8 @@ mod tests {
         }
     }
 
+    /// A font swap clears the glyph cache, asks for an immediate redraw and
+    /// repaints the whole window.
     #[test]
     fn replace_fonts_clears_cache_and_repaints() {
         let mut app = Swapper { n: 0 };
@@ -627,6 +688,7 @@ mod tests {
         assert_eq!(area, 100 * 80, "whole window repainted with the new fonts");
     }
 
+    /// A 0x0 window renders without panicking and has no pixels.
     #[test]
     fn zero_size_frame_is_noop() {
         let mut app = Red { frames: 0 };

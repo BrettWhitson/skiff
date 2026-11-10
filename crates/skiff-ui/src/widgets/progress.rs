@@ -1,3 +1,5 @@
+//! The progress bar widget.
+
 use crate::geom::Rect;
 use crate::ui::Ui;
 
@@ -5,6 +7,7 @@ use crate::ui::Ui;
 /// (progress unknown) with no animation, so it costs no redraws.
 pub fn progress_bar(ui: &mut Ui, rect: Rect, fraction: Option<f32>) {
     let p = ui.style().palette;
+    // Rounded ends, but never rounder than the bar is tall.
     let radius = (rect.h as f32 / 2.0).min(ui.px(3) as f32);
     let stripe = ui.px(8).max(2);
     let mut painter = ui.painter();
@@ -17,6 +20,7 @@ pub fn progress_bar(ui: &mut Ui, rect: Rect, fraction: Option<f32>) {
             }
         }
         None => {
+            // Indeterminate: semi-transparent accent stripes every other stripe width.
             painter.push_clip(rect);
             let mut x = rect.x;
             while x < rect.right() {

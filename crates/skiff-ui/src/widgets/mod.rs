@@ -1,4 +1,6 @@
-//! Widgets: plain functions over `&mut Ui`.
+//! Widgets: plain functions over `&mut Ui` that handle input, publish an
+//! accessibility node and paint in one call. Each submodule holds one widget
+//! family; this module re-exports their public entry points.
 
 mod button;
 mod checkbox;

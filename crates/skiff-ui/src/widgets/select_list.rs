@@ -13,8 +13,11 @@ use super::scroll::{scroll_area, scroll_into_view};
 /// Logical pixels the pointer must travel with a row pressed to start a drag.
 const DRAG_THRESHOLD: i32 = 4;
 
+/// Which rows of a `select_list` are selected, plus the anchor and cursor
+/// that drive Shift-extension and keyboard movement. Owned by the caller.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Selection {
+    /// Selected row indices.
     pub set: BTreeSet<usize>,
     /// Where Shift-extension starts.
     pub anchor: Option<usize>,
@@ -23,16 +26,20 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// Deselects everything and forgets the anchor and cursor.
     pub fn clear(&mut self) {
         *self = Selection::default();
     }
 
+    /// Selects just row `i`, which also becomes the anchor and cursor.
     pub fn select_only(&mut self, i: usize) {
         self.set = BTreeSet::from([i]);
         self.anchor = Some(i);
         self.cursor = Some(i);
     }
 
+    /// Flips row `i` in or out of the selection (Ctrl-click); it becomes the
+    /// anchor and cursor either way.
     pub fn toggle(&mut self, i: usize) {
         if !self.set.remove(&i) {
             self.set.insert(i);
@@ -48,18 +55,22 @@ impl Selection {
         self.cursor = Some(i);
     }
 
+    /// Whether row `i` is selected.
     pub fn contains(&self, i: usize) -> bool {
         self.set.contains(&i)
     }
 
+    /// Selected rows in ascending order.
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.set.iter().copied()
     }
 
+    /// How many rows are selected.
     pub fn len(&self) -> usize {
         self.set.len()
     }
 
+    /// True when nothing is selected.
     pub fn is_empty(&self) -> bool {
         self.set.is_empty()
     }
@@ -72,8 +83,10 @@ impl Selection {
     }
 }
 
+/// What happened to a select list this frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SelectListResponse {
+    /// The list's own interaction (focus, hover) as a whole.
     pub response: Response,
     /// Enter (on the cursor row) or double-click.
     pub activated: Option<usize>,
@@ -84,12 +97,14 @@ pub struct SelectListResponse {
     pub drag_started: bool,
 }
 
+/// Mouse-press tracking across frames, kept in widget memory under the list id.
 #[derive(Debug, Clone, Copy, Default)]
 struct PressState {
     /// Row and point of the current left press.
     at: Option<(usize, Point)>,
     /// Plain press on an already-selected row: collapse on release, unless dragged.
     collapse: bool,
+    /// The press has already turned into a drag.
     dragging: bool,
 }
 
@@ -126,6 +141,8 @@ pub fn select_list_named(
     let rh = ui.px(row_h).max(1);
     let sid = id.with("scroll");
     let mut out = SelectListResponse { response: r, ..Default::default() };
+    // Keyboard: arrows, Page Up/Down, Home/End move the cursor (Shift extends
+    // from the anchor), Enter activates, Ctrl/Cmd+A selects all.
     sel.clamp(rows);
 
     if r.focused && rows > 0 && ui.keys_for(id) {
@@ -135,6 +152,7 @@ pub fn select_list_named(
         for e in &events {
             let Event::KeyDown { key, mods, .. } = e else { continue };
             let primary = mods.ctrl || mods.logo;
+            // Select all leaves the anchor and cursor where they were.
             if primary && !mods.shift && !mods.alt && *key == Key::Char('a') {
                 sel.set = (0..rows).collect();
                 continue;
@@ -171,6 +189,7 @@ pub fn select_list_named(
         }
     }
 
+    // Snapshot input up front: the row closure below borrows `ui` mutably.
     let mut press = *ui.memory::<PressState>(id);
     let down_now = ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(MouseButton::Left, _)));
     let mods = ui.input().mods;
@@ -179,6 +198,7 @@ pub fn select_list_named(
     let content_h = (rows as i64 * rh as i64).min(i32::MAX as i64) as i32;
     ui.a11y_group(id, Role::List, name, |ui| {
         scroll_area(ui, sid, rect, content_h, |ui, vis, off| {
+            // Only the rows overlapping the viewport are laid out and drawn.
             let first = (off / rh) as usize;
             let last = (((off + vis.h + rh - 1) / rh) as usize).min(rows);
             let p = ui.style().palette;
@@ -186,6 +206,7 @@ pub fn select_list_named(
                 let row = Rect::new(vis.x, vis.y + i as i32 * rh - off, vis.w, rh);
                 let rid = id.with(i);
                 let rr = ui.interact(rid, row, Sense::click());
+                // A screen-reader click selects; clicking the sole selected row activates it.
                 if ui.a11y_clicked(rid) {
                     if sel.contains(i) && sel.len() == 1 {
                         out.activated = Some(i);
@@ -194,6 +215,7 @@ pub fn select_list_named(
                         ui.request_focus(id);
                     }
                 }
+                // The cursor row stands in for the list's focus in the accessibility tree.
                 if ui.a11y_on() {
                     let nm = row_name(i);
                     let on = sel.contains(i);
@@ -214,6 +236,8 @@ pub fn select_list_named(
                     } else if mods.shift {
                         sel.extend_to(i);
                     } else if sel.contains(i) {
+                        // A plain press on a selected row waits for release: it may start a
+                        // drag of the whole selection instead of collapsing it.
                         press.collapse = true;
                     } else {
                         sel.select_only(i);
@@ -225,6 +249,7 @@ pub fn select_list_named(
                 if rr.double_clicked {
                     out.activated = Some(i);
                 }
+                // Right-clicking outside the selection selects that row first.
                 if rr.right_clicked {
                     if !sel.contains(i) {
                         sel.select_only(i);
@@ -246,6 +271,8 @@ pub fn select_list_named(
         })
     });
 
+    // After the rows: end the press on release, or flag a drag once the
+    // pointer moves past the threshold while holding a selected row.
     if let Some((i, at)) = press.at {
         if !left_down {
             press = PressState::default();

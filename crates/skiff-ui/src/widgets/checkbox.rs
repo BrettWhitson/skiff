@@ -1,3 +1,5 @@
+//! The checkbox widget: a square toggle with a label beside it.
+
 use crate::a11y::Role;
 use crate::geom::Rect;
 use crate::input::CursorIcon;
@@ -20,12 +22,14 @@ pub fn checkbox(ui: &mut Ui, id: Id, rect: Rect, value: &mut bool, text: &str) -
         ui.set_cursor_icon(CursorIcon::Pointer);
     }
     let p = ui.style().palette;
+    // A 16px box centred vertically at the left; the label takes the rest of the row.
     let side = ui.px(16).min(rect.h).max(0);
     let bx = Rect::new(rect.x, rect.y + (rect.h - side) / 2, side, side);
     let radius = ui.px(3) as f32;
     let bw = ui.px(1).max(1);
     {
         let mut painter = ui.painter();
+        // Checked: accent-filled box with a smaller inner square as the mark.
         if *value {
             painter.rect(bx, p.accent, radius);
             painter.rect(bx.inset(side / 4), p.accent_fg, radius / 2.0);

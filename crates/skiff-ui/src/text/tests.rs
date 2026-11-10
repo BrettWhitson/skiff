@@ -1,3 +1,7 @@
+//! Text tests: measuring, drawing, glyph caching, tofu, monospace cells,
+//! caret hit-testing, lazy fallbacks and font scanning. Tests that need
+//! installed fonts skip themselves when there are none.
+
 use super::cache::GlyphCache;
 use super::layout::{char_index_at_x, draw_text, line_height, measure};
 use super::{BlockFont, FontKind, FontStack, Fonts, GlyphBitmap, GlyphRasterizer, LazyFont, LineMetrics, TOFU};
@@ -6,6 +10,7 @@ use crate::color::Color;
 use crate::geom::Point;
 use std::sync::Arc;
 
+/// The system fonts, or `None` (test skipped) when none are installed.
 fn fonts() -> Option<Fonts> {
     match Fonts::load(None, None) {
         Ok(f) => Some(f),
@@ -16,6 +21,7 @@ fn fonts() -> Option<Fonts> {
     }
 }
 
+/// Longer text measures wider; empty text measures zero.
 #[test]
 fn measure_grows_with_text() {
     let Some(f) = fonts() else { return };
@@ -26,6 +32,7 @@ fn measure_grows_with_text() {
     assert_eq!(measure(&f, &mut c, FontKind::Ui, "", 14.0), 0.0);
 }
 
+/// Drawn text only lights pixels inside its advance and line box.
 #[test]
 fn draw_text_marks_pixels_inside_line_box() {
     let Some(f) = fonts() else { return };
@@ -48,6 +55,7 @@ fn draw_text_marks_pixels_inside_line_box() {
     assert!(lit > 20, "only {lit} pixels lit");
 }
 
+/// Drawing repeated chars rasterizes each distinct glyph once.
 #[test]
 fn cache_reuses_glyphs() {
     let Some(f) = fonts() else { return };
@@ -60,6 +68,7 @@ fn cache_reuses_glyphs() {
     assert_eq!(c.len(), n);
 }
 
+/// A char no font has draws a visible box, the same width for every such char.
 #[test]
 fn missing_glyph_draws_box() {
     let Some(f) = fonts() else { return };
@@ -74,6 +83,7 @@ fn missing_glyph_draws_box() {
     assert_eq!(w, measure(&f, &mut c, FontKind::Ui, "\u{10FFFC}", 16.0));
 }
 
+/// Monospace glyphs share one advance, which is the cell width.
 #[test]
 fn mono_cell_is_uniform() {
     let Some(f) = fonts() else { return };
@@ -86,6 +96,8 @@ fn mono_cell_is_uniform() {
     assert!(ch > cw);
 }
 
+/// Measuring a prefix and hit-testing at that x returns the prefix length;
+/// out-of-range x clamps to the ends.
 #[test]
 fn char_index_at_x_roundtrip() {
     let Some(f) = fonts() else { return };
@@ -101,6 +113,8 @@ fn char_index_at_x_roundtrip() {
     assert_eq!(char_index_at_x(&f, &mut c, FontKind::Ui, s, 14.0, 10_000.0), n);
 }
 
+/// A lazy fallback loads only when a char needs it, only once, and a
+/// fallback that fails to load leaves the char as tofu.
 #[test]
 fn fallback_fonts_load_on_first_use() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -128,20 +142,26 @@ fn fallback_fonts_load_on_first_use() {
 /// Has ASCII only.
 struct NoMissingGlyphs;
 impl GlyphRasterizer for NoMissingGlyphs {
+    /// ASCII only.
     fn has_glyph(&self, c: char) -> bool {
         c.is_ascii()
     }
+    /// Same as `BlockFont`.
     fn advance(&self, c: char, px: f32) -> f32 {
         BlockFont.advance(c, px)
     }
+    /// Same as `BlockFont`.
     fn rasterize(&self, c: char, px: f32) -> GlyphBitmap {
         BlockFont.rasterize(c, px)
     }
+    /// Same as `BlockFont`.
     fn line_metrics(&self, px: f32) -> LineMetrics {
         BlockFont.line_metrics(px)
     }
 }
 
+/// Font scanning recurses into subfolders, skips junk files, sorts by name
+/// and can filter to monospace fonts.
 #[test]
 fn scan_fonts_lists_monospace() {
     use super::system::{candidates, scan_fonts};

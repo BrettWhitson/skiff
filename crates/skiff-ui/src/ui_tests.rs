@@ -1,3 +1,6 @@
+//! Tests for the `Ui` core: clicks, overlays, Tab focus, memory, scaled
+//! hit-testing, drags, clipping and painter output, driven by `Harness`.
+
 use std::cell::Cell;
 
 use super::testing::Harness;
@@ -5,19 +8,23 @@ use super::*;
 use crate::input::{Event, Key, Modifiers, MouseButton};
 use crate::layout::Size as L;
 
+/// Events that move the pointer to `p` and press the left button there.
 fn press(p: Point) -> Vec<Event> {
     vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p)]
 }
 
+/// Events that move the pointer to `p` and release the left button there.
 fn release(p: Point) -> Vec<Event> {
     vec![Event::MouseMove(p), Event::MouseUp(MouseButton::Left, p)]
 }
 
+/// A Tab key press, with Shift when `shift`.
 fn tab(shift: bool) -> Vec<Event> {
     let mods = Modifiers { shift, ..Modifiers::NONE };
     vec![Event::KeyDown { key: Key::Tab, mods, text: None }]
 }
 
+/// A click needs press and release on the same widget, even within one frame.
 #[test]
 fn click_requires_press_and_release_inside() {
     let mut h = Harness::new(200, 200, 1.0);
@@ -46,6 +53,7 @@ fn click_requires_press_and_release_inside() {
     assert_eq!(clicks.get(), 2);
 }
 
+/// An overlay widget swallows clicks aimed at the widget beneath it.
 #[test]
 fn overlay_blocks_hits_below() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -64,6 +72,8 @@ fn overlay_blocks_hits_below() {
     assert!(!clicked.get());
 }
 
+/// Tab / Shift+Tab cycle focus through focusable widgets with wrap-around,
+/// unless the focused widget consumes the Tab.
 #[test]
 fn tab_moves_focus_in_order() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -105,6 +115,7 @@ fn tab_moves_focus_in_order() {
     assert_eq!(focused.get(), Some("c"));
 }
 
+/// `Ui::memory` keeps a value for an id from one frame to the next.
 #[test]
 fn memory_persists_across_frames() {
     let mut h = Harness::new(100, 100, 1.0);
@@ -120,6 +131,7 @@ fn memory_persists_across_frames() {
     assert_eq!(seen.get(), 3);
 }
 
+/// At scale 1.5, logical `Px` sizes become physical and hit-testing uses them.
 #[test]
 fn hit_test_matches_scaled_layout() {
     let mut h = Harness::new(600, 300, 1.5);
@@ -141,6 +153,8 @@ fn hit_test_matches_scaled_layout() {
     assert_eq!(h.scale(), 1.5);
 }
 
+/// Drags report per-frame pointer deltas, and clipped-away parts of a widget
+/// cannot be clicked.
 #[test]
 fn drag_reports_deltas_and_clip_limits_hits() {
     let mut h = Harness::new(300, 300, 1.0);
@@ -168,6 +182,8 @@ fn drag_reports_deltas_and_clip_limits_hits() {
     assert!(!hit_outside_clip.get());
 }
 
+/// Painter text records its line box as bounds, and overlay prims come after
+/// base-layer prims in the list.
 #[test]
 fn painter_text_records_bounds_and_overlay_draws_last() {
     let mut h = Harness::new(200, 100, 1.0);

@@ -7,6 +7,7 @@ use crate::input::{CursorIcon, Event, Key, MouseButton};
 use crate::text::FontKind;
 use crate::ui::{Id, Response, Sense, Ui};
 
+/// Options for `text_input`; `Default` gives a plain unlabeled field.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextInputOpts<'a> {
     /// Draw "•" per character; copy and cut are disabled.
@@ -17,8 +18,10 @@ pub struct TextInputOpts<'a> {
     pub label: &'a str,
 }
 
+/// What happened to a text field this frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextInputResponse {
+    /// The field's own interaction (hover, focus, clicks).
     pub response: Response,
     /// The value was edited this frame.
     pub changed: bool,
@@ -29,16 +32,22 @@ pub struct TextInputResponse {
 /// Cursor and selection, in chars. `anchor == cursor` means no selection.
 #[derive(Debug, Clone, Copy, Default)]
 struct EditState {
+    /// Insertion point, in chars.
     cursor: usize,
+    /// The other end of the selection, in chars.
     anchor: usize,
+    /// Horizontal scroll in pixels, so the cursor stays visible in long text.
     scroll: f32,
+    /// Focus as of last frame, to tell when focus has just arrived.
     had_focus: bool,
 }
 
+/// Word characters for Ctrl+arrow movement and Ctrl+Backspace/Delete.
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// The start of the word at or before `i`, skipping separators first.
 fn word_left(s: &[char], mut i: usize) -> usize {
     while i > 0 && !is_word(s[i - 1]) {
         i -= 1;
@@ -49,6 +58,7 @@ fn word_left(s: &[char], mut i: usize) -> usize {
     i
 }
 
+/// The end of the word at or after `i`, skipping separators first.
 fn word_right(s: &[char], mut i: usize) -> usize {
     while i < s.len() && !is_word(s[i]) {
         i += 1;
@@ -71,26 +81,32 @@ fn sanitize(t: &str) -> Vec<char> {
         .collect()
 }
 
+/// One frame's editing session over the value's chars.
 struct Editor {
     chars: Vec<char>,
     st: EditState,
+    /// Set by any edit, so the caller's `String` is rebuilt only when needed.
     changed: bool,
 }
 
 impl Editor {
+    /// The selection as an ordered `(start, end)` range.
     fn selection(&self) -> (usize, usize) {
         (self.st.cursor.min(self.st.anchor), self.st.cursor.max(self.st.anchor))
     }
 
+    /// Whether any text is selected.
     fn has_selection(&self) -> bool {
         self.st.cursor != self.st.anchor
     }
 
+    /// The selected text.
     fn selected(&self) -> String {
         let (a, b) = self.selection();
         self.chars[a..b].iter().collect()
     }
 
+    /// Removes chars `a..b` and collapses the cursor and anchor to `a`.
     fn delete_range(&mut self, a: usize, b: usize) {
         if a < b {
             self.chars.drain(a..b);
@@ -100,11 +116,14 @@ impl Editor {
         self.st.anchor = a;
     }
 
+    /// Removes the selected text, if any.
     fn delete_selection(&mut self) {
         let (a, b) = self.selection();
         self.delete_range(a, b);
     }
 
+    /// Replaces the selection with sanitized `t` and puts the cursor after it.
+    /// Text that sanitizes to nothing leaves the selection alone.
     fn insert(&mut self, t: &str) {
         let ins = sanitize(t);
         if ins.is_empty() {
@@ -118,6 +137,8 @@ impl Editor {
         self.changed = true;
     }
 
+    /// Moves the cursor to `i` (clamped); `select` keeps the anchor, extending
+    /// the selection.
     fn move_to(&mut self, i: usize, select: bool) {
         self.st.cursor = i.min(self.chars.len());
         if !select {
@@ -127,11 +148,14 @@ impl Editor {
 }
 
 /// A single-line editable text field.
+/// Handles mouse, keyboard, clipboard and screen-reader SetValue, writes
+/// edits back to `value`, and keeps cursor state in widget memory.
 pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: TextInputOpts) -> TextInputResponse {
     let r = ui.interact(id, rect, Sense::focusable());
     if r.hovered {
         ui.set_cursor_icon(CursorIcon::Text);
     }
+    // The value may have changed outside the widget: clamp the stored cursor.
     let mut st = *ui.memory::<EditState>(id);
     let mut ed = Editor { chars: value.chars().collect(), st, changed: false };
     let n = ed.chars.len();
@@ -141,9 +165,11 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
     let px = ui.font_px();
     let pad = ui.px(6);
     let inner = Rect::new(rect.x + pad, rect.y, rect.w - 2 * pad, rect.h);
+    // What is drawn and measured: bullets for passwords so the caret lines up.
     let display = |chars: &[char]| -> String { if opts.password { "•".repeat(chars.len()) } else { chars.iter().collect() } };
 
     let mut submitted = false;
+    // A screen reader replaced the value: cursor to the end.
     if let Some(A11yAction::SetValue(v)) = ui.take_a11y_action(id, |a| matches!(a, A11yAction::SetValue(_))) {
         ed.chars = sanitize(&v);
         ed.st.cursor = ed.chars.len();
@@ -157,6 +183,7 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
         }
         // Mouse: a press inside places the cursor; dragging extends.
         let mouse_down_here = ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(MouseButton::Left, p) if rect.contains(*p)));
+        // On the press frame place the cursor; while held, extend the selection.
         if r.pressed || mouse_down_here {
             let shown = display(&ed.chars);
             let x = (ui.input().mouse.x - inner.x) as f32 + ed.st.scroll;
@@ -174,12 +201,14 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
                         ed.insert(t);
                         true
                     }
+                    // Logo/Cmd chords are never handled here.
                     Event::KeyDown { key, mods, .. } if !mods.logo => {
                         let (ctrl, shift) = (mods.ctrl && !mods.alt, mods.shift);
                         // Clipboard/select-all only on plain Ctrl: Ctrl+Shift is the app's.
                         let cmd = ctrl && !shift;
                         let cur = ed.st.cursor;
                         match key {
+                            // With a selection, Left/Right without Shift collapse it to that side.
                             Key::Left if ed.has_selection() && !shift => {
                                 let a = ed.selection().0;
                                 ed.move_to(a, false);
@@ -235,6 +264,8 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
                                 ed.st.cursor = ed.chars.len();
                                 true
                             }
+                            // Copy and cut need a selection and never expose a password; paste
+                            // is always taken.
                             Key::Char('c') if cmd && !opts.password && ed.has_selection() => {
                                 let s = ed.selected();
                                 ui.clipboard().set(&s);
@@ -268,6 +299,7 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
     if ed.changed {
         *value = ed.chars.iter().collect();
     }
+    // A password field's value is never published to assistive technology.
     let name = if opts.label.is_empty() { opts.placeholder } else { opts.label };
     let role = if opts.password { Role::PasswordInput } else { Role::TextInput };
     if let Some(n) = ui.a11y_node(id, role, name) {
@@ -280,6 +312,8 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
         let s: String = shown.chars().take(i).collect();
         ui.measure(&s, FontKind::Ui, px)
     };
+    // Scroll just enough to keep the caret within the field (2px for the caret),
+    // and never past the end of the text.
     let cursor_x = prefix(ui, ed.st.cursor);
     let total = ui.measure(&shown, FontKind::Ui, px);
     let room = (inner.w - 2).max(0) as f32;

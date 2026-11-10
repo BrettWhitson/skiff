@@ -1,3 +1,6 @@
+//! Dropdowns: a button showing the current choice that opens a context
+//! menu of all choices.
+
 use crate::a11y::Role;
 use crate::geom::{Point, Rect};
 use crate::ui::{Id, Ui};
@@ -16,6 +19,7 @@ pub fn dropdown(ui: &mut Ui, id: Id, rect: Rect, options: &[&str], selected: &mu
 pub fn dropdown_labeled(ui: &mut Ui, id: Id, rect: Rect, label: &str, options: &[&str], selected: &mut usize) -> bool {
     let menu = id.with("menu");
     let current = options.get(*selected).copied().unwrap_or("");
+    // The button shows the current option with a down-pointing triangle.
     if button(ui, id, rect, &format!("{current}  \u{25BE}")).clicked {
         open_context_menu(ui, menu, Point::new(rect.x, rect.bottom()));
     }

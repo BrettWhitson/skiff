@@ -1,9 +1,13 @@
 //! Well-known system font locations, per platform.
+//!
+//! Used by `Fonts::load` to find primaries and fallbacks, and by the app
+//! to list installed fonts (`scan_all`, `scan_fonts`).
 
 use std::path::{Path, PathBuf};
 
 use super::FontKind;
 
+/// Every `dir/name` combination, grouped by name (so names keep their priority).
 fn in_dirs(dirs: &[PathBuf], names: &[&str]) -> Vec<PathBuf> {
     names.iter().flat_map(|n| dirs.iter().map(move |d| d.join(n))).collect()
 }
@@ -79,6 +83,7 @@ const SCAN_DEPTH: usize = 4;
 /// face of `.ttc`) in `dirs` and their subfolders, sorted by name.
 /// Unreadable or invalid files are skipped.
 pub fn scan_all(dirs: &[PathBuf]) -> Vec<(String, PathBuf, bool)> {
+    /// Collects font files below `dir`, at most `SCAN_DEPTH` levels down.
     fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
@@ -122,6 +127,7 @@ fn font_info(path: &Path) -> Option<(String, bool)> {
     }
     let data = std::fs::read(path).ok()?;
     let face = ttf_parser::Face::parse(&data, 0).ok()?;
+    // Prefer the full name ("Consolas Bold"), else the family name.
     let name = |id| face.names().into_iter().filter(|n| n.name_id == id && n.is_unicode()).find_map(|n| n.to_string());
     let name = name(ttf_parser::name_id::FULL_NAME).or_else(|| name(ttf_parser::name_id::FAMILY))?;
     let adv = |c| face.glyph_index(c).and_then(|g| face.glyph_hor_advance(g)).map(f32::from);

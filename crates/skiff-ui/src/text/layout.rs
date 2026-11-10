@@ -11,6 +11,7 @@ pub fn line_height(fonts: &Fonts, kind: FontKind, px: f32) -> f32 {
     fonts.stack(kind).line_metrics(px).height().ceil()
 }
 
+/// Total advance of `text` on one line, in pixels.
 pub fn measure(fonts: &Fonts, cache: &mut GlyphCache, kind: FontKind, text: &str, px: f32) -> f32 {
     text.chars().map(|c| cache.get(fonts, kind, c, px).advance).sum()
 }
@@ -43,6 +44,7 @@ pub fn draw_text(
             pen += cache.get(fonts, kind, c, px).advance;
             continue;
         }
+        // Visible glyph: blend its mask with the pen on the baseline.
         let g = cache.get(fonts, kind, c, px);
         if g.width > 0 && g.height > 0 {
             let x = origin.x + pen.round() as i32 + g.xmin;
@@ -76,6 +78,7 @@ pub fn ink_bounds(fonts: &Fonts, cache: &mut GlyphCache, kind: FontKind, text: &
 /// The caret index (in chars) nearest to `x`, measured from the text start.
 pub fn char_index_at_x(fonts: &Fonts, cache: &mut GlyphCache, kind: FontKind, text: &str, px: f32, x: f32) -> usize {
     let mut pen = 0.0f32;
+    // The caret goes before a char when `x` is left of its middle.
     for (i, c) in text.chars().enumerate() {
         let adv = cache.get(fonts, kind, c, px).advance;
         if x < pen + adv / 2.0 {

@@ -3,10 +3,14 @@
 use crate::color::Color;
 use crate::geom::Rect;
 
+/// A pixel buffer that every drawing primitive ends up on; the shell copies
+/// it to the window.
 pub struct Canvas {
     pub width: i32,
     pub height: i32,
+    /// Row-major `0x00RRGGBB` pixels, `width * height` of them.
     pub pixels: Vec<u32>,
+    /// Clip stack; each entry is already intersected with the ones below it.
     clips: Vec<Rect>,
     /// Row of the full picture this canvas's first row is (a band of a
     /// larger canvas, painted on another thread). Coordinates stay global.
@@ -23,6 +27,7 @@ fn blend(dst: u32, c: Color, cov: u32) -> u32 {
     if a == 255 {
         return c.to_u32();
     }
+    // Per channel: d*(1-a) + s*a in 0..=255 integer math, rounded.
     let mix = |d: u32, s: u32| (d * (255 - a) + s * a + 127) / 255;
     let (dr, dg, db) = ((dst >> 16) & 0xff, (dst >> 8) & 0xff, dst & 0xff);
     (mix(dr, c.r as u32) << 16) | (mix(dg, c.g as u32) << 8) | mix(db, c.b as u32)
@@ -31,6 +36,8 @@ fn blend(dst: u32, c: Color, cov: u32) -> u32 {
 /// Coverage (0..=1) of the pixel at (px, py) by a rounded rect.
 fn rounded_coverage(px: i32, py: i32, r: Rect, radius: f32) -> f32 {
     let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+    // Distance from the pixel center to the rect shrunk by `radius`; within
+    // `radius` is inside, with a one-pixel antialiased edge.
     let (x0, y0) = (r.x as f32 + radius, r.y as f32 + radius);
     let (x1, y1) = (r.right() as f32 - radius, r.bottom() as f32 - radius);
     let cx = fx.clamp(x0, x1.max(x0));
@@ -40,6 +47,7 @@ fn rounded_coverage(px: i32, py: i32, r: Rect, radius: f32) -> f32 {
 }
 
 impl Canvas {
+    /// A black canvas; negative sizes become 0.
     pub fn new(width: i32, height: i32) -> Self {
         let (width, height) = (width.max(0), height.max(0));
         Self { width, height, pixels: vec![0; (width * height) as usize], clips: vec![], y0: 0 }
@@ -61,6 +69,7 @@ impl Canvas {
         self.y0 = y0;
     }
 
+    /// Changes the size; contents are cleared to black and clips dropped.
     pub fn resize(&mut self, width: i32, height: i32) {
         let (width, height) = (width.max(0), height.max(0));
         self.width = width;
@@ -70,11 +79,13 @@ impl Canvas {
         self.clips.clear();
     }
 
+    /// The area this canvas covers, in picture coordinates (`y0`-offset for a band).
     pub fn bounds(&self) -> Rect {
         Rect::new(0, self.y0, self.width, self.height)
     }
 
     #[inline]
+    /// Offset into `pixels` of picture coordinates (x, y).
     fn index(&self, x: i32, y: i32) -> usize {
         ((y - self.y0) * self.width + x) as usize
     }
@@ -84,23 +95,28 @@ impl Canvas {
         self.clips.last().copied().unwrap_or(self.bounds())
     }
 
+    /// Narrows the clip to `r` (within the current clip) until `pop_clip`.
     pub fn push_clip(&mut self, r: Rect) {
         let c = self.clip().intersect(r).unwrap_or_default();
         self.clips.push(c);
     }
 
+    /// Restores the clip from before the last `push_clip`.
     pub fn pop_clip(&mut self) {
         self.clips.pop();
     }
 
+    /// The pixel at (x, y); panics outside the canvas.
     pub fn pixel(&self, x: i32, y: i32) -> u32 {
         self.pixels[self.index(x, y)]
     }
 
+    /// Fills every pixel with `c`, ignoring clip and alpha.
     pub fn clear(&mut self, c: Color) {
         self.pixels.fill(c.to_u32());
     }
 
+    /// Fills `r` (clipped) with `c`, blending if it is translucent.
     pub fn fill_rect(&mut self, r: Rect, c: Color) {
         let Some(r) = r.intersect(self.clip()) else { return };
         if c.a == 0 {
@@ -119,6 +135,7 @@ impl Canvas {
         }
     }
 
+    /// Fills `r` with antialiased corners of `radius`; plain fill under half a pixel.
     pub fn fill_rounded_rect(&mut self, r: Rect, radius: f32, c: Color) {
         let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
         if radius < 0.5 {
@@ -128,6 +145,7 @@ impl Canvas {
         // Straight middle band: plain fill.
         self.fill_rect(Rect::new(r.x, r.y + band, r.w, r.h - 2 * band), c);
         let Some(clip) = r.intersect(self.clip()) else { return };
+        // Top and bottom bands hold the corners: blend by per-pixel coverage.
         for y in (r.y..r.y + band).chain(r.bottom() - band..r.bottom()) {
             if y < clip.y || y >= clip.bottom() {
                 continue;
@@ -142,10 +160,13 @@ impl Canvas {
         }
     }
 
+    /// Draws a `width`-pixel outline inside `r`, with rounded corners when
+    /// `radius` is at least half a pixel.
     pub fn stroke_rect(&mut self, r: Rect, width: i32, radius: f32, c: Color) {
         if r.is_empty() || width <= 0 {
             return;
         }
+        // Square corners: four filled strips.
         if radius < 0.5 {
             let w = width.min(r.w).min(r.h);
             self.fill_rect(Rect::new(r.x, r.y, r.w, w), c);
@@ -154,6 +175,7 @@ impl Canvas {
             self.fill_rect(Rect::new(r.right() - w, r.y + w, w, r.h - 2 * w), c);
             return;
         }
+        // Rounded: coverage of the outer shape minus coverage of the inset shape.
         let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
         let inner = r.inset(width);
         let inner_radius = (radius - width as f32).max(0.0);
@@ -203,15 +225,18 @@ impl Canvas {
 mod tests {
     use super::*;
 
+    /// Splits a pixel into its (r, g, b) bytes.
     fn rgb(v: u32) -> (u8, u8, u8) {
         ((v >> 16) as u8, (v >> 8) as u8, v as u8)
     }
 
+    /// Each channel differs by at most 1 (rounding slack).
     fn close(a: u32, b: u32) -> bool {
         let (a, b) = (rgb(a), rgb(b));
         (a.0 as i32 - b.0 as i32).abs() <= 1 && (a.1 as i32 - b.1 as i32).abs() <= 1 && (a.2 as i32 - b.2 as i32).abs() <= 1
     }
 
+    /// Fills are clipped to the canvas and to the clip stack.
     #[test]
     fn fill_rect_clips_to_bounds_and_clip_stack() {
         let mut c = Canvas::new(10, 10);
@@ -229,6 +254,7 @@ mod tests {
         assert_eq!(c.pixel(9, 9), 0x0000ff);
     }
 
+    /// Nested clips paint only their intersection.
     #[test]
     fn nested_clips_intersect() {
         let mut c = Canvas::new(10, 10);
@@ -242,6 +268,7 @@ mod tests {
         assert_eq!(c.pixel(3, 3), 0);
     }
 
+    /// Half-transparent red over blue blends to about half each.
     #[test]
     fn alpha_blend_half_red_over_blue() {
         let mut c = Canvas::new(1, 1);
@@ -250,6 +277,7 @@ mod tests {
         assert!(close(c.pixel(0, 0), 0x80007f), "{:06x}", c.pixel(0, 0));
     }
 
+    /// Rounded corners are antialiased: the corner pixel mostly outside, the next one partial.
     #[test]
     fn rounded_rect_corner_is_antialiased() {
         let mut c = Canvas::new(10, 10);
@@ -262,6 +290,7 @@ mod tests {
         assert_eq!(c.pixel(5, 0), 0xffffff);
     }
 
+    /// A stroke paints the border band and leaves the inside untouched.
     #[test]
     fn stroke_rect_draws_only_border() {
         let mut c = Canvas::new(10, 10);
@@ -273,6 +302,7 @@ mod tests {
         assert_eq!(c.pixel(5, 5), 0);
     }
 
+    /// Mask bytes act as coverage, and masks partly off-canvas are clipped.
     #[test]
     fn blend_mask_applies_coverage() {
         let mut c = Canvas::new(4, 1);
@@ -287,6 +317,7 @@ mod tests {
         assert_eq!(c.pixel(0, 0), 0xff0000);
     }
 
+    /// Empty or negative rects draw nothing; a zero-size canvas can be resized.
     #[test]
     fn zero_and_negative_rects_are_noops() {
         let mut c = Canvas::new(4, 4);

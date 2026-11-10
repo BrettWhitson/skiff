@@ -1,4 +1,9 @@
 //! Text: glyph rasterization behind a trait, font stacks, caching, layout.
+//!
+//! `GlyphRasterizer` hides the font library; `FontStack` adds fallbacks
+//! and a "tofu" box; `Fonts` holds the UI and monospace stacks; `cache`
+//! keeps rasterized glyphs; `layout` measures and draws single lines;
+//! `system` finds installed fonts.
 
 pub mod cache;
 pub mod font;
@@ -14,23 +19,31 @@ use anyhow::{Context, Result, bail};
 /// position on the baseline (`ymin` is the bottom edge, positive = up).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlyphBitmap {
+    /// Bitmap width in pixels.
     pub width: usize,
+    /// Bitmap height in pixels.
     pub height: usize,
     pub xmin: i32,
     pub ymin: i32,
+    /// How far the pen moves after this glyph.
     pub advance: f32,
+    /// One byte of coverage (0..=255) per pixel, row-major, `width * height`.
     pub coverage: Vec<u8>,
 }
 
+/// Vertical metrics of a font at one size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineMetrics {
+    /// Height above the baseline.
     pub ascent: f32,
     /// Negative: distance below the baseline.
     pub descent: f32,
+    /// Extra space between lines.
     pub line_gap: f32,
 }
 
 impl LineMetrics {
+    /// Line-box height: ascent, depth below the baseline, and gap.
     pub fn height(&self) -> f32 {
         self.ascent - self.descent + self.line_gap
     }
@@ -39,15 +52,22 @@ impl LineMetrics {
 /// Anything that can turn characters into coverage masks. fontdue is one
 /// implementation; the rest of the toolkit only sees this trait.
 pub trait GlyphRasterizer: Send + Sync {
+    /// The font has a real glyph for `c`.
     fn has_glyph(&self, c: char) -> bool;
+    /// Horizontal advance of `c` at `px` pixels.
     fn advance(&self, c: char, px: f32) -> f32;
+    /// Coverage mask for `c` at `px` pixels.
     fn rasterize(&self, c: char, px: f32) -> GlyphBitmap;
+    /// Vertical metrics at `px` pixels.
     fn line_metrics(&self, px: f32) -> LineMetrics;
 }
 
+/// Which of the two font stacks text uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FontKind {
+    /// Proportional interface font.
     Ui,
+    /// Monospace font (terminal, code).
     Mono,
 }
 
@@ -57,11 +77,14 @@ pub const TOFU: usize = usize::MAX;
 /// A primary font plus fallbacks tried in order.
 #[derive(Clone)]
 pub struct FontStack {
+    /// Used for line metrics and the tofu box.
     pub primary: Arc<dyn GlyphRasterizer>,
+    /// Tried in order for chars the primary lacks.
     pub fallbacks: Vec<Arc<dyn GlyphRasterizer>>,
 }
 
 impl FontStack {
+    /// A stack with no fallbacks.
     pub fn new(primary: Arc<dyn GlyphRasterizer>) -> Self {
         Self { primary, fallbacks: vec![] }
     }
@@ -74,6 +97,7 @@ impl FontStack {
         self.fallbacks.iter().position(|f| f.has_glyph(c)).map_or(TOFU, |i| i + 1)
     }
 
+    /// Rasterizes `c` with the font `resolve` picked (or draws tofu).
     pub fn rasterize(&self, index: usize, c: char, px: f32) -> GlyphBitmap {
         match index {
             0 => self.primary.rasterize(c, px),
@@ -82,6 +106,7 @@ impl FontStack {
         }
     }
 
+    /// Line metrics come from the primary font alone.
     pub fn line_metrics(&self, px: f32) -> LineMetrics {
         self.primary.line_metrics(px)
     }
@@ -105,6 +130,7 @@ impl FontStack {
     }
 }
 
+/// The UI and monospace font stacks.
 #[derive(Clone)]
 pub struct Fonts {
     pub ui: FontStack,
@@ -112,10 +138,12 @@ pub struct Fonts {
 }
 
 impl Fonts {
+    /// Fonts from two prepared stacks.
     pub fn new(ui: FontStack, mono: FontStack) -> Self {
         Self { ui, mono }
     }
 
+    /// The stack for `kind`.
     pub fn stack(&self, kind: FontKind) -> &FontStack {
         match kind {
             FontKind::Ui => &self.ui,
@@ -141,6 +169,7 @@ impl Fonts {
         // One shared lazy font per symbol file, for both stacks.
         let symbols: Vec<Arc<dyn GlyphRasterizer>> =
             system::fallbacks().into_iter().map(|p| Arc::new(LazyFont::file(p)) as Arc<dyn GlyphRasterizer>).collect();
+        // Load the two primaries in parallel.
         let (ui, mono) = std::thread::scope(|s| {
             let ui = s.spawn(|| load_stack(FontKind::Ui, ui_path, &symbols));
             let mono = load_stack(FontKind::Mono, mono_path, &symbols);
@@ -155,12 +184,15 @@ impl Fonts {
     }
 }
 
+/// Reads and parses one font file.
 fn load_file(path: &Path) -> Result<Arc<dyn GlyphRasterizer>> {
     let bytes = std::fs::read(path).with_context(|| format!("reading font {}", path.display()))?;
     let f = font::FontdueFont::from_bytes(bytes).with_context(|| format!("parsing font {}", path.display()))?;
     Ok(Arc::new(f))
 }
 
+/// The stack for `kind`: the explicit font or the first loadable system
+/// candidate as primary, other candidates and `symbols` as lazy fallbacks.
 fn load_stack(kind: FontKind, explicit: Option<&Path>, symbols: &[Arc<dyn GlyphRasterizer>]) -> Result<FontStack> {
     let mut primary = match explicit {
         Some(p) => Some(load_file(p)?),
@@ -184,6 +216,7 @@ fn load_stack(kind: FontKind, explicit: Option<&Path>, symbols: &[Arc<dyn GlyphR
     Ok(FontStack { primary, fallbacks })
 }
 
+/// Loads a font when first needed.
 type FontLoader = Box<dyn Fn() -> Result<Arc<dyn GlyphRasterizer>> + Send + Sync>;
 
 /// A font read on first use (fallbacks: most text never needs them). A
@@ -194,28 +227,34 @@ pub struct LazyFont {
 }
 
 impl LazyFont {
+    /// A font produced by `load` on first use.
     pub fn new(load: FontLoader) -> Self {
         Self { load, font: OnceLock::new() }
     }
 
+    /// A font read from `path` on first use.
     pub fn file(path: PathBuf) -> Self {
         Self::new(Box::new(move || load_file(&path)))
     }
 
+    /// Loads the font the first time (once, even across threads); `None` if loading failed.
     fn get(&self) -> Option<&Arc<dyn GlyphRasterizer>> {
         self.font.get_or_init(|| (self.load)().ok()).as_ref()
     }
 }
 
 impl GlyphRasterizer for LazyFont {
+    /// False if the font failed to load.
     fn has_glyph(&self, c: char) -> bool {
         self.get().is_some_and(|f| f.has_glyph(c))
     }
 
+    /// 0 if the font failed to load.
     fn advance(&self, c: char, px: f32) -> f32 {
         self.get().map_or(0.0, |f| f.advance(c, px))
     }
 
+    /// An empty bitmap if the font failed to load.
     fn rasterize(&self, c: char, px: f32) -> GlyphBitmap {
         match self.get() {
             Some(f) => f.rasterize(c, px),
@@ -223,6 +262,7 @@ impl GlyphRasterizer for LazyFont {
         }
     }
 
+    /// All zeros if the font failed to load.
     fn line_metrics(&self, px: f32) -> LineMetrics {
         match self.get() {
             Some(f) => f.line_metrics(px),
@@ -236,15 +276,19 @@ impl GlyphRasterizer for LazyFont {
 pub struct BlockFont;
 
 impl GlyphRasterizer for BlockFont {
+    /// Every char except U+10FFFD.
     fn has_glyph(&self, c: char) -> bool {
         c != '\u{10FFFD}'
     }
+    /// Fixed 8px advance.
     fn advance(&self, _: char, _: f32) -> f32 {
         8.0
     }
+    /// A 6x10 block at coverage 200, one pixel right of the pen.
     fn rasterize(&self, _: char, _: f32) -> GlyphBitmap {
         GlyphBitmap { width: 6, height: 10, xmin: 1, ymin: 0, advance: 8.0, coverage: vec![200; 60] }
     }
+    /// Ascent 12, descent -4, no gap (16px lines).
     fn line_metrics(&self, _: f32) -> LineMetrics {
         LineMetrics { ascent: 12.0, descent: -4.0, line_gap: 0.0 }
     }

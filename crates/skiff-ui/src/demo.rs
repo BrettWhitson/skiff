@@ -13,25 +13,36 @@ use crate::widgets::{
     text_input,
 };
 
+/// State of the demo screen, kept across frames.
 pub struct Demo {
+    /// 100,000 fake host names.
     items: Vec<String>,
     filter: String,
+    /// Indexes into `items` that match `filter`.
     filtered: Vec<usize>,
+    /// Selected row in the filtered list.
     selected: Option<usize>,
     tabs: Vec<String>,
+    /// Index of the active tab.
     active: usize,
+    /// Number for the next "Session N" tab.
     next_tab: usize,
+    /// Sidebar width in logical pixels (the splitter changes it).
     sidebar: f32,
     host: String,
     user: String,
     password: String,
     remember: bool,
+    /// Status-bar message.
     status: String,
+    /// Filtered row the context menu was opened on.
     menu_row: Option<usize>,
+    /// How long the previous frame took to build, shown in the status bar.
     build_ms: f64,
 }
 
 impl Default for Demo {
+    /// 100k hosts, three tabs, an empty form.
     fn default() -> Self {
         let items: Vec<String> = (0..100_000).map(|i| format!("host-{i:05}.example.test")).collect();
         let filtered = (0..items.len()).collect();
@@ -55,6 +66,7 @@ impl Default for Demo {
     }
 }
 
+/// Context-menu entries; "Edit…" is disabled to show the greyed-out style.
 const MENU: [MenuItem<'static>; 4] = [
     MenuItem { label: "Connect", shortcut: Some("Enter"), enabled: true },
     MenuItem { label: "Open files", shortcut: Some("Ctrl+Shift+F"), enabled: true },
@@ -63,6 +75,7 @@ const MENU: [MenuItem<'static>; 4] = [
 ];
 
 impl Demo {
+    /// Builds the whole screen: sidebar list, tab strip, form and status bar.
     pub fn ui(&mut self, ui: &mut Ui) {
         let t0 = Instant::now();
         let p = ui.style().palette;
@@ -86,6 +99,7 @@ impl Demo {
             self.filtered = (0..self.items.len()).filter(|&i| self.items[i].contains(&needle)).collect();
             self.selected = None;
         }
+        // Double-click / Enter reports the row; right-click or the menu key opens the context menu.
         let (items, filtered) = (&self.items, &self.filtered);
         let lr = list(ui, Id::new("hosts"), parts[1], filtered.len(), 24, &mut self.selected, |ui, row, i, _| {
             let pad = ui.px(8);
@@ -128,6 +142,7 @@ impl Demo {
         let pad = ui.px(8);
         label_with(ui, Rect::new(sb.x + pad, sb.y, sb.w - 2 * pad, sb.h), &text, FontKind::Ui, p.muted);
 
+        // Context menu: report the choice; "Copy name" also copies the host name.
         if let Some(i) = context_menu(ui, Id::new("menu"), &MENU) {
             let name = self.menu_row.and_then(|r| self.filtered.get(r)).map(|&k| self.items[k].clone());
             self.status = format!("{} → {}", MENU[i].label, name.unwrap_or_default());
@@ -140,6 +155,8 @@ impl Demo {
         self.build_ms = t0.elapsed().as_secs_f64() * 1000.0;
     }
 
+    /// The connection form in `area`: host, user, password, a checkbox and
+    /// two buttons. Connecting only updates the status text.
     fn form(&mut self, ui: &mut Ui, area: Rect) {
         let w = area.w.min(ui.px(420));
         let col = Rect::new(area.x, area.y, w, area.h);

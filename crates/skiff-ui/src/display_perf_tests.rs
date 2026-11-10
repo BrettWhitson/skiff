@@ -1,3 +1,6 @@
+//! Tile-renderer tests that need bigger scenes: overhanging glyphs at tile
+//! seams, full-repaint cost, multi-threaded bands and the opaque-cover skip.
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,20 +13,26 @@ use crate::ui::testing::Harness;
 /// (left) or box-drawing chars (above/below the line box).
 struct OverhangFont;
 impl GlyphRasterizer for OverhangFont {
+    /// Every char has a glyph.
     fn has_glyph(&self, _: char) -> bool {
         true
     }
+    /// Fixed 8px advance.
     fn advance(&self, _: char, _: f32) -> f32 {
         8.0
     }
+    /// A solid 14x22 block that overhangs the 8px advance on all sides.
     fn rasterize(&self, _: char, _: f32) -> GlyphBitmap {
         GlyphBitmap { width: 14, height: 22, xmin: -3, ymin: -7, advance: 8.0, coverage: vec![255; 14 * 22] }
     }
+    /// Fixed 12 / -4 ascent / descent, no gap.
     fn line_metrics(&self, _: f32) -> LineMetrics {
         LineMetrics { ascent: 12.0, descent: -4.0, line_gap: 0.0 }
     }
 }
 
+/// Glyphs that overhang into neighbouring tiles are repainted there, so
+/// the tiled result equals a full render.
 #[test]
 fn overhanging_glyphs_repaint_across_tile_seams() {
     let f: Arc<dyn GlyphRasterizer> = Arc::new(OverhangFont);
@@ -48,6 +57,8 @@ fn overhanging_glyphs_repaint_across_tile_seams() {
 }
 
 /// A screen full of monospace text, all tiles dirty (a scrolling terminal).
+/// With every tile dirty, tiled rendering costs at most about twice a
+/// single full pass (skipped without system fonts).
 #[test]
 fn tiled_full_repaint_costs_about_one_pass() {
     let Ok(fonts) = Fonts::load(None, None) else {
@@ -109,6 +120,8 @@ fn busy_list(w: i32, h: i32) -> DisplayList {
     list
 }
 
+/// Banded multi-threaded painting matches a single-pass render, and a
+/// small later change is painted on one thread.
 #[test]
 fn parallel_bands_match_sequential_render() {
     let f: Arc<dyn GlyphRasterizer> = Arc::new(OverhangFont);
@@ -134,6 +147,7 @@ fn parallel_bands_match_sequential_render() {
     assert_eq!(tiled.pixels, full.pixels);
 }
 
+/// A band canvas takes picture coordinates and clips writes to its rows.
 #[test]
 fn band_canvas_uses_global_coordinates() {
     let mut c = Canvas::band(10, 4, 20);
@@ -147,20 +161,26 @@ fn band_canvas_uses_global_coordinates() {
 /// Same advance as `OverhangFont`, smaller glyphs.
 struct SmallFont;
 impl GlyphRasterizer for SmallFont {
+    /// Every char has a glyph.
     fn has_glyph(&self, _: char) -> bool {
         true
     }
+    /// Fixed 8px advance.
     fn advance(&self, _: char, _: f32) -> f32 {
         8.0
     }
+    /// A 4x6 block.
     fn rasterize(&self, _: char, _: f32) -> GlyphBitmap {
         GlyphBitmap { width: 4, height: 6, xmin: 1, ymin: 0, advance: 8.0, coverage: vec![200; 24] }
     }
+    /// Same metrics as `OverhangFont`.
     fn line_metrics(&self, _: f32) -> LineMetrics {
         LineMetrics { ascent: 12.0, descent: -4.0, line_gap: 0.0 }
     }
 }
 
+/// Band glyph caches survive `invalidate` and are dropped by `clear_glyphs`,
+/// after which a render with new fonts matches a full render.
 #[test]
 fn band_glyph_caches_survive_repaints_until_fonts_change() {
     let big: Arc<dyn GlyphRasterizer> = Arc::new(OverhangFont);
@@ -184,6 +204,8 @@ fn band_glyph_caches_survive_repaints_until_fonts_change() {
     assert_eq!(tiled.pixels, full.pixels);
 }
 
+/// `cover_start` finds the last opaque square rect covering the area,
+/// taking clips into account and ignoring translucent or rounded rects.
 #[test]
 fn opaque_cover_hides_earlier_prims() {
     let mut l = DisplayList::default();

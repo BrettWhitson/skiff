@@ -1,4 +1,5 @@
-//! Splitting rectangles into rows and columns.
+//! Splitting rectangles into rows and columns: the layout primitive behind
+//! `Ui::split_h` / `Ui::split_v`.
 
 use crate::geom::Rect;
 
@@ -20,7 +21,9 @@ fn spans(start: i32, len: i32, sizes: &[Size], gap: i32) -> Vec<(i32, i32)> {
     if n == 0 {
         return vec![];
     }
+    // Space for the parts themselves once the gaps are taken out.
     let avail = (len - gap * (n as i32 - 1)).max(0) as f32;
+    // Pixel and fraction parts are claimed first; `Fill` parts split the rest.
     let fixed: f32 = sizes
         .iter()
         .map(|s| match s {
@@ -32,6 +35,9 @@ fn spans(start: i32, len: i32, sizes: &[Size], gap: i32) -> Vec<(i32, i32)> {
     let fills = sizes.iter().filter(|s| matches!(s, Size::Fill)).count();
     let share = if fills > 0 { (avail - fixed).max(0.0) / fills as f32 } else { 0.0 };
     let end = start + len.max(0);
+    // Walk the parts accumulating float lengths; each part spans the rounded
+    // difference of consecutive cumulative positions, clamped to `avail` and the
+    // outer end so oversized fixed parts shrink instead of overflowing.
     let mut cum = 0.0f32;
     sizes
         .iter()
@@ -65,6 +71,8 @@ pub fn split_v(r: Rect, sizes: &[Size], gap: i32) -> Vec<Rect> {
 mod tests {
     use super::*;
 
+    /// Asserts that `rects` cover `outer` edge to edge on the x axis with exactly
+    /// `gap` between neighbours, keeping `outer`'s y and height.
     fn check_contiguous(rects: &[Rect], outer: Rect, gap: i32) {
         assert_eq!(rects.first().unwrap().x, outer.x);
         assert_eq!(rects.last().unwrap().right(), outer.right());
@@ -77,6 +85,8 @@ mod tests {
         }
     }
 
+    /// Mixed sizes cover the whole width at any size, keep fixed parts exact, and
+    /// split `Fill` evenly (to within a pixel).
     #[test]
     fn split_fills_exactly() {
         for w in [0, 1, 7, 100, 101, 333, 1919] {
@@ -95,6 +105,7 @@ mod tests {
         assert_eq!((v[0].h, v[1].y, v[1].bottom()), (50, 50, 99));
     }
 
+    /// Fixed parts larger than the space are clipped instead of spilling past the edge.
     #[test]
     fn oversized_fixed_parts_never_overflow() {
         let outer = Rect::new(0, 0, 50, 10);

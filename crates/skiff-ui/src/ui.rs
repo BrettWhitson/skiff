@@ -32,6 +32,7 @@ use crate::text::{FontKind, Fonts};
 pub struct Id(pub u64);
 
 impl Id {
+    /// An id from the hash of `v` (a string, a tuple, an index...).
     pub fn new(v: impl Hash) -> Id {
         let mut h = DefaultHasher::new();
         v.hash(&mut h);
@@ -50,8 +51,11 @@ impl Id {
 /// What a widget wants to know about.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Sense {
+    /// Report clicks, double clicks.
     pub click: bool,
+    /// Report pointer movement while the primary button is held on it.
     pub drag: bool,
+    /// Can hold keyboard focus and is part of the Tab order.
     pub focus: bool,
 }
 
@@ -60,12 +64,15 @@ impl Sense {
     pub const fn hover() -> Self {
         Sense { click: false, drag: false, focus: false }
     }
+    /// Clickable, without keyboard focus.
     pub const fn click() -> Self {
         Sense { click: true, drag: false, focus: false }
     }
+    /// Draggable only (splitter handles, scrollbar thumbs).
     pub const fn drag() -> Self {
         Sense { click: false, drag: true, focus: false }
     }
+    /// Both clickable and draggable.
     pub const fn click_and_drag() -> Self {
         Sense { click: true, drag: true, focus: false }
     }
@@ -75,28 +82,40 @@ impl Sense {
     }
 }
 
+/// What happened to a widget's rectangle this frame (from `Ui::interact`).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Response {
+    /// The rectangle passed to `interact` (not clipped).
     pub rect: Rect,
+    /// The pointer is over this widget and nothing above it.
     pub hovered: bool,
     /// Primary button held down on this widget.
     pub pressed: bool,
+    /// Primary button pressed and released on this widget, or a
+    /// screen-reader Click (needs `Sense::click`).
     pub clicked: bool,
+    /// Second click on the same widget within the double-click time.
     pub double_clicked: bool,
+    /// Secondary button pressed and released on this widget.
     pub right_clicked: bool,
     /// Mouse movement since last frame while dragging this widget.
     pub dragged: Option<Point>,
+    /// The widget has keyboard focus.
     pub focused: bool,
 }
 
+/// A rectangle registered by `interact`, used for hit-testing next frame.
 #[derive(Debug, Clone, Copy)]
 struct Hit {
     id: Id,
+    /// The widget's rect clipped to the clip area it was registered in.
     rect: Rect,
+    /// 0 for normal widgets, higher for overlays.
     layer: u8,
     sense: Sense,
 }
 
+/// The hit under `p`: highest layer wins, then the latest registered.
 fn top_hit(hits: &[Hit], p: Point) -> Option<Hit> {
     hits.iter().enumerate().filter(|(_, h)| h.rect.contains(p)).max_by_key(|(i, h)| (h.layer, *i)).map(|(_, h)| *h)
 }
@@ -104,10 +123,15 @@ fn top_hit(hits: &[Hit], p: Point) -> Option<Hit> {
 /// This frame's input plus current pointer/keyboard state.
 #[derive(Debug, Clone, Default)]
 pub struct Input {
+    /// This frame's events; widgets may remove the ones they consume.
     pub events: Vec<Event>,
+    /// Pointer position in physical pixels.
     pub mouse: Point,
+    /// Primary button currently held.
     pub left_down: bool,
+    /// Secondary button currently held.
     pub right_down: bool,
+    /// Modifier keys currently held.
     pub mods: Modifiers,
 }
 
@@ -139,19 +163,32 @@ impl Input {
 
 /// UI state that lives across frames. Keep one per window in the app.
 pub struct UiState {
+    /// Per-widget state of any type (see `Ui::memory`).
     memory: HashMap<Id, Box<dyn Any>>,
+    /// The widget with keyboard focus.
     focus: Option<Id>,
+    /// The widget the primary button went down on (until it is released).
     active: Option<Id>,
+    /// The widget the secondary button went down on.
     right_active: Option<Id>,
+    /// Hit rectangles registered last frame; this frame's input is tested
+    /// against them.
     prev_hits: Vec<Hit>,
+    /// Last known pointer position.
     mouse: Point,
+    /// Primary button held.
     left: bool,
+    /// Secondary button held.
     right: bool,
+    /// Modifier keys held.
     mods: Modifiers,
+    /// Pointer position at the last drag update; drag deltas are measured from it.
     drag_last: Point,
+    /// The last click (widget, time, position), for double-click detection.
     last_click: Option<(Id, Instant, Point)>,
     /// Widget that owns the keyboard (an open menu); carried to the next frame.
     capture: Option<Id>,
+    /// The drag-and-drop in progress, if any.
     drag: Option<crate::dnd::DragState>,
     /// The last focused widget in each region (F6 returns there).
     region_focus: HashMap<Id, Id>,
@@ -172,6 +209,7 @@ impl UiState {
 }
 
 impl Default for UiState {
+    /// Nothing focused or pressed; the pointer starts off-window at (-1, -1).
     fn default() -> Self {
         UiState {
             memory: HashMap::new(),
@@ -193,15 +231,19 @@ impl Default for UiState {
     }
 }
 
+/// Longest gap between two clicks that still counts as a double click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(450);
 
 /// Interaction results computed once per frame from the events.
 #[derive(Default)]
 struct FrameHits {
+    /// Topmost widget under the pointer.
     hovered: Option<Id>,
+    /// Widgets clicked this frame (pointer or screen reader).
     clicked: HashSet<Id>,
     double_clicked: HashSet<Id>,
     right_clicked: HashSet<Id>,
+    /// The widget being dragged and the pointer movement since last frame.
     drag: Option<(Id, Point)>,
 }
 
@@ -213,12 +255,16 @@ pub struct Painter<'p> {
 }
 
 impl Painter<'_> {
+    /// Fills `rect` with `color`, corners rounded by `radius` (physical px);
+    /// skips empty rects and fully transparent colors.
     pub fn rect(&mut self, rect: Rect, color: Color, radius: f32) {
         if !rect.is_empty() && color.a > 0 {
             self.list.push(Prim::Rect { rect, color, radius });
         }
     }
 
+    /// Strokes a `width`-pixel outline just inside `rect`; skips empty rects
+    /// and fully transparent colors.
     pub fn border(&mut self, rect: Rect, color: Color, width: i32, radius: f32) {
         if !rect.is_empty() && color.a > 0 {
             self.list.push(Prim::Border { rect, color, width, radius });
@@ -243,52 +289,76 @@ impl Painter<'_> {
         w
     }
 
+    /// Clips the following primitives to `r` until the matching `pop_clip`.
     pub fn push_clip(&mut self, r: Rect) {
         self.list.push(Prim::PushClip(r));
     }
 
+    /// Ends the clip started by the last `push_clip`.
     pub fn pop_clip(&mut self) {
         self.list.push(Prim::PopClip);
     }
 
+    /// Appends any primitive as-is (for widgets that build their own).
     pub fn prim(&mut self, p: Prim) {
         self.list.push(p);
     }
 }
 
+/// One frame's UI context: widgets take `&mut Ui` to lay out, draw and
+/// read input. Created by `Ui::run`; borrows the persistent `UiState`.
 pub struct Ui<'a> {
     st: &'a mut UiState,
+    /// The frame's display list (layer 0).
     list: &'a mut DisplayList,
+    /// Primitives drawn on overlay layers; appended after `list` at the end.
     overlay_list: DisplayList,
     fonts: &'a Fonts,
     cache: &'a mut GlyphCache,
     clipboard: &'a mut dyn Clipboard,
     style: Style,
+    /// Window size in physical pixels.
     size: Size,
+    /// Physical pixels per logical pixel (DPI factor times zoom).
     scale: f32,
     /// `scale` without the style's zoom (the window's DPI factor alone).
     dpi_scale: f32,
+    /// The current layout area.
     rect: Rect,
+    /// The current clip area for drawing and hit-testing.
     clip: Rect,
+    /// 0 for normal widgets; each `overlay` nesting adds 1.
     layer: u8,
     input: Input,
     frame: FrameHits,
+    /// Hit rectangles registered this frame (become `prev_hits`).
     hits: Vec<Hit>,
+    /// Focusable widgets in registration order: the Tab order.
     focusables: Vec<Id>,
+    /// A widget asked to move focus: `Some(true)` forward, `Some(false)` back.
     focus_move: Option<bool>,
+    /// The widget owning the keyboard this frame (from last frame's request).
     capture: Option<Id>,
+    /// The keyboard owner requested this frame, carried to the next.
     next_capture: Option<Id>,
+    /// Shortest repaint delay any widget asked for.
     repaint_in: Option<Duration>,
+    /// Mouse cursor shape to show after this frame.
     cursor: CursorIcon,
     /// The left button was released this frame (ends a drag).
     drag_released: bool,
+    /// Accessibility tree under construction; `None` when no assistive
+    /// technology is listening.
     a11y: Option<Builder>,
     /// Focus regions this frame, each with its focusable widgets in order.
     regions: Vec<(Id, Vec<Id>)>,
+    /// Indexes into `regions` of the regions currently being laid out.
     region_stack: Vec<usize>,
+    /// F6 / Shift+F6 (or `cycle_region`) seen: move to the next / previous region.
     region_move: Option<bool>,
 }
 
+/// The style's zoom limited to 0.25..=4.
 fn clamped_zoom(style: &Style) -> f32 {
     style.zoom.clamp(0.25, 4.0)
 }
@@ -299,6 +369,7 @@ impl<'a> Ui<'a> {
         let events = std::mem::take(&mut ctx.events);
         let (size, scale) = (ctx.size, ctx.scale * clamped_zoom(style));
         let a11y = ctx.a11y_active;
+        // Scope the `Ui` so its borrows of `ctx` end before writing results back.
         let (repaint, cursor, tree) = {
             let mut ui =
                 Ui::begin(state, &mut *ctx.list, ctx.fonts, &mut *ctx.cache, &mut *ctx.clipboard, style.clone(), size, scale, events, a11y);
@@ -306,6 +377,7 @@ impl<'a> Ui<'a> {
             ui.finish()
         };
         ctx.a11y_tree = tree;
+        // Keep the earlier of the app's and the widgets' repaint requests.
         ctx.request_redraw_in = match (ctx.request_redraw_in, repaint) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -314,6 +386,8 @@ impl<'a> Ui<'a> {
         ctx.background = style.palette.bg;
     }
 
+    /// Applies this frame's events to `UiState` (button state, focus on
+    /// click, clicks, double clicks, drags) and builds the frame's `Ui`.
     #[allow(clippy::too_many_arguments)]
     fn begin(
         st: &'a mut UiState,
@@ -335,6 +409,8 @@ impl<'a> Ui<'a> {
                     st.mouse = *p;
                     let top = top_hit(&st.prev_hits, *p);
                     match b {
+                        // A left press picks the active widget and moves focus
+                        // to it, or clears focus if it can't take focus.
                         MouseButton::Left => {
                             st.left = true;
                             st.focus_visible = false;
@@ -353,6 +429,8 @@ impl<'a> Ui<'a> {
                     st.mouse = *p;
                     let top = top_hit(&st.prev_hits, *p).map(|h| h.id);
                     match b {
+                        // A click needs press and release on the same widget; a
+                        // second one nearby within DOUBLE_CLICK is a double click.
                         MouseButton::Left => {
                             st.left = false;
                             if let Some(id) = st.active.take().filter(|id| Some(*id) == top) {
@@ -378,6 +456,7 @@ impl<'a> Ui<'a> {
                         _ => {}
                     }
                 }
+                // Escape cancels a drag; navigation keys make the focus ring visible.
                 Event::KeyDown { key, mods, .. } => {
                     st.mods = *mods;
                     if *key == Key::Escape {
@@ -398,6 +477,8 @@ impl<'a> Ui<'a> {
                         st.focus = Some(*target);
                     }
                 }
+                // The window lost focus: forget held buttons, modifiers and drags,
+                // since their release events will go elsewhere.
                 Event::FocusLost => {
                     st.left = false;
                     st.right = false;
@@ -409,6 +490,8 @@ impl<'a> Ui<'a> {
                 _ => {}
             }
         }
+        // While the primary button is held on a widget, report the pointer
+        // movement since the last frame as a drag.
         if let (Some(id), true) = (st.active, st.left) {
             let d = Point::new(st.mouse.x - st.drag_last.x, st.mouse.y - st.drag_last.y);
             if d != Point::default() {
@@ -453,6 +536,10 @@ impl<'a> Ui<'a> {
         }
     }
 
+    /// Ends the frame: applies Tab / F6 focus moves, drops focus on vanished
+    /// widgets, draws the drag label and focus ring, appends overlays, keeps
+    /// this frame's hits for the next one. Returns the repaint request, the
+    /// cursor and the accessibility tree.
     fn finish(mut self) -> (Option<Duration>, CursorIcon, Option<Tree>) {
         // Tab / Shift+Tab nobody took moves focus.
         let mut mv = self.focus_move;
@@ -472,11 +559,14 @@ impl<'a> Ui<'a> {
                 }
             }
         }
+        // Remember where focus is in its region, so F6 can come back to it.
         if let Some(f) = self.st.focus
             && let Some((rid, _)) = self.regions.iter().find(|(_, ids)| ids.contains(&f))
         {
             self.st.region_focus.insert(*rid, f);
         }
+        // F6: jump to the next / previous non-empty region (wrapping), onto
+        // its remembered widget or else its first one. Overrides a Tab move.
         if let Some(forward) = region_mv {
             let regions: Vec<&(Id, Vec<Id>)> = self.regions.iter().filter(|(_, ids)| !ids.is_empty()).collect();
             if !regions.is_empty() {
@@ -495,6 +585,7 @@ impl<'a> Ui<'a> {
                 mv = None;
             }
         }
+        // Tab: step through the tab order, wrapping at both ends.
         let order = self.tab_order();
         if let Some(forward) = mv {
             if !order.is_empty() {
@@ -519,6 +610,7 @@ impl<'a> Ui<'a> {
         }
         self.draw_drag_label();
         self.draw_focus_ring();
+        // Overlays go last so they paint over the base layer.
         let overlay = std::mem::take(&mut self.overlay_list);
         self.list.prims.extend(overlay.prims);
         self.st.prev_hits = std::mem::take(&mut self.hits);
@@ -644,6 +736,8 @@ impl<'a> Ui<'a> {
     }
 
     /// Registers `rect` for this frame and reports what happened to it.
+    /// Pointer results come from last frame's hit rectangles, so a widget
+    /// that just appeared gets no hover or click on its first frame.
     pub fn interact(&mut self, id: Id, rect: Rect, sense: Sense) -> Response {
         let area = rect.intersect(self.clip).unwrap_or_default();
         self.hits.push(Hit { id, rect: area, layer: self.layer, sense });
@@ -670,10 +764,12 @@ impl<'a> Ui<'a> {
         self.rect
     }
 
+    /// The whole window, in physical pixels.
     pub fn window_rect(&self) -> Rect {
         Rect::new(0, 0, self.size.w, self.size.h)
     }
 
+    /// Physical pixels per logical pixel, including the interface zoom.
     pub fn scale(&self) -> f32 {
         self.scale
     }
@@ -689,46 +785,59 @@ impl<'a> Ui<'a> {
         (logical as f32 * self.scale).round() as i32
     }
 
+    /// The UI font size in physical pixels.
     pub fn font_px(&self) -> f32 {
         self.style.font_px * self.scale
     }
 
+    /// The monospace font size in physical pixels.
     pub fn mono_px(&self) -> f32 {
         self.style.mono_px * self.scale
     }
 
+    /// The style this frame runs with.
     pub fn style(&self) -> &Style {
         &self.style
     }
 
+    /// The style, changeable for the rest of this frame only (`Ui` owns a copy).
     pub fn style_mut(&mut self) -> &mut Style {
         &mut self.style
     }
 
+    /// This frame's input.
     pub fn input(&self) -> &Input {
         &self.input
     }
 
+    /// This frame's input, for widgets that consume events.
     pub fn input_mut(&mut self) -> &mut Input {
         &mut self.input
     }
 
+    /// The loaded fonts.
     pub fn fonts(&self) -> &Fonts {
         self.fonts
     }
 
+    /// Advance width of `text` on one line, in physical pixels.
     pub fn measure(&mut self, text: &str, font: FontKind, px: f32) -> f32 {
         text_layout::measure(self.fonts, self.cache, font, text, px)
     }
 
+    /// Height of one line of `font` at `px`, in physical pixels.
     pub fn line_height(&self, font: FontKind, px: f32) -> i32 {
         text_layout::line_height(self.fonts, font, px) as i32
     }
 
+    /// The char index in `text` closest to horizontal offset `x` (for
+    /// placing a text cursor on click).
     pub fn char_index_at_x(&mut self, text: &str, font: FontKind, px: f32, x: f32) -> usize {
         text_layout::char_index_at_x(self.fonts, self.cache, font, text, px, x)
     }
 
+    /// A painter for the current layer: the base list, or the overlay list
+    /// inside `overlay`.
     pub fn painter(&mut self) -> Painter<'_> {
         let list = if self.layer > 0 { &mut self.overlay_list } else { &mut *self.list };
         Painter { list, fonts: self.fonts, cache: &mut *self.cache }
@@ -739,10 +848,12 @@ impl<'a> Ui<'a> {
         layout::split_h(r, &self.scaled(sizes), self.px(gap))
     }
 
+    /// `layout::split_v` with `Px` sizes and `gap` in logical pixels.
     pub fn split_v(&self, r: Rect, sizes: &[layout::Size], gap: i32) -> Vec<Rect> {
         layout::split_v(r, &self.scaled(sizes), self.px(gap))
     }
 
+    /// Converts `Px` sizes from logical to physical pixels; other sizes pass through.
     fn scaled(&self, sizes: &[layout::Size]) -> Vec<layout::Size> {
         sizes
             .iter()
@@ -790,6 +901,7 @@ impl<'a> Ui<'a> {
         self.st.drag = Some(crate::dnd::DragState { payload, label });
     }
 
+    /// A drag-and-drop is in progress.
     pub fn dragging(&self) -> bool {
         self.st.drag.is_some()
     }
@@ -803,6 +915,7 @@ impl<'a> Ui<'a> {
         }
         let area = rect.intersect(self.clip).unwrap_or_default();
         out.hovered = area.contains(self.st.mouse);
+        // Released over this target: take the payload, ending the drag.
         if out.hovered && self.drag_released {
             let d = self.st.drag.take().expect("checked above");
             out.dropped = d.payload.downcast::<T>().ok().map(|b| *b);
@@ -810,6 +923,8 @@ impl<'a> Ui<'a> {
         out
     }
 
+    /// Draws the drag's label in a small box below-right of the pointer, on
+    /// the overlay, and shows the grabbing cursor.
     fn draw_drag_label(&mut self) {
         let Some(d) = &self.st.drag else { return };
         let label = d.label.clone();
@@ -829,6 +944,9 @@ impl<'a> Ui<'a> {
         self.cursor = CursorIcon::Grabbing;
     }
 
+    /// State of type `T` kept for widget `id` across frames, created with
+    /// `T::default()` on first use. A different `T` under the same id
+    /// replaces the old value.
     pub fn memory<T: Default + 'static>(&mut self, id: Id) -> &mut T {
         let e = self.st.memory.entry(id).or_insert_with(|| Box::new(T::default()));
         if !(**e).is::<T>() {
@@ -837,20 +955,24 @@ impl<'a> Ui<'a> {
         (**e).downcast_mut::<T>().expect("type checked above")
     }
 
+    /// Gives keyboard focus to `id`.
     pub fn request_focus(&mut self, id: Id) {
         self.st.focus = Some(id);
     }
 
+    /// Clears keyboard focus if `id` holds it.
     pub fn surrender_focus(&mut self, id: Id) {
         if self.st.focus == Some(id) {
             self.st.focus = None;
         }
     }
 
+    /// Whether `id` has keyboard focus.
     pub fn has_focus(&self, id: Id) -> bool {
         self.st.focus == Some(id)
     }
 
+    /// The widget with keyboard focus.
     pub fn focused(&self) -> Option<Id> {
         self.st.focus
     }
@@ -868,10 +990,12 @@ impl<'a> Ui<'a> {
         self.capture.is_none_or(|c| c == id)
     }
 
+    /// Moves focus to the next widget in the Tab order at the end of the frame.
     pub fn focus_next(&mut self) {
         self.focus_move = Some(true);
     }
 
+    /// Moves focus to the previous widget in the Tab order at the end of the frame.
     pub fn focus_prev(&mut self) {
         self.focus_move = Some(false);
     }
@@ -881,14 +1005,18 @@ impl<'a> Ui<'a> {
         self.st.active.filter(|_| self.st.left)
     }
 
+    /// Sets the mouse cursor shown after this frame (last call wins).
     pub fn set_cursor_icon(&mut self, c: CursorIcon) {
         self.cursor = c;
     }
 
+    /// Asks for another frame within `d` (for blinking cursors, animations);
+    /// the shortest request of the frame wins.
     pub fn request_repaint_in(&mut self, d: Duration) {
         self.repaint_in = Some(self.repaint_in.map_or(d, |r| r.min(d)));
     }
 
+    /// The clipboard.
     pub fn clipboard(&mut self) -> &mut dyn Clipboard {
         &mut *self.clipboard
     }
@@ -902,12 +1030,16 @@ pub mod testing {
     use crate::display::render_full;
     use crate::text::test_fonts;
 
+    /// A window without a window: runs frames against an in-memory display
+    /// list, clipboard and accessibility tree.
     pub struct Harness {
         pub state: UiState,
         pub fonts: Fonts,
         pub clipboard: MemoryClipboard,
         pub style: Style,
+        /// The repaint delay the last frame asked for.
         pub repaint_in: Option<Duration>,
+        /// The cursor the last frame set.
         pub cursor: CursorIcon,
         size: Size,
         scale: f32,
@@ -922,6 +1054,7 @@ pub mod testing {
             Self::with_fonts(w, h, scale, test_fonts())
         }
 
+        /// Like `new`, with the given fonts (e.g. real system fonts).
         pub fn with_fonts(w: i32, h: i32, scale: f32, fonts: Fonts) -> Self {
             Harness {
                 state: UiState::default(),
@@ -959,6 +1092,7 @@ pub mod testing {
                 a11y_tree: None,
             };
             Ui::run(&mut self.state, &mut ctx, &self.style, |ui| f(ui));
+            // Copy out what the frame reported, as the shell would.
             self.tree = ctx.a11y_tree.take().unwrap_or_default();
             self.repaint_in = ctx.request_redraw_in;
             self.cursor = ctx.cursor;
@@ -968,6 +1102,7 @@ pub mod testing {
             }
         }
 
+        /// The last frame's display list.
         pub fn list(&self) -> &DisplayList {
             &self.list
         }
@@ -977,10 +1112,12 @@ pub mod testing {
             &self.tree
         }
 
+        /// The DPI scale frames run with.
         pub fn scale(&self) -> f32 {
             self.scale
         }
 
+        /// Changes the window size for the following frames.
         pub fn resize(&mut self, w: i32, h: i32) {
             self.size = Size::new(w, h);
         }

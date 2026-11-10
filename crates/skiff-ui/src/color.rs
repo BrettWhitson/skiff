@@ -1,9 +1,13 @@
+//! The toolkit's color type: 8-bit sRGB with straight alpha, plus the
+//! conversions to and from the `0x00RRGGBB` pixels the framebuffer uses.
+
 /// An sRGB color with straight (non-premultiplied) alpha.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Color {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+    /// Opacity: 0 is fully transparent, 255 fully opaque.
     pub a: u8,
 }
 
@@ -12,10 +16,12 @@ impl Color {
     pub const BLACK: Color = Color::rgb(0, 0, 0);
     pub const WHITE: Color = Color::rgb(255, 255, 255);
 
+    /// An opaque color from its three channels.
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, a: 255 }
     }
 
+    /// A color with explicit alpha.
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
     }
@@ -25,6 +31,7 @@ impl Color {
         Self::rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
     }
 
+    /// The same color with its alpha replaced by `a`.
     pub const fn with_alpha(self, a: u8) -> Self {
         Self { a, ..self }
     }
@@ -34,6 +41,7 @@ impl Color {
         ((self.r as u32) << 16) | ((self.g as u32) << 8) | self.b as u32
     }
 
+    /// An opaque color from a `0x00RRGGBB` pixel (the top byte is ignored).
     pub const fn from_u32(v: u32) -> Self {
         Self::rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
     }

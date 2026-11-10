@@ -1,17 +1,23 @@
+//! Tests for `Prim::CellRow` painting (terminal rows): per-cell backgrounds,
+//! wide chars, bold / italic / underline, and per-row damage.
+
 use super::*;
 use crate::geom::Size;
 use crate::text::test_fonts;
 
 const BG: Color = Color::rgb(0, 0, 0);
 
+/// A cell with default attributes and hex colors.
 fn cell(ch: char, fg: u32, bg: u32) -> Cell {
     Cell { ch, fg: Color::hex(fg), bg: Color::hex(bg), attrs: CellAttrs::default() }
 }
 
+/// A row of 8x16 cells at height `y`, 14px font.
 fn row_prim(y: i32, cells: Vec<Cell>) -> Prim {
     Prim::CellRow { origin: Point::new(0, y), cell: Size::new(8, 16), px: 14.0, cells }
 }
 
+/// Renders `list` in one full pass on a `w`x`h` black canvas.
 fn paint(list: &DisplayList, w: i32, h: i32) -> Canvas {
     let mut c = Canvas::new(w, h);
     render_full(list, &mut c, &test_fonts(), &mut GlyphCache::default(), BG);
@@ -23,11 +29,13 @@ fn ink_cols(c: &Canvas, y0: i32, y1: i32) -> Vec<i32> {
     (0..c.width).filter(|&x| (y0..y1).any(|y| is_fgish(c.pixel(x, y)))).collect()
 }
 
+/// Whether pixel `p` is bright in all channels (glyph ink, not a background).
 fn is_fgish(p: u32) -> bool {
     // test glyph colour is white blended at coverage 200
     (p >> 16) & 0xff > 0x80 && (p >> 8) & 0xff > 0x80 && p & 0xff > 0x80
 }
 
+/// Each cell paints its own background, and a glyph's ink stays inside its cell.
 #[test]
 fn cell_row_paints_bg_and_glyph_per_cell() {
     let mut l = DisplayList::default();
@@ -43,6 +51,7 @@ fn cell_row_paints_bg_and_glyph_per_cell() {
     assert_eq!(c.pixel(8, 15), 0x00ff00);
 }
 
+/// A wide char's background spans two columns and its continuation cell is skipped.
 #[test]
 fn cell_row_wide_char_spans_two_cells() {
     let mut wide = cell('日', 0xffffff, 0x00ff00);
@@ -55,6 +64,7 @@ fn cell_row_wide_char_spans_two_cells() {
     assert_eq!(c.pixel(20, 15), 0x0000ff, "next char starts at column 2");
 }
 
+/// Changing one cell in a 24-row grid repaints only tiles around that row.
 #[test]
 fn changing_one_row_damages_only_its_tiles() {
     let fonts = test_fonts();
@@ -82,6 +92,7 @@ fn changing_one_row_damages_only_its_tiles() {
     }
 }
 
+/// Bold widens the ink by a pixel; italic shifts upper rows to the right.
 #[test]
 fn bold_and_italic_change_ink() {
     let draw = |attrs: CellAttrs| {
@@ -106,6 +117,7 @@ fn bold_and_italic_change_ink() {
     assert!(it_top.unwrap() > it_bot.unwrap(), "italic top row shifted right");
 }
 
+/// Underline draws a full-width line in the lower part of the cell.
 #[test]
 fn underline_draws_below_glyph() {
     let mut l = DisplayList::default();
