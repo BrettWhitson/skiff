@@ -141,3 +141,27 @@ impl GlyphRasterizer for NoMissingGlyphs {
         BlockFont.line_metrics(px)
     }
 }
+
+#[test]
+fn scan_fonts_lists_monospace() {
+    use super::system::{candidates, scan_fonts};
+    let first = |k| candidates(k).into_iter().find(|p| p.exists() && p.extension().is_some_and(|e| e == "ttf"));
+    let (Some(mono), Some(ui)) = (first(FontKind::Mono), first(FontKind::Ui)) else {
+        eprintln!("no system .ttf fonts; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("termax-fonts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(&mono, dir.join("mono.ttf")).unwrap();
+    std::fs::copy(&ui, dir.join("ui.ttf")).unwrap();
+    std::fs::write(dir.join("junk.ttf"), b"not a font at all, just bytes").unwrap();
+    let dirs = [dir.clone()];
+    let only_mono = scan_fonts(&dirs, true);
+    let all = scan_fonts(&dirs, false);
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(only_mono.len(), 1, "{only_mono:?}");
+    assert!(only_mono[0].1.ends_with("mono.ttf"));
+    assert!(!only_mono[0].0.is_empty() && !only_mono[0].0.ends_with(".ttf"), "a font name, not a file name: {only_mono:?}");
+    assert_eq!(all.len(), 2, "junk skipped: {all:?}");
+    assert!(all.windows(2).all(|w| w[0].0 <= w[1].0), "sorted by name");
+}

@@ -114,6 +114,21 @@ impl TermTab {
     }
 
     /// Cell width and height of the last frame, in physical pixels.
+    /// Types a snippet. A multi-line one is a paste (and may ask first);
+    /// a one-line one is typed, with its Enter if it has one.
+    pub fn send_snippet(&mut self, text: &str) {
+        let Some(s) = self.session.as_mut() else { return };
+        if text.trim_end_matches('\r').contains(['\n', '\r']) {
+            let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
+            match termax_core::termx::paste_lines(text, bracketed, self.confirm_paste) {
+                Some(n) => self.pending_paste = Some((text.to_string(), n)),
+                None => s.paste(text),
+            }
+        } else {
+            s.write(text.as_bytes());
+        }
+    }
+
     /// Sends (`yes`) or drops the paste waiting for confirmation.
     pub fn paste_answer(&mut self, yes: bool) {
         if let Some((text, _)) = self.pending_paste.take()

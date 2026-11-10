@@ -658,6 +658,12 @@ impl GuiApp {
             Item::Command(Cmd::Forwards) => self.open_forwards(),
             Item::Command(Cmd::CheckStatus) => self.check_status(None),
             Item::Command(Cmd::ReloadConfig) => self.reload_config(),
+            Item::Snippet(i) => {
+                let Some(text) = self.cfg.snippets.get(i).map(|s| s.text()) else { return };
+                if let Some(TabKind::Terminal(t)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
+                    t.send_snippet(&text);
+                }
+            }
         }
     }
 
@@ -674,6 +680,17 @@ impl GuiApp {
         let ctx = crate::switcher::RankCtx {
             show_hidden: self.geometry.show_hidden,
             recent: self.history.recent(crate::switcher::RECENT_HOSTS),
+            snippets: match self.tabs.get(self.active).map(|t| &t.kind) {
+                Some(TabKind::Terminal(t)) => self
+                    .cfg
+                    .snippets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.host.as_deref().is_none_or(|h| h == t.host.name))
+                    .map(|(i, s)| (i, s.name.clone()))
+                    .collect(),
+                _ => vec![],
+            },
         };
         let items = crate::switcher::rank(&self.switcher.query, &self.hosts, &tabs, &self.theme_names(), &ctx);
         let out = crate::switcher::show(ui, &mut self.switcher, &items);

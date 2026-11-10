@@ -43,6 +43,8 @@ pub struct RankCtx {
     pub show_hidden: bool,
     /// Most recent first (see `History::recent`).
     pub recent: Vec<String>,
+    /// Snippets usable in the active terminal tab: (index in the config, name).
+    pub snippets: Vec<(usize, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,8 @@ pub enum Item {
     Tab(u64),
     Theme(String),
     Command(Cmd),
+    /// Type `cfg.snippets[i]` into the active terminal.
+    Snippet(usize),
 }
 
 /// Case-insensitive subsequence score (higher is better), `None` if no match.
@@ -110,6 +114,11 @@ pub fn rank(query: &str, hosts: &[HostEntry], tabs: &[(u64, String)], themes: &[
     for c in Cmd::ALL {
         if let Some(s) = score_text(q, c.label()) {
             out.push((Item::Command(c), c.label().to_string(), if empty { 1000 } else { s }));
+        }
+    }
+    for (i, name) in &ctx.snippets {
+        if let Some(s) = score_text(q, &format!("snippet {name}")) {
+            out.push((Item::Snippet(*i), format!("Snippet: {name}"), if empty { 500 } else { s }));
         }
     }
     for t in themes {
