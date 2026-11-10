@@ -766,3 +766,41 @@ fn shortcuts_stand_aside_while_a_context_menu_is_open() {
     assert_eq!(f.app.dock.groups.len(), 2, "split once, by the menu");
     assert!(f.try_find("Split right").is_none(), "the menu closed");
 }
+
+/// Narrow groups: Settings folds its section list into a named icon rail
+/// (search above the page) and stacks the host list over the editor; the
+/// forwards table drops columns; a terminal's error wraps inside its pane.
+#[test]
+fn pages_reflow_when_narrow() {
+    let mut f = Fixture::new();
+    f.h.resize(760, 700);
+    f.double_click_text("alpha");
+    f.frame(vec![]);
+    let term = f.h.tree().find("Terminal: alpha").unwrap().bounds;
+    let lines: Vec<Point> = f
+        .h
+        .list()
+        .prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Text { text, origin, .. } if text.contains("skiff-test-no-such-ssh") || origin.y > term.y && origin.x < term.x + 20 => {
+                Some(*origin)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(lines.len() > 1, "the error wraps");
+    f.app.open_settings();
+    f.frame(vec![]);
+    f.frame(vec![]);
+    let t = f.h.tree();
+    let nav = t.find("Appearance").expect("rail item named").bounds;
+    let search = t.find("Search settings").unwrap().bounds;
+    assert!(nav.w < 60 && search.x > nav.right(), "rail {nav:?}, search {search:?}");
+    let list = t.nodes.iter().find(|n| n.name == "Connections" && n.role != skiff_ui::a11y::Role::Button);
+    let empty = f.find("No host selected");
+    assert!(list.is_some_and(|l| l.bounds.bottom() <= empty.y), "the list sits above the editor");
+    assert_eq!(crate::forwards::columns_for(400), ["Name", "Status", ""]);
+    assert_eq!(crate::forwards::columns_for(560), ["Name", "Host", "Status", ""]);
+    assert_eq!(crate::forwards::columns_for(800), ["Name", "Host", "Type", "Route", "Status", ""]);
+}

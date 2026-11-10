@@ -23,10 +23,14 @@ use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::text::FontKind;
 use skiff_ui::ui::{Id, Sense, Ui};
 use skiff_ui::widgets::{
-    Align, ButtonKind, ButtonOpts, Column, Dialog, DialogButton, DialogResult, Elide, EmptyState, Selection, Sort, TextInputOpts, TextOpts,
-    Tone, button, button_width, button_with, dialog, dropdown_labeled, elide, empty_state, icon_button, scroll_into_view,
-    select_list_named, table_header, text, text_input, tone_colors,
+    Align, ButtonKind, ButtonOpts, Column, Dialog, DialogButton, DialogResult, Elide, EmptyState, MenuItem, Selection, Sort, TextInputOpts,
+    TextOpts, Tone, button, button_width, button_with, context_menu, dialog, dropdown_labeled, elide, elide_mode, empty_state, icon_button,
+    open_context_menu, scroll_into_view, select_list_named, table_header, text, text_input, tone_colors,
 };
+
+/// Below this pane width (logical px) the path bar gets a row of its own,
+/// under the location picker and the Up / Refresh buttons.
+pub const PATH_ROW_BELOW: i32 = 440;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -554,7 +558,7 @@ pub struct PaneOut {
 }
 
 /// Draws one pane as a card and handles its input.
-pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCtx) -> PaneOut {
+pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, stacked: bool, ctx: &FilesCtx) -> PaneOut {
     let mut out = PaneOut::default();
     let p = ui.style().palette;
     let id = Id::new(("pane", ctx.tab_id, side));
@@ -585,12 +589,19 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
         r
     };
     let nav = next_row(ctl);
+    // Narrow: the path bar on its own row, so its last folder stays readable.
+    let path_row = (inner_w < ui.px(PATH_ROW_BELOW)).then(|| next_row(ctl));
     let tools = next_row(ctl);
     let banner_r = banner.as_ref().map(|_| next_row(ctl));
     let table = Rect::new(rect.x + bw, y, rect.w - 2 * bw, rect.bottom() - bw - y);
 
-    // Row 1: location picker, Up, Refresh, breadcrumb path.
-    let parts = ui.split_h(nav, &[L::Px(150), L::Px(tokens::CONTROL_H), L::Px(tokens::CONTROL_H), L::Fill], tokens::SPACE_XS);
+    // Row 1: location picker, Up, Refresh, breadcrumb path (or the path
+    // below when narrow, the picker then taking the room).
+    let sizes = match path_row {
+        Some(_) => [L::Fill, L::Px(tokens::CONTROL_H), L::Px(tokens::CONTROL_H), L::Px(0)],
+        None => [L::Px(150), L::Px(tokens::CONTROL_H), L::Px(tokens::CONTROL_H), L::Fill],
+    };
+    let parts = ui.split_h(nav, &sizes, tokens::SPACE_XS);
     location_picker(ui, id, parts[0], pane, side, ctx);
     let can_up = parent(pane.is_remote(), &pane.cwd).is_some();
     if icon_button(ui, id.with("up"), parts[1], Icon::ChevronUp, "Up one folder", ButtonKind::Ghost).clicked && can_up {
@@ -599,13 +610,13 @@ pub fn view(ui: &mut Ui, rect: Rect, pane: &mut Pane, side: usize, ctx: &FilesCt
     if icon_button(ui, id.with("refresh"), parts[2], Icon::Refresh, "Refresh", ButtonKind::Ghost).clicked {
         pane.refresh(ctx, side);
     }
-    path_bar(ui, id, parts[3], pane, side, ctx);
+    path_bar(ui, id, path_row.unwrap_or(parts[3]), pane, side, ctx);
 
     // Row 2: the toolbar, or the open name bar.
     if matches!(pane.confirm, Some(Confirm::Rename { .. } | Confirm::NewFolder { .. })) {
         name_bar(ui, id, tools, pane, side, ctx);
     } else {
-        out.copy |= toolbar(ui, id, tools, pane, side);
+        out.copy |= toolbar(ui, id, tools, pane, side, stacked);
     }
 
     // The error banner, with Reconnect / Retry / Dismiss.
@@ -665,19 +676,27 @@ enum Fit {
     Mid,
     /// Icons only (named, with tooltips).
     Icons,
+    /// Copy, then a "More actions" menu with the rest.
+    Overflow,
 }
 
 /// The toolbar: Copy (primary) | New folder, Rename | Delete (danger), and
 /// the "Hidden files" toggle at the right end. Buttons that need a
 /// selection are disabled without one. Narrower panes drop labels, the
-/// secondary actions first (icon buttons are named and have tooltips).
-/// Returns true when Copy was pressed.
-fn toolbar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize) -> bool {
+/// secondary actions first (icon buttons are named and have tooltips);
+/// narrower still, everything but Copy goes into a "More actions" menu.
+/// With the panes `stacked`, Copy points up or down. Returns true when
+/// Copy was pressed.
+fn toolbar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, stacked: bool) -> bool {
     let p = ui.style().palette;
     let n = pane.sel.len();
     let connected = pane.ep.is_some();
-    let (copy_name, copy_icon) =
-        if side == 0 { ("Copy to the right pane", Icon::ChevronRight) } else { ("Copy to the left pane", Icon::ChevronLeft) };
+    let (copy_name, copy_icon) = match (side, stacked) {
+        (0, false) => ("Copy to the right pane", Icon::ChevronRight),
+        (_, false) => ("Copy to the left pane", Icon::ChevronLeft),
+        (0, true) => ("Copy to the pane below", Icon::ChevronDown),
+        (_, true) => ("Copy to the pane above", Icon::ChevronUp),
+    };
     let hidden_name = "Show hidden files";
     let hidden_label = "Hidden files";
     let hidden_icon = if pane.show_hidden { Icon::Eye } else { Icon::EyeOff };
@@ -691,13 +710,10 @@ fn toolbar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize) -> boo
     let full: Vec<i32> = items.iter().map(|it| button_width(ui, it.0, 1)).collect();
     let hidden_full = button_width(ui, hidden_label, 1);
     let gaps = 2 * group_gap + gap + group_gap;
-    let fit = if full.iter().sum::<i32>() + hidden_full + gaps <= rect.w {
-        Fit::Full
-    } else if full[0] + 3 * rect.h + hidden_full + gaps <= rect.w {
-        Fit::Mid
-    } else {
-        Fit::Icons
-    };
+    let fit = toolbar_fit(rect.w, rect.h, &full, hidden_full, gaps);
+    if fit == Fit::Overflow {
+        return toolbar_overflow(ui, id, rect, pane, (copy_name, copy_icon, n > 0), (n, connected));
+    }
     let labelled = |i: usize| fit == Fit::Full || (fit == Fit::Mid && i == 0);
     let widths: Vec<i32> = (0..4).map(|i| if labelled(i) { full[i] } else { rect.h }).collect();
     let mut x = rect.x;
@@ -712,7 +728,7 @@ fn toolbar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize) -> boo
             icon_button(ui, bid, r, icon, name, k).clicked
         } else {
             // Copy's arrow points at the other pane: after the label on the left, before it on the right.
-            let (lead, trail) = if i == 0 && side == 0 { (None, Some(icon)) } else { (Some(icon), None) };
+            let (lead, trail) = if i == 0 && side == 0 && !stacked { (None, Some(icon)) } else { (Some(icon), None) };
             let opts = ButtonOpts { kind, icon: lead, trailing: trail, enabled, tooltip: None, a11y_name: Some(name) };
             button_with(ui, bid, r, label, opts).clicked
         };
@@ -756,6 +772,60 @@ fn toolbar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize) -> boo
         pane.sel.clear();
     }
     copy
+}
+
+/// How much of the toolbar fits in `w` px (buttons `h` tall): `full` are
+/// the labelled widths of Copy, New folder, Rename and Delete, `hidden` the
+/// labelled hidden-files toggle, `gaps` the space between groups.
+fn toolbar_fit(w: i32, h: i32, full: &[i32], hidden: i32, gaps: i32) -> Fit {
+    if full.iter().sum::<i32>() + hidden + gaps <= w {
+        Fit::Full
+    } else if full[0] + 3 * h + hidden + gaps <= w {
+        Fit::Mid
+    } else if 5 * h + gaps <= w {
+        Fit::Icons
+    } else {
+        Fit::Overflow
+    }
+}
+
+/// The narrowest toolbar: Copy (an icon button, filled while it can act)
+/// and a "More actions" button whose menu holds New folder, Rename,
+/// Delete and the hidden-files toggle. Returns true when Copy was pressed.
+fn toolbar_overflow(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, copy: (&str, Icon, bool), sel: (usize, bool)) -> bool {
+    let (name, icon, can_copy) = copy;
+    let (n, connected) = sel;
+    let h = rect.h;
+    let kind = if can_copy { ButtonKind::Primary } else { ButtonKind::Ghost };
+    let bid = id.with(("tool", 0usize));
+    let copied = icon_button(ui, bid, Rect::new(rect.x, rect.y, h, h), icon, name, kind).clicked && can_copy;
+    if !can_copy && let Some(nd) = ui.a11y_node(bid, Role::Button, name) {
+        nd.disabled = true;
+    }
+    let more = Rect::new((rect.right() - h).max(rect.x + h), rect.y, h, h);
+    let mid = id.with("more");
+    if icon_button(ui, mid, more, Icon::Ellipsis, "More actions", ButtonKind::Ghost).clicked {
+        open_context_menu(ui, mid.with("menu"), Point::new(more.x, more.bottom() + ui.px(tokens::SPACE_XS)));
+    }
+    let hidden = if pane.show_hidden { "Hide hidden files" } else { "Show hidden files" };
+    let items = [
+        MenuItem::new("New folder").icon(Icon::Plus).enabled(connected),
+        MenuItem::new("Rename").icon(Icon::Edit).enabled(n == 1),
+        MenuItem::new("Delete").icon(Icon::Trash).enabled(n > 0).danger(),
+        MenuItem::SEPARATOR,
+        MenuItem::new(hidden).icon(if pane.show_hidden { Icon::EyeOff } else { Icon::Eye }),
+    ];
+    match context_menu(ui, mid.with("menu"), &items) {
+        Some(0) => pane.ask_new_folder(),
+        Some(1) => pane.ask_rename(),
+        Some(2) => pane.ask_delete(),
+        Some(4) => {
+            pane.show_hidden = !pane.show_hidden;
+            pane.sel.clear();
+        }
+        _ => {}
+    }
+    copied
 }
 
 /// The error banner: a danger-tinted strip with the message and Reconnect,
@@ -949,6 +1019,11 @@ fn path_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: 
         }
         shown = layout(keep);
     }
+    // Still too wide: the last folder alone (elided to fit), after "…".
+    if total(&shown) > room && n > 1 {
+        shown = vec![None, Some(n - 1)];
+    }
+    let last_room = room - total(&shown[..shown.len().saturating_sub(1)]) - chev;
     let lh = ui.line_height(font, px);
     let ty = rect.y + (rect.h - lh) / 2;
     let mut x = rect.x + pad;
@@ -963,8 +1038,13 @@ fn path_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: 
                 x += chev;
             }
             let (label, path, w) = match seg {
-                Some(i) => (all[*i].0.as_str(), Some(all[*i].1.clone()), widths[*i]),
-                None => ("\u{2026}", None, ell_w),
+                // The current folder keeps what room there is, elided in the middle.
+                Some(i) if n == last && widths[*i] > last_room && last > 0 => {
+                    let l = elide_mode(ui, &all[*i].0, FontKind::UiSemibold, px, (last_room - 2 * seg_pad).max(0), Elide::Middle);
+                    (l, Some(all[*i].1.clone()), last_room.max(0))
+                }
+                Some(i) => (all[*i].0.clone(), Some(all[*i].1.clone()), widths[*i]),
+                None => ("\u{2026}".to_string(), None, ell_w),
             };
             let seg_r = Rect::new(x, rect.y + ui.px(3), w, rect.h - ui.px(6));
             let sid = id.with(("crumb", n));
@@ -982,7 +1062,7 @@ fn path_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: 
             }
             let color = if n == last || sr.hovered { p.fg } else { p.muted };
             let f = if n == last { FontKind::UiSemibold } else { font };
-            ui.painter().text(Point::new(x + seg_pad, ty), label, f, px, color);
+            ui.painter().text(Point::new(x + seg_pad, ty), &label, f, px, color);
             if sr.clicked {
                 match path {
                     Some(pth) if n != last => go = Some(pth),

@@ -15,12 +15,10 @@ use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::ui::{Id, Ui};
 use skiff_ui::widgets::{
     ButtonKind, ButtonOpts, EmptyState, TextInputOpts, TextOpts, ToastKind, Tone, badge, badge_width, button_width, button_with, checkbox,
-    dropdown_labeled, empty_state, icon_button, list_named, paragraph, paragraph_height, text, text_input,
+    dropdown_labeled, empty_state, empty_state_height, icon_button, list_named, paragraph, paragraph_height, text, text_input,
 };
 
-use super::{
-    LIST_W, PendingDiscard, Rows, card, delete_prompt, discard_prompt, error_line, field_ph, list_header, row_label, scrolled, split_row,
-};
+use super::{PendingDiscard, Rows, card, delete_prompt, discard_prompt, error_line, field_ph, list_header, row_label, scrolled, split_row};
 use crate::app::GuiApp;
 
 /// The host form being edited.
@@ -145,7 +143,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp, notic
         st.selected = app.hosts.iter().position(|h| h.name == name);
     }
     let p = ui.style().palette;
-    let cols = ui.split_h(rect, &[L::Px(LIST_W), L::Fill], tokens::SPACE_XL);
+    let (list_col, editor_col) = super::list_and_editor(ui, rect, app.hosts.len());
+    let cols = [list_col, editor_col];
     let hh = ui.px(tokens::HEADER_H);
     let head = Rect::new(cols[0].x, cols[0].y, cols[0].w, hh);
     if list_header(ui, Id::new("settings-conn-add"), head, "Hosts", app.hosts.len()) {
@@ -218,11 +217,13 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp, notic
         let e = EmptyState {
             icon: Some(Icon::Host),
             title: "No host selected",
-            body: "Pick a host on the left to edit it, or add a new one.",
+            body: "Pick a host in the list to edit it, or add a new one.",
             action: Some("Add host"),
             ..Default::default()
         };
-        if empty_state(ui, Id::new("settings-conn-empty"), Rect::new(right.x, right.y, right.w, right.h.min(ui.px(420))), &e).action {
+        // At least as tall as it needs (stacked under the list it may be short).
+        let eh = right.h.min(ui.px(420)).max(empty_state_height(ui, right.w, &e));
+        if empty_state(ui, Id::new("settings-conn-empty"), Rect::new(right.x, right.y, right.w, eh), &e).action {
             st.switch(None, app);
         }
         if st.form.is_none() {

@@ -173,7 +173,10 @@ Every key, the `[gui]` options, custom themes, key remapping (`[keys]`,
     `Esc` cancels. Splitting a terminal opens another session to its host
     in a new group; empty groups close by themselves. Drag a divider (it
     snaps to the same shares, `Alt` places it freely, double-click
-    equalizes); every drag has a keyboard equivalent (below).
+    equalizes); every drag has a keyboard equivalent (below). Pages adapt
+    to small groups: file panes stack, Settings shows an icon rail, the
+    Forwards table drops columns, and a crowded strip keeps the active
+    tab's title.
 - **Paste warning**: text with a line break pasted into a shell without
   bracketed paste would run each line, so Skiff asks first
   (`confirm_multiline_paste = false` turns it off).

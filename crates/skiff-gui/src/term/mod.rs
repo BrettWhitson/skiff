@@ -15,7 +15,7 @@ use skiff_ui::icons::Icon;
 use skiff_ui::input::{CursorIcon, Event, Key, Modifiers};
 use skiff_ui::text::FontKind;
 use skiff_ui::ui::{Id, Sense, Ui};
-use skiff_ui::widgets::{ButtonKind, Dialog, DialogButton, DialogResult, MenuItem, context_menu, dialog, label, open_context_menu};
+use skiff_ui::widgets::{ButtonKind, Dialog, DialogButton, DialogResult, MenuItem, context_menu, dialog, open_context_menu};
 
 use crate::engine::WakeFn;
 use crate::keys::{Action, Keymap};
@@ -372,7 +372,11 @@ pub fn view(
     tab.ensure_session(grid, wake.as_ref());
     if let Some(e) = tab.error.clone() {
         ui.painter().rect(rect, theme.term_bg, 0.0);
-        label(ui, Rect::new(inner.x, inner.y, inner.w, cell.h + ui.px(4)), &e, Some(theme.palette.danger));
+        // Wrapped (long paths and commands break by character), clipped to the pane.
+        ui.with_clip(inner, |ui| {
+            let role = skiff_ui::style::TextRole::Body;
+            skiff_ui::widgets::paragraph(ui, inner, &e, role, theme.palette.danger, skiff_ui::widgets::Align::Start);
+        });
         let name = tab.a11y_name();
         if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
             n.value = Some(e);

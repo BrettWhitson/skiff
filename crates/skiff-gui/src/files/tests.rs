@@ -327,3 +327,25 @@ fn location_picker_is_named_and_keeps_a_removed_host() {
     assert_eq!(t.find("Left pane location").and_then(|n| n.value.clone()).as_deref(), Some("Local"));
     assert_eq!(t.find("Right pane location").and_then(|n| n.value.clone()).as_deref(), Some("web"), "not shown as Local");
 }
+
+/// A narrow tab stacks its panes top and bottom (Copy then points down),
+/// gives the path bar its own row, and keeps Copy beside a "More actions"
+/// menu holding the rest of the toolbar.
+#[test]
+fn narrow_tab_stacks_panes_and_folds_the_toolbar() {
+    assert!(stacks(500, 600) && !stacks(700, 600) && !stacks(500, 300));
+    let d = tree();
+    let mut e = Env::new(d.path());
+    e.h.resize(180, 700);
+    e.until("listing", |e| e.loaded(0));
+    let t = e.h.tree();
+    let (l0, l1) = (t.find("Left pane location").unwrap().bounds, t.find("Right pane location").unwrap().bounds);
+    assert!(l1.y > l0.bottom() && l1.x == l0.x, "stacked: {l0:?} {l1:?}");
+    assert!(t.find("Copy to the pane below").is_some() && t.find("Copy to the pane above").is_some());
+    let path = t.nodes.iter().find(|n| n.name.starts_with("Path ")).unwrap().bounds;
+    assert!(path.y > l0.bottom() && path.w > 140, "the path has its own row: {path:?}");
+    assert!(t.find("New folder").is_none(), "folded into the menu");
+    e.click_named("More actions");
+    e.click("Show hidden files");
+    assert!(e.names(0).contains(&".hidden".to_string()));
+}

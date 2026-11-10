@@ -2,7 +2,8 @@
 //! icon, a middle-elided title and a close button (shown on the active,
 //! hovered or keyboard-focused tab), drag-to-reorder (Shift+Left / Right
 //! from the keyboard), drag-out, and a "+" icon button after the last tab.
-//! The active tab is raised (window background, joined to the content
+//! When crowded, only the active tab keeps an (elided) title and the
+//! others shrink to their icon. The active tab is raised (window background, joined to the content
 //! through the strip's bottom border) with a 2 px accent bar on top (a
 //! quieter bar when `TabsOpts::inactive`). The caller owns the tab list and
 //! the active index; `tabs` reports what the user did in a `TabsResponse`.
@@ -17,6 +18,10 @@ use crate::ui::{Id, Sense, Ui};
 use super::badge::{Status, status_color};
 use super::button::{ButtonKind, icon_button_tip};
 use super::label::{Elide, elide_mode};
+
+/// Below this share per tab (logical px) a crowded strip keeps only the
+/// active tab's title; the others show just their icon or dot.
+const COMPACT_BELOW: i32 = 72;
 
 /// One tab as the caller describes it for this frame.
 #[derive(Debug, Clone, Copy)]
@@ -115,10 +120,27 @@ pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &
         })
         .collect();
     let total: i32 = widths.iter().sum::<i32>() + gap * n.saturating_sub(1) as i32;
-    // Too wide: every tab gets the same share (this may go below `min_w`).
+    // Too wide: every tab gets the same share; when that share is too
+    // small for a readable title, the others shrink to their icon (or dot)
+    // and the active tab keeps the rest, its title elided.
+    let compact_w = icon_px + 2 * ui.px(tokens::SPACE_SM);
+    let mut compact = vec![false; n];
     if total > avail && n > 0 {
         let each = ((avail - gap * (n as i32 - 1)) / n as i32).max(0);
-        widths.iter_mut().for_each(|w| *w = each);
+        if each >= ui.px(COMPACT_BELOW) || n == 1 {
+            widths.iter_mut().for_each(|w| *w = each);
+        } else {
+            let a = (*active).min(n - 1);
+            let rest = (avail - gap * (n as i32 - 1) - compact_w * (n as i32 - 1)).max(compact_w);
+            for (i, w) in widths.iter_mut().enumerate() {
+                if i == a {
+                    *w = (*w).min(rest);
+                } else {
+                    *w = compact_w;
+                    compact[i] = true;
+                }
+            }
+        }
     }
     let mut x = rect.x + edge;
     for w in &widths {
@@ -235,8 +257,10 @@ pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &
         let is_active = i == *active;
         let close =
             Rect::new(face.right() - ui.px(tokens::SPACE_SM) - close_side, face.y + (face.h - close_side) / 2, close_side, close_side);
-        let mut tx = face.x + pad;
-        let text_right = if t.closable { close.x - ui.px(tokens::SPACE_XS) } else { face.right() - pad };
+        // A compact tab shows only its icon (or dot), centred; no title or close button.
+        let closable = t.closable && !compact[i];
+        let mut tx = if compact[i] { face.x + (face.w - icon_px) / 2 } else { face.x + pad };
+        let text_right = if closable { close.x - ui.px(tokens::SPACE_XS) } else { face.right() - pad };
         {
             let mut painter = ui.painter();
             painter.push_clip(face);
@@ -260,10 +284,12 @@ pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &
             ui.painter().icon(Rect::new(tx, face.y + (face.h - icon_px) / 2, icon_px, icon_px), icon, c);
             tx += lead;
         }
-        let shown = elide_mode(ui, t.text, font, px, text_right - tx, Elide::Middle);
-        let fg = if is_active || hovered { p.fg } else { p.muted };
-        ui.painter().text(Point::new(tx, face.y + (face.h - lh) / 2), &shown, font, px, fg);
-        if t.closable {
+        if !compact[i] {
+            let shown = elide_mode(ui, t.text, font, px, text_right - tx, Elide::Middle);
+            let fg = if is_active || hovered { p.fg } else { p.muted };
+            ui.painter().text(Point::new(tx, face.y + (face.h - lh) / 2), &shown, font, px, fg);
+        }
+        if closable {
             let cr = ui.interact(id.with(("close", i)), close, Sense::click());
             if ui.a11y_on() {
                 ui.a11y_node(id.with(("close", i)), Role::Button, &format!("Close {}", t.text));

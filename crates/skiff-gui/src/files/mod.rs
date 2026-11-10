@@ -213,7 +213,18 @@ impl FilesTab {
     }
 }
 
-/// Draws both panes side by side, the transfer drawer below, and acts on
+/// Below this width (logical px) of the panes' area, the two panes stack
+/// (top and bottom) instead of squeezing side by side, when tall enough.
+pub const STACK_BELOW: i32 = 680;
+/// The least height (logical px) of the panes' area for stacking.
+const STACK_MIN_H: i32 = 560;
+
+/// Whether panes in an area `w` x `h` (logical px) stack top and bottom.
+pub fn stacks(w: i32, h: i32) -> bool {
+    w < STACK_BELOW && h >= STACK_MIN_H
+}
+
+/// Draws both panes side by side (stacked when narrow), the transfer drawer below, and acts on
 /// their copy requests, pane-to-pane drags and OS file drops.
 pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
     // The drawer takes at most 40% of the tab (its rows scroll), never less
@@ -223,7 +234,13 @@ pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
     let gap = tokens::SPACE_SM;
     let rows = ui.split_v(rect, &[L::Fill, L::Px(list_h)], if list_h > 0 { gap } else { 0 });
     tab.drawer_top = (list_h > 0).then_some(rows[1].y);
-    let cols = ui.split_h(rows[0], &[L::Frac(0.5), L::Frac(0.5)], gap);
+    let s = ui.scale();
+    let stacked = stacks((rows[0].w as f32 / s) as i32, (rows[0].h as f32 / s) as i32);
+    let cols = if stacked {
+        ui.split_v(rows[0], &[L::Frac(0.5), L::Frac(0.5)], gap)
+    } else {
+        ui.split_h(rows[0], &[L::Frac(0.5), L::Frac(0.5)], gap)
+    };
     // Files dropped from the OS this frame.
     let dropped: Vec<PathBuf> = ui
         .input()
@@ -232,7 +249,7 @@ pub fn view(ui: &mut Ui, rect: Rect, tab: &mut FilesTab, ctx: &FilesCtx) {
         .filter_map(|e| if let skiff_ui::input::Event::FileDropped(p) = e { Some(p.clone()) } else { None })
         .collect();
     for (side, &col) in cols.iter().enumerate().take(2) {
-        let out = pane::view(ui, col, &mut tab.panes[side], side, ctx);
+        let out = pane::view(ui, col, &mut tab.panes[side], side, stacked, ctx);
         if out.copy {
             let items = tab.panes[side].selected();
             tab.copy(side, items, ctx);

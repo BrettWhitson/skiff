@@ -20,7 +20,7 @@ use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::ui::{Id, Sense, Ui};
 use skiff_ui::widgets::{
     ButtonKind, Dialog, DialogButton, DialogResult, TextInputOpts, TextOpts, ToastKind, badge, badge_width, dialog, dropdown_labeled,
-    scroll_area, section_header, text, text_input,
+    scroll_area, section_header, text, text_input, tooltip,
 };
 
 use crate::app::GuiApp;
@@ -44,6 +44,14 @@ pub const CONTENT_MAX: i32 = 720;
 pub const LIST_W: i32 = 240;
 /// Height of a section-list item, logical px.
 const NAV_ROW_H: i32 = 32;
+/// Below this tab width (logical px) the section list becomes an icon rail
+/// and the search box moves above the page.
+pub const RAIL_BELOW: i32 = 700;
+/// Width of the icon rail, logical px.
+const RAIL_W: i32 = 52;
+/// Below this page width (logical px) list-and-editor pages stack the list
+/// above the editor.
+pub const STACK_BELOW: i32 = LIST_W + tokens::SPACE_XL + 360;
 /// Most notices kept for the app to pick up.
 const MAX_NOTICES: usize = 8;
 
@@ -237,7 +245,8 @@ pub fn search<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
 pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     // Taken out of the app so the pages can borrow both; put back at the end.
     let mut st = std::mem::take(&mut app.settings);
-    let cols = ui.split_h(rect, &[L::Px(NAV_W), L::Fill], 0);
+    let rail = rect.w < ui.px(RAIL_BELOW);
+    let cols = ui.split_h(rect, &[L::Px(if rail { RAIL_W } else { NAV_W }), L::Fill], 0);
     let p = ui.style().palette;
     let bw = ui.px(1).max(1);
     ui.painter().rect(cols[0], p.surface, 0.0);
@@ -246,9 +255,17 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     let hits = search(&entries, &st.search);
     // A section picked in the list is opened after the page is drawn, so a
     // text field losing focus to the click still applies its edit.
-    let picked = nav(ui, cols[0], &mut st, &entries);
-    let pad = ui.px(tokens::SPACE_XL);
-    let area = Rect::new(cols[1].x + pad, cols[1].y + ui.px(tokens::SPACE_LG), cols[1].w - 2 * pad, cols[1].h - ui.px(tokens::SPACE_LG));
+    let picked = nav(ui, cols[0], &mut st, &entries, rail);
+    // Narrow: smaller margins, and the search box above the page.
+    let pad = ui.px(if rail { tokens::SPACE_LG } else { tokens::SPACE_XL });
+    let mut area =
+        Rect::new(cols[1].x + pad, cols[1].y + ui.px(tokens::SPACE_LG), cols[1].w - 2 * pad, cols[1].h - ui.px(tokens::SPACE_LG));
+    if rail {
+        let sr = Rect::new(area.x, area.y - ui.px(tokens::SPACE_XS), area.w, ui.px(tokens::CONTROL_H));
+        search_box(ui, sr, &mut st);
+        let top = sr.bottom() + ui.px(tokens::SPACE_MD);
+        area = Rect::new(area.x, top, area.w, area.bottom() - top);
+    }
     // List-and-editor pages get the list's width on top of the 720 px.
     let max = if matches!(st.section, Section::Connections | Section::Snippets) && st.search.trim().is_empty() {
         CONTENT_MAX + LIST_W + tokens::SPACE_XL
@@ -285,15 +302,10 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     app.settings = st;
 }
 
-/// The section list: the search box, then one item per section (icon and
-/// name; the open one filled with an accent bar). While searching, each
-/// section shows how many results it has. Returns a newly picked section.
-fn nav(ui: &mut Ui, rect: Rect, st: &mut SettingsState, entries: &[Entry]) -> Option<Section> {
+/// The search box with a magnifier at its right end; Esc clears it.
+fn search_box(ui: &mut Ui, sr: Rect, st: &mut SettingsState) {
     let p = ui.style().palette;
-    let pad = ui.px(tokens::SPACE_SM);
-    let s = ui.px(tokens::ICON);
-    // Search box with a magnifier at its right end; Esc clears it.
-    let sr = Rect::new(rect.x + pad, rect.y + ui.px(tokens::SPACE_MD), rect.w - 2 * pad, ui.px(tokens::CONTROL_H));
+    let (pad, s) = (ui.px(tokens::SPACE_SM), ui.px(tokens::ICON));
     let sid = Id::new("settings-search");
     let opts = TextInputOpts { placeholder: "Search settings", label: "Search settings", ..Default::default() };
     text_input(ui, sid, sr, &mut st.search, opts);
@@ -303,8 +315,38 @@ fn nav(ui: &mut Ui, rect: Rect, st: &mut SettingsState, entries: &[Entry]) -> Op
     if st.search.is_empty() {
         ui.painter().icon(Rect::new(sr.right() - s - pad, sr.y + (sr.h - s) / 2, s, s), Icon::Search, p.muted);
     }
+}
+
+/// Splits a list-and-editor page (Connections, Snippets): the list column
+/// beside the editor, or, narrower than `STACK_BELOW`, the list (room for
+/// up to five of its `rows`) above the editor.
+pub fn list_and_editor(ui: &Ui, rect: Rect, rows: usize) -> (Rect, Rect) {
+    if rect.w >= ui.px(STACK_BELOW) {
+        let cols = ui.split_h(rect, &[L::Px(LIST_W), L::Fill], tokens::SPACE_XL);
+        return (cols[0], cols[1]);
+    }
+    let list_h = ui.px(tokens::HEADER_H + tokens::SPACE_XS + 4) + ui.px(tokens::ROW_H) * rows.clamp(2, 5) as i32;
+    let gap = ui.px(tokens::SPACE_LG);
+    let list = Rect::new(rect.x, rect.y, rect.w, list_h);
+    (list, Rect::new(rect.x, list.bottom() + gap, rect.w, (rect.h - list_h - gap).max(0)))
+}
+
+/// The section list: the search box, then one item per section (icon and
+/// name; the open one filled with an accent bar). While searching, each
+/// section shows how many results it has. Returns a newly picked section.
+/// In `rail` mode only the sections' icons show (each named, with its
+/// name as a tooltip) and the search box is drawn above the page instead.
+fn nav(ui: &mut Ui, rect: Rect, st: &mut SettingsState, entries: &[Entry], rail: bool) -> Option<Section> {
+    let p = ui.style().palette;
+    let pad = ui.px(tokens::SPACE_SM);
+    let s = ui.px(tokens::ICON);
+    let mut y = rect.y + ui.px(tokens::SPACE_MD);
+    if !rail {
+        let sr = Rect::new(rect.x + pad, y, rect.w - 2 * pad, ui.px(tokens::CONTROL_H));
+        search_box(ui, sr, st);
+        y = sr.bottom() + ui.px(tokens::SPACE_MD);
+    }
     let searching = !st.search.trim().is_empty();
-    let mut y = sr.bottom() + ui.px(tokens::SPACE_MD);
     let mut picked = None;
     let rh = ui.px(NAV_ROW_H);
     for sec in Section::ALL {
@@ -326,6 +368,9 @@ fn nav(ui: &mut Ui, rect: Rect, st: &mut SettingsState, entries: &[Entry]) -> Op
         }
         if resp.hovered {
             ui.set_cursor_icon(CursorIcon::Pointer);
+            if rail {
+                tooltip(ui, r, sec.label());
+            }
         }
         let radius = tokens::RADIUS_MD * ui.scale();
         if on {
@@ -345,8 +390,14 @@ fn nav(ui: &mut Ui, rect: Rect, st: &mut SettingsState, entries: &[Entry]) -> Op
         } else {
             p.muted
         };
-        let ix = r.x + ui.px(tokens::SPACE_MD);
+        let ix = if rail { r.x + (r.w - s) / 2 } else { r.x + ui.px(tokens::SPACE_MD) };
         ui.painter().icon(Rect::new(ix, r.y + (r.h - s) / 2, s, s), sec.icon(), ic);
+        if rail {
+            if resp.clicked && (sec != st.section || searching) {
+                picked = Some(sec);
+            }
+            continue;
+        }
         let role = if on { TextRole::Strong } else { TextRole::Body };
         let tx = ix + s + ui.px(tokens::SPACE_SM + tokens::SPACE_2XS);
         text(

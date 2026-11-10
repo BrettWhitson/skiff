@@ -71,6 +71,16 @@ First release under the name Skiff (formerly termax).
   a new group right / below (palette). `Shift+Left` / `Right` on a focused
   tab strip moves the tab. Each group is a named region ("Group 2 of 3:
   web") with its own tab list, and dock changes are announced.
+- **Pages fit narrow groups (GUI).** A file transfer stacks its panes top
+  and bottom when narrow (and tall enough), gives the path bar its own row
+  so the current folder stays readable, and folds New folder, Rename,
+  Delete and the hidden-files toggle into a "More actions" menu beside
+  Copy. Settings turns its section list into a named icon rail (search
+  above the page) below 700 px and stacks the host and snippet lists over
+  their editors. The Forwards table drops Type, then Host, as it narrows,
+  and its empty state scrolls instead of clipping. A terminal's error
+  wraps. A crowded tab strip keeps the active tab's title and shows the
+  others as icons.
 
 - **App icon.** A Skiff mark (a small boat whose sail is a `>` prompt) as
   the GUI's window and taskbar icon, in the Windows `.exe` files of

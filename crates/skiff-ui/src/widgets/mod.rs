@@ -36,7 +36,7 @@ pub use button::{
 pub use checkbox::checkbox;
 pub use dialog::{Dialog, DialogButton, DialogResult, dialog, dialog_dismiss};
 pub use dropdown::{dropdown, dropdown_labeled};
-pub use empty_state::{EmptyState, EmptyStateResponse, empty_state};
+pub use empty_state::{EmptyState, EmptyStateResponse, empty_state, empty_state_height};
 pub use header::{Column, Sort, TableHeaderResponse, section_header, table_header};
 pub use label::{
     Align, Elide, TextOpts, elide, elide_by, elide_mode, label, label_with, paragraph, paragraph_height, paragraph_line_h, paragraph_lines,

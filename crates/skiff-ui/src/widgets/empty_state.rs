@@ -34,6 +34,26 @@ pub struct EmptyStateResponse {
     pub secondary: bool,
 }
 
+/// The height `empty_state` needs to show all of `e` in an area `w` wide
+/// (callers that scroll size their area with it, so nothing is clipped).
+pub fn empty_state_height(ui: &mut Ui, w: i32, e: &EmptyState) -> i32 {
+    let w = w.min(ui.px(380));
+    let gap = ui.px(tokens::SPACE_MD);
+    let ctl = ui.px(tokens::CONTROL_H);
+    let title_h = paragraph_height(ui, e.title, TextRole::Title, w);
+    let body_h = if e.body.is_empty() { 0 } else { paragraph_height(ui, e.body, TextRole::Body, w) };
+    let hint_h = e.hint.map_or(0, |h| paragraph_height(ui, h, TextRole::Caption, w));
+    let aw = e.action.map_or(0, |a| button_width(ui, a, 0).max(ui.px(96)));
+    let sw = e.secondary.map_or(0, |s| button_width(ui, s, 0).max(ui.px(96)));
+    let bgap = if aw > 0 && sw > 0 { ui.px(tokens::SPACE_SM) } else { 0 };
+    let buttons_h = if aw + sw + bgap > w && bgap > 0 { 2 * ctl + bgap } else { ctl };
+    e.icon.map_or(0, |_| ui.px(48) + gap)
+        + title_h
+        + if body_h > 0 { ui.px(tokens::SPACE_XS) + body_h } else { 0 }
+        + if aw + sw > 0 { ui.px(tokens::SPACE_LG) + buttons_h } else { 0 }
+        + if hint_h > 0 { gap + hint_h } else { 0 }
+}
+
 /// Draws `e` centred in `rect` (at most 380 px wide). The buttons are
 /// ordinary focusable buttons with ids under `id`.
 pub fn empty_state(ui: &mut Ui, id: Id, rect: Rect, e: &EmptyState) -> EmptyStateResponse {

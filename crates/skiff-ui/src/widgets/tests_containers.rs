@@ -472,3 +472,28 @@ fn splitter_width_survives_shrink_and_restore() {
     h.frame(vec![], &mut f);
     assert_eq!(width.get(), 300.0);
 }
+
+/// A crowded strip keeps the active tab's title and shrinks the others to
+/// their icon.
+#[test]
+fn crowded_tabs_keep_the_active_title() {
+    use crate::icons::Icon;
+    let mut h = Harness::new(300, 60, 1.0);
+    let t = |text| TabTitle { text, icon: Some(Icon::Terminal), ..TabTitle::DEFAULT };
+    let titles = [t("alpha"), t("beta"), t("gamma"), t("delta"), t("epsilon")];
+    let rects = Cell::new(Vec::<Rect>::new());
+    let mut f = |ui: &mut Ui| {
+        let mut a = 2;
+        rects.set(tabs(ui, Id::new("c"), Rect::new(0, 0, 300, 34), &titles, &mut a).tab_rects);
+    };
+    h.frame(vec![], &mut f);
+    let r = rects.take();
+    assert!(r[2].w > 2 * r[0].w && r.iter().enumerate().all(|(i, x)| i == 2 || x.w == r[0].w), "{r:?}");
+    let drawn: Vec<String> = h
+        .list()
+        .prims
+        .iter()
+        .filter_map(|p| if let crate::display::Prim::Text { text, .. } = p { Some(text.clone()) } else { None })
+        .collect();
+    assert!(drawn.iter().any(|s| s.starts_with('g')) && !drawn.iter().any(|s| s.starts_with('a') || s.starts_with('b')), "{drawn:?}");
+}

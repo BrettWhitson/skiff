@@ -15,8 +15,8 @@ use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::ui::{Id, Ui};
 use skiff_ui::widgets::{
     Align, ButtonKind, ButtonOpts, Column, EmptyState, MenuItem, Status, TextInputOpts, TextOpts, Tone, badge, badge_width, button_width,
-    button_with, context_menu, dialog_dismiss, dropdown_labeled, empty_state, icon_button, open_context_menu, paragraph, paragraph_height,
-    status_pill, table_header, text, text_input,
+    button_with, context_menu, dialog_dismiss, dropdown_labeled, empty_state, empty_state_height, icon_button, open_context_menu,
+    paragraph, paragraph_height, status_pill, table_header, text, text_input,
 };
 
 use crate::app::GuiApp;
@@ -298,9 +298,10 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         let h = app.sidebar_selected().or_else(|| app.hosts.first().map(|h| h.name.clone())).unwrap_or_default();
         st.new_form(&h);
     }
+    let title_right = if empty { head.right() } else { br.x };
     let tw = text(
         ui,
-        Rect::new(head.x, head.y, br.x - head.x, head.h),
+        Rect::new(head.x, head.y, title_right - head.x, head.h),
         "Port forwards",
         TextOpts { role: Some(TextRole::Heading), ..Default::default() },
     );
@@ -322,7 +323,8 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
     }
     let rest = Rect::new(body.x, head.bottom() + ui.px(tokens::SPACE_MD), body.w, body.bottom() - head.bottom() - ui.px(tokens::SPACE_MD));
     let mut act: Option<(Forward, &'static str)> = None;
-    scrolled(ui, Id::new("fwd-page"), rest, |ui, r| content(ui, r, &mut st, app, &mut act));
+    let view_h = rest.h;
+    scrolled(ui, Id::new("fwd-page"), rest, |ui, r| content(ui, r, view_h, &mut st, app, &mut act));
     dialogs(ui, &mut st, app);
     if let Some((f, what)) = act {
         match what {
@@ -348,9 +350,17 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
 }
 
 /// The page below the heading (content coordinates): ssh's question, the
-/// form, then the table or the empty state. Row actions go to `act`.
-/// Returns the height used.
-fn content(ui: &mut Ui, rect: Rect, st: &mut ForwardsState, app: &mut GuiApp, act: &mut Option<(Forward, &'static str)>) -> i32 {
+/// form, then the table or the empty state (filling the visible `view_h`,
+/// or as tall as it needs, so it scrolls instead of clipping). Row actions
+/// go to `act`. Returns the height used.
+fn content(
+    ui: &mut Ui,
+    rect: Rect,
+    view_h: i32,
+    st: &mut ForwardsState,
+    app: &mut GuiApp,
+    act: &mut Option<(Forward, &'static str)>,
+) -> i32 {
     let mut y = rect.y;
     y += prompt_card(ui, Rect::new(rect.x, y, rect.w, 0), st);
     y += form_card(ui, Rect::new(rect.x, y, rect.w.min(ui.px(720)), 0), st, app);
@@ -364,7 +374,9 @@ fn content(ui: &mut Ui, rect: Rect, st: &mut ForwardsState, app: &mut GuiApp, ac
                 hint: Some("Or right-click a host and choose Port forward\u{2026}"),
                 ..Default::default()
             };
-            let r = Rect::new(rect.x, y, rect.w, (rect.bottom() - y).max(ui.px(320)));
+            // Tall enough for all of it at this width (the page scrolls).
+            let need = empty_state_height(ui, rect.w, &e) + 2 * ui.px(tokens::SPACE_LG);
+            let r = Rect::new(rect.x, y, rect.w, (view_h - (y - rect.y)).max(need));
             if empty_state(ui, Id::new("fwd-empty"), r, &e).action {
                 let h = app.sidebar_selected().or_else(|| app.hosts.first().map(|h| h.name.clone())).unwrap_or_default();
                 st.new_form(&h);
@@ -523,17 +535,38 @@ fn form_card(ui: &mut Ui, at: Rect, st: &mut ForwardsState, app: &mut GuiApp) ->
     h + ui.px(tokens::SPACE_LG)
 }
 
+/// The table's columns at width `w` (logical px): Route only
+/// when wide, then Type and Host drop out as it narrows (the row's name,
+/// status and actions always stay; the menu and the edit form show the rest).
+pub fn columns_for(w: i32) -> Vec<&'static str> {
+    let mut c = vec!["Name"];
+    if w >= 520 {
+        c.push("Host");
+    }
+    if w >= 600 {
+        c.push("Type");
+    }
+    if w > 760 {
+        c.push("Route");
+    }
+    c.extend(["Status", ""]);
+    c
+}
+
 /// The table of saved forwards: header, then one row each (failed ones
 /// with their reason under them). Row actions go to `act`. Returns the
 /// height used.
 fn table(ui: &mut Ui, at: Rect, st: &mut ForwardsState, app: &mut GuiApp, act: &mut Option<(Forward, &'static str)>) -> i32 {
     let p = ui.style().palette;
-    let wide = at.w > ui.px(760);
-    let mut columns = vec![
-        Column { title: "Name", width: L::Fill, sortable: false, align: Align::Start },
-        Column { title: "Host", width: L::Px(140), sortable: false, align: Align::Start },
-        Column { title: "Type", width: L::Px(84), sortable: false, align: Align::Start },
-    ];
+    let cols_shown = columns_for((at.w as f32 / ui.scale()) as i32);
+    let (wide, show_host, show_type) = (cols_shown.contains(&"Route"), cols_shown.contains(&"Host"), cols_shown.contains(&"Type"));
+    let mut columns = vec![Column { title: "Name", width: L::Fill, sortable: false, align: Align::Start }];
+    if show_host {
+        columns.push(Column { title: "Host", width: L::Px(140), sortable: false, align: Align::Start });
+    }
+    if show_type {
+        columns.push(Column { title: "Type", width: L::Px(84), sortable: false, align: Align::Start });
+    }
     if wide {
         columns.push(Column { title: "Route", width: L::Fill, sortable: false, align: Align::Start });
     }
@@ -560,18 +593,21 @@ fn table(ui: &mut Ui, at: Rect, st: &mut ForwardsState, app: &mut GuiApp, act: &
         let name = f.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| kind_badge(f.kind).to_string() + " " + &f.listen.to_string());
         let strong = TextOpts { role: Some(TextRole::Strong), ..Default::default() };
         text(ui, cell(cols[0], y, rh), &name, strong);
-        text(ui, cell(cols[1], y, rh), &f.host, TextOpts { color: Some(p.muted), ..Default::default() });
-        let kb = kind_badge(f.kind);
-        let kw = badge_width(ui, kb);
+        let mut c = 1;
+        if show_host {
+            text(ui, cell(cols[c], y, rh), &f.host, TextOpts { color: Some(p.muted), ..Default::default() });
+            c += 1;
+        }
         let bh = ui.px(20);
-        badge(
-            ui,
-            Rect::new(cols[2].x + pad, y + (rh - bh) / 2, kw, bh),
-            kb,
-            if f.kind == ForwardKind::Dynamic { Tone::Info } else { Tone::Neutral },
-        );
+        if show_type {
+            let kb = kind_badge(f.kind);
+            let kw = badge_width(ui, kb);
+            let tone = if f.kind == ForwardKind::Dynamic { Tone::Info } else { Tone::Neutral };
+            badge(ui, Rect::new(cols[c].x + pad, y + (rh - bh) / 2, kw, bh), kb, tone);
+            c += 1;
+        }
         if wide {
-            text(ui, cell(cols[3], y, rh), &route(f), TextOpts { color: Some(p.muted), ..Default::default() });
+            text(ui, cell(cols[c], y, rh), &route(f), TextOpts { color: Some(p.muted), ..Default::default() });
         }
         let (status, label) = status_of(state.as_ref());
         let pr = cell(cols[status_col], y + (rh - bh) / 2, bh);

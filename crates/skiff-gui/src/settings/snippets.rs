@@ -12,11 +12,11 @@ use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::ui::{Id, Ui};
 use skiff_ui::widgets::{
     ButtonKind, ButtonOpts, EmptyState, TextInputOpts, TextOpts, ToastKind, Tone, badge, badge_width, button_width, button_with, checkbox,
-    empty_state, icon_button, list_named, text, text_input,
+    empty_state, empty_state_height, icon_button, list_named, text, text_input,
 };
 
 use super::{
-    LIST_W, PendingDiscard, Rows, delete_prompt, discard_prompt, error_line, field_ph, labeled_dropdown, list_header, row_label, scrolled,
+    PendingDiscard, Rows, delete_prompt, discard_prompt, error_line, field_ph, labeled_dropdown, list_header, row_label, scrolled,
     split_row,
 };
 use crate::app::GuiApp;
@@ -172,7 +172,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp, n
     let editing = st.form.as_ref().and_then(|f| f.editing.clone());
     st.selected = editing.as_ref().and_then(|n| app.cfg.snippets.iter().position(|s| &s.name == n));
 
-    let cols = ui.split_h(rect, &[L::Px(LIST_W), L::Fill], tokens::SPACE_XL);
+    let (list_col, editor_col) = super::list_and_editor(ui, rect, app.cfg.snippets.len());
+    let cols = [list_col, editor_col];
     let hh = ui.px(tokens::HEADER_H);
     let head = Rect::new(cols[0].x, cols[0].y, cols[0].w, hh);
     if list_header(ui, Id::new("settings-snip-add"), head, "Snippets", app.cfg.snippets.len()) {
@@ -225,7 +226,9 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp, n
             action: Some("Add snippet"),
             ..Default::default()
         };
-        if empty_state(ui, Id::new("settings-snip-empty"), Rect::new(right.x, right.y, right.w, right.h.min(ui.px(420))), &e).action {
+        // At least as tall as it needs (stacked under the list it may be short).
+        let eh = right.h.min(ui.px(420)).max(empty_state_height(ui, right.w, &e));
+        if empty_state(ui, Id::new("settings-snip-empty"), Rect::new(right.x, right.y, right.w, eh), &e).action {
             st.open(ui, None, app);
         }
         return rect.h;
