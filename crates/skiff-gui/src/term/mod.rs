@@ -35,11 +35,15 @@ const MAX_FONT: f32 = 40.0;
 /// Space between a terminal pane's edge and its cells, logical px.
 pub const PAD: i32 = 6;
 
+static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub struct TermTab {
     pub host: HostEntry,
     program: String,
     args: Vec<String>,
     scrollback: usize,
+    /// Unique per terminal for the app's lifetime (follows it between tabs).
+    pub uid: u64,
     pub session: Option<TerminalSession>,
     pub error: Option<String>,
     /// (rows, cols) last sent to the pty.
@@ -104,6 +108,7 @@ impl TermTab {
             program,
             args,
             scrollback,
+            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             session: None,
             error: None,
             grid: (0, 0),

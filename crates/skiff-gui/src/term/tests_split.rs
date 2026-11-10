@@ -415,3 +415,48 @@ fn alt_drag_moves_a_pane_onto_another() {
     assert_eq!(keys_of(&f), vec![2, 1, 0], "centre: swapped");
     assert!(split_of(&f).panes.iter().all(|p| p.term.select.sel.is_none()), "no text selected");
 }
+
+#[test]
+fn minimum_size_does_not_change_stored_shares() {
+    let (mut f, _) = alpha();
+    f.app.do_action(Action::SplitRight);
+    f.frame(vec![]);
+    let set = |f: &mut Fixture| match &mut f.app.tabs[0].kind {
+        TabKind::Terminal(t) => t.layout.set_ratio(&[], MIN_RATIO),
+        _ => panic!(),
+    };
+    set(&mut f);
+    let width = |f: &Fixture| f.h.tree().find("Terminal: alpha, pane 1 of 2").expect("pane 1").bounds.w;
+    // Narrow: pane 1 is held at its minimum, wider than 10%.
+    f.h.resize(450, 600);
+    f.frame(vec![]);
+    let (cw, _) = split_of(&f).panes[0].term.cell_size();
+    assert!(width(&f) >= cw * MIN_COLS, "{} < 10 cells of {cw}", width(&f));
+    assert_eq!(split_of(&f).layout.ratio(&[]), Some(MIN_RATIO), "the stored share is kept");
+    // Wide again: back to 10%.
+    f.h.resize(4000, 800);
+    f.frame(vec![]);
+    let total = width(&f) + f.h.tree().find("Terminal: alpha, pane 2 of 2").unwrap().bounds.w;
+    assert!((width(&f) as f32 / total as f32 - MIN_RATIO).abs() < 0.01, "{} of {total}", width(&f));
+}
+
+#[test]
+fn a_tab_merged_early_is_still_recorded_in_history() {
+    let fx = skiff_testserver::TestFixture::with_shell(skiff_testserver::FixtureAuth::Key).unwrap();
+    let mut args = fx.ssh_options();
+    args.push("-tt".into());
+    args.push(fx.destination());
+    let (mut f, a) = alpha();
+    let beta = f.app.hosts[1].clone();
+    let term = TermTab::with_command(beta.clone(), "ssh".into(), args, 100);
+    f.app.pending_records.push((term.uid, beta.name.clone(), std::time::Instant::now()));
+    let b = f.app.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))));
+    f.frame(vec![]);
+    f.app.drop_tab_on_pane(TabDrop { from: b, target: 0, zone: Zone::Right }, a);
+    let start = std::time::Instant::now();
+    while !f.app.history.hosts.contains_key("beta") {
+        assert!(start.elapsed() < std::time::Duration::from_secs(20), "beta never recorded");
+        f.frame(vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}

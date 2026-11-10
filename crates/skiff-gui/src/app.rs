@@ -78,8 +78,8 @@ pub struct GuiApp {
     pub statuses: HashMap<String, Status>,
     pub history: History,
     history_path: PathBuf,
-    /// Terminal tabs to record in history once they prove connected.
-    pending_records: Vec<(u64, String, Instant)>,
+    /// Terminals (by `TermTab::uid`) to record in history once they prove connected.
+    pub(crate) pending_records: Vec<(u64, String, Instant)>,
     pub forwards: ForwardsState,
     pub theme: GuiTheme,
     pub style: Style,
@@ -272,9 +272,8 @@ impl GuiApp {
 
     pub fn open_terminal(&mut self, host: &HostEntry) -> u64 {
         let term = TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback);
-        let id = self.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))));
-        self.pending_records.push((id, host.name.clone(), Instant::now()));
-        id
+        self.pending_records.push((term.uid, host.name.clone(), Instant::now()));
+        self.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))))
     }
 
     /// Shows the Forwards tab (opening it if needed).
@@ -564,14 +563,19 @@ impl GuiApp {
     /// two seconds in, and for forwards that came up.
     fn record_connections(&mut self) {
         let mut done = vec![];
-        self.pending_records.retain(|(id, name, at)| {
-            let Some(tab) = self.tabs.iter_mut().find(|t| t.id == *id) else {
+        // By terminal, not tab: a terminal may move to another tab meanwhile.
+        self.pending_records.retain(|(uid, name, at)| {
+            let Some(t) = self
+                .tabs
+                .iter_mut()
+                .filter_map(|tab| match &mut tab.kind {
+                    TabKind::Terminal(split) => Some(split),
+                    _ => None,
+                })
+                .find_map(|split| split.panes.iter_mut().find(|p| p.term.uid == *uid).map(|p| &mut p.term))
+            else {
                 return false;
             };
-            let TabKind::Terminal(split) = &mut tab.kind else {
-                return false;
-            };
-            let t = &mut split.panes[0].term;
             match &mut t.session {
                 Some(s) if at.elapsed() >= Duration::from_secs(2) && s.generation() > 0 => {
                     if s.is_alive() {
