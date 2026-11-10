@@ -15,7 +15,7 @@ mod text_input;
 
 pub use button::{button, button_backgrounds};
 pub use checkbox::checkbox;
-pub use dropdown::dropdown;
+pub use dropdown::{dropdown, dropdown_labeled};
 pub use label::{elide, label, label_with};
 pub use list::{ListResponse, list, list_named};
 pub use menu::{MenuItem, close_context_menu, context_menu, menu_is_open, open_context_menu};

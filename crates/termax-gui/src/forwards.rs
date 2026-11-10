@@ -7,7 +7,7 @@ use termax_core::forward::{Forward, ForwardHandle, ForwardKind, ForwardState};
 use termax_ui::geom::Rect;
 use termax_ui::layout::Size as L;
 use termax_ui::ui::{Id, Ui};
-use termax_ui::widgets::{TextInputOpts, button, dropdown, label, text_input};
+use termax_ui::widgets::{TextInputOpts, button, dropdown_labeled, label, text_input};
 
 use crate::app::GuiApp;
 use crate::settings::{Rows, error_line, field, split_row};
@@ -216,7 +216,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         label(ui, l, "Host", None);
         let opts: Vec<&str> = host_names.iter().map(String::as_str).collect();
         let mut hi = host_names.iter().position(|h| *h == form.host).unwrap_or(0);
-        if dropdown(ui, Id::new("fwd-host"), c, &opts, &mut hi)
+        if dropdown_labeled(ui, Id::new("fwd-host"), c, "Host", &opts, &mut hi)
             && let Some(h) = host_names.get(hi)
         {
             form.host = h.clone();
@@ -229,7 +229,7 @@ pub fn view(ui: &mut Ui, rect: Rect, app: &mut GuiApp) {
         let (l, c) = split_row(ui, rows.next(ui));
         label(ui, l, "Kind", None);
         let kinds: Vec<&str> = ForwardKind::ALL.iter().map(|k| k.label()).collect();
-        dropdown(ui, Id::new("fwd-kind"), c, &kinds, &mut form.kind);
+        dropdown_labeled(ui, Id::new("fwd-kind"), c, "Kind", &kinds, &mut form.kind);
         let kind = ForwardKind::ALL[form.kind.min(2)];
         let (_, c) = split_row(ui, rows.next_h(ui, 40));
         label(ui, c, kind.explain(), Some(p.muted));

@@ -4,7 +4,7 @@
 use termax_core::config::StatusChecks;
 use termax_ui::geom::Rect;
 use termax_ui::ui::{Id, Ui};
-use termax_ui::widgets::{button, checkbox, dropdown, label};
+use termax_ui::widgets::{button, checkbox, dropdown_labeled, label};
 
 use super::{LABEL_W, Rows, error_line, field, split_row};
 use crate::app::{GuiApp, local_start_dir};
@@ -46,7 +46,14 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut GeneralState, app: &mut GuiApp) {
     edited |= field(ui, Id::new("settings-gen-start"), rows.next(ui), "Local start folder", &mut st.fields[3]);
     let (l, c) = split_row(ui, rows.next(ui));
     label(ui, l, "Check host status", None);
-    edited |= dropdown(ui, Id::new("settings-gen-status"), c, &["When I ask", "Also at start"], &mut st.status_checks);
+    edited |= dropdown_labeled(
+        ui,
+        Id::new("settings-gen-status"),
+        c,
+        "Check host status",
+        &["When I ask", "Also at start"],
+        &mut st.status_checks,
+    );
     st.dirty |= edited;
     let r = rows.next(ui);
     if button(ui, Id::new("settings-gen-save"), Rect::new(r.x + ui.px(LABEL_W), r.y, ui.px(100), r.h), "Save").clicked {
