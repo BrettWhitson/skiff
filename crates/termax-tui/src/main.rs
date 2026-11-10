@@ -18,7 +18,10 @@ use termax_core::history::{self, ConnKind, History};
 use termax_core::hosts;
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // `--plain` (anywhere) switches the TUI to plain mode for this run.
+    let plain = args.iter().any(|a| a == "--plain");
+    args.retain(|a| a != "--plain");
     let cmd = match cli::parse(&args) {
         Ok(c) => c,
         Err(e) => {
@@ -94,6 +97,7 @@ fn main() -> Result<()> {
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build()?;
     let mut app = App::new(cfg, cfg_path, rt.handle().clone());
+    app.plain |= plain;
     if let Some((name, files)) = open {
         app.open_named(&name, files);
     }

@@ -16,6 +16,8 @@ pub struct Theme {
     pub success: Color,
     pub warning: Color,
     pub error: Color,
+    /// Plain mode: no borders, words instead of symbols.
+    pub plain: bool,
 }
 
 impl Theme {
@@ -36,6 +38,7 @@ impl Theme {
             success: c("success", &def.success)?,
             warning: c("warning", &def.warning)?,
             error: c("error", &def.error)?,
+            plain: false,
         })
     }
 

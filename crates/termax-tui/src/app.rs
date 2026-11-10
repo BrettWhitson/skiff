@@ -85,6 +85,8 @@ pub struct App {
     cfg_saved: Config,
     pub cfg_path: PathBuf,
     pub theme: Theme,
+    /// Plain mode (`--plain` or `settings.tui_plain`).
+    pub plain: bool,
     pub hosts: Vec<HostEntry>,
     pub filtered: Vec<usize>,
     pub host_selected: usize,
@@ -121,6 +123,7 @@ impl App {
             history_path,
             ui_state,
             theme: Theme::from_def(&theme::builtin()[0]).expect("builtin theme"),
+            plain: cfg.settings.tui_plain,
             cfg_saved: cfg.clone(),
             cfg,
             cfg_path,

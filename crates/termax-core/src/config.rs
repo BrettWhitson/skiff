@@ -109,6 +109,8 @@ pub struct Settings {
     pub local_start_dir: Option<String>,
     /// When host status checks run: only on request, or also at start.
     pub status_checks: StatusChecks,
+    /// TUI without box-drawing borders and symbols (for screen readers).
+    pub tui_plain: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -131,6 +133,7 @@ impl Default for Settings {
             show_hidden_files: false,
             local_start_dir: None,
             status_checks: StatusChecks::Manual,
+            tui_plain: false,
         }
     }
 }
