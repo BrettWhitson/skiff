@@ -266,6 +266,8 @@ pub struct Ui<'a> {
     style: Style,
     size: Size,
     scale: f32,
+    /// `scale` without the style's zoom (the window's DPI factor alone).
+    dpi_scale: f32,
     rect: Rect,
     clip: Rect,
     layer: u8,
@@ -287,11 +289,15 @@ pub struct Ui<'a> {
     region_move: Option<bool>,
 }
 
+fn clamped_zoom(style: &Style) -> f32 {
+    style.zoom.clamp(0.25, 4.0)
+}
+
 impl<'a> Ui<'a> {
     /// Runs one UI frame inside an app's `frame` callback.
     pub fn run(state: &mut UiState, ctx: &mut FrameCtx, style: &Style, f: impl FnOnce(&mut Ui)) {
         let events = std::mem::take(&mut ctx.events);
-        let (size, scale) = (ctx.size, ctx.scale * style.zoom.clamp(0.25, 4.0));
+        let (size, scale) = (ctx.size, ctx.scale * clamped_zoom(style));
         let a11y = ctx.a11y_active;
         let (repaint, cursor, tree) = {
             let mut ui =
@@ -415,7 +421,9 @@ impl<'a> Ui<'a> {
         let drag_released = events.iter().any(|e| matches!(e, Event::MouseUp(MouseButton::Left, _)));
         let input = Input { events, mouse: st.mouse, left_down: st.left, right_down: st.right, mods: st.mods };
         let window = Rect::new(0, 0, size.w, size.h);
+        let dpi_scale = scale / clamped_zoom(&style);
         Ui {
+            dpi_scale,
             st,
             list,
             overlay_list: DisplayList::default(),
@@ -668,6 +676,12 @@ impl<'a> Ui<'a> {
 
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+
+    /// The window's DPI factor alone, without the interface zoom: winit's
+    /// logical pixels, for sizes that must not follow the zoom.
+    pub fn dpi_scale(&self) -> f32 {
+        self.dpi_scale
     }
 
     /// Logical → physical pixels.

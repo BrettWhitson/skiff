@@ -989,7 +989,8 @@ impl GuiApp {
         if win.w <= 0 || win.h <= 0 {
             return;
         }
-        let s = ui.scale();
+        // DPI-only logical px: main.rs restores it as a winit LogicalSize.
+        let s = ui.dpi_scale();
         let logical = ((win.w as f32 / s).round() as u32, (win.h as f32 / s).round() as u32);
         if self.geometry.window_size != Some(logical) {
             let first = self.geometry.window_size.is_none();

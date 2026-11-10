@@ -184,6 +184,9 @@ fn wheel_scrolls_and_key_snaps_back() {
     l.wait_for("line59");
     l.frame(vec![Event::MouseMove(Point::new(400, 200)), Event::Wheel { dx: 0.0, dy: 48.0 }], vec![]);
     assert_eq!(l.tab.session.as_ref().unwrap().scroll_offset(), 3, "one notch = 3 lines back");
+    l.h.style.zoom = 2.0; // the interface zoom leaves wheel lines alone
+    l.frame(vec![Event::Wheel { dx: 0.0, dy: 48.0 }], vec![]);
+    assert_eq!(l.tab.session.as_ref().unwrap().scroll_offset(), 6);
     l.frame(vec![Event::KeyDown { key: Key::Char('a'), mods: Modifiers::NONE, text: Some("a".into()) }, Event::Text("a".into())], vec![]);
     assert_eq!(l.tab.session.as_ref().unwrap().scroll_offset(), 0);
 }

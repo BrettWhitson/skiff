@@ -495,3 +495,13 @@ fn ui_scale_scales_layout_with_text() {
     let mono = f.app.style.mono_px * f.app.style.zoom;
     assert!((mono - f.app.cfg.gui.font_size.clamp(6.0, 72.0)).abs() < 1e-3, "terminal text keeps its size: {mono}");
 }
+
+#[test]
+fn saved_window_size_ignores_ui_zoom() {
+    let mut f = Fixture::new();
+    f.app.cfg.gui.ui_scale = 2.0;
+    f.app.style = style_for(&f.app.theme, &f.app.cfg);
+    f.frame(vec![]);
+    // main.rs restores it as a winit LogicalSize (DPI only), so zoom must not shrink it.
+    assert_eq!(f.app.geometry.window_size, Some((1280, 800)));
+}
