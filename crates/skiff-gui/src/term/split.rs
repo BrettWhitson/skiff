@@ -413,6 +413,7 @@ impl Layout {
 
     /// Moves dividers so every pane of `rect` keeps `min` px (w, h) where
     /// there is room; where there is not, the sides share by their needs.
+    /// The view applies it to a copy (layout time only).
     pub fn enforce_min(&mut self, rect: Rect, gap: i32, min: (i32, i32)) {
         let Layout::Split { dir, ratio, a, b } = self else { return };
         let total = if *dir == Dir::Right { rect.w } else { rect.h };
@@ -626,8 +627,11 @@ pub fn view(
     let pad = ui.px(super::PAD);
     let (cw, ch) = split.panes[0].term.cell_size();
     let min = (cw * MIN_COLS + 2 * pad, ch * MIN_ROWS + 2 * pad);
-    split.layout.enforce_min(rect, gap, min);
-    let (rects, dividers) = split.layout.arrange(rect, gap);
+    // Clamped for this frame only: the stored shares come back when the
+    // window grows again.
+    let mut shown = split.layout.clone();
+    shown.enforce_min(rect, gap, min);
+    let (rects, dividers) = shown.arrange(rect, gap);
     if std::mem::take(&mut split.focus_due) {
         ui.request_focus(pane_id(tab, split.focused_key()));
     }
