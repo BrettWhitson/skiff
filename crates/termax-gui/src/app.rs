@@ -86,6 +86,8 @@ pub struct GuiApp {
     pub view_actions: Vec<Action>,
     /// Connection the settings screen should open for editing.
     pub edit_target: Option<usize>,
+    /// Host to open on the first frame (from the command line; `true` = files).
+    pub open: Option<(String, bool)>,
     /// Where Local file panes start.
     pub start_dir: String,
     /// Relays ssh password / host-key prompts into file panes.
@@ -185,6 +187,7 @@ impl GuiApp {
             new_connection: false,
             view_actions: vec![],
             edit_target: None,
+            open: None,
             start_dir: local_start_dir(&cfg_start),
             askpass,
             ssh_version: None,
@@ -593,6 +596,17 @@ impl GuiApp {
             ui.request_repaint_in(Duration::ZERO);
         }
         self.watch_config(ui);
+        if let Some((name, files)) = self.open.take() {
+            match self.hosts.iter().find(|h| h.name == name).cloned() {
+                Some(h) if files => {
+                    self.open_files(Location::Local, Location::Host(h));
+                }
+                Some(h) => {
+                    self.open_terminal(&h);
+                }
+                None => self.warnings.push(format!("unknown host: {name}")),
+            }
+        }
         if !self.settings.capturing() || !self.tabs.get(self.active).is_some_and(|t| matches!(t.kind, TabKind::Settings)) {
             self.handle_shortcuts(ui);
         }

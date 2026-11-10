@@ -239,8 +239,21 @@ impl App {
         self.active = self.tabs.len() - 1;
     }
 
+    /// Opens host `name` (hidden hosts too): a terminal, or a file transfer.
+    pub fn open_named(&mut self, name: &str, files: bool) {
+        let Some(host) = self.hosts.iter().find(|h| h.name == name).cloned() else {
+            self.set_error(format!("unknown host: {name}"));
+            return;
+        };
+        if files { self.open_sftp_with(host) } else { self.open_terminal_with(host) }
+    }
+
     fn open_terminal(&mut self) {
         let Some(host) = self.selected_host().cloned() else { return };
+        self.open_terminal_with(host);
+    }
+
+    fn open_terminal_with(&mut self, host: HostEntry) {
         let (rows, cols) = self.term_area;
         match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &host.shell_args(), rows, cols, self.cfg.settings.scrollback) {
             Ok(s) => self.push_tab(host.name.clone(), TabKind::Terminal(Box::new(s))),
@@ -250,6 +263,10 @@ impl App {
 
     fn open_sftp(&mut self) {
         let Some(host) = self.selected_host().cloned() else { return };
+        self.open_sftp_with(host);
+    }
+
+    fn open_sftp_with(&mut self, host: HostEntry) {
         let local = self
             .cfg
             .settings

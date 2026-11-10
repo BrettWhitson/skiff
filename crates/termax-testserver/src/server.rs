@@ -211,6 +211,20 @@ impl russh::server::Handler for Conn {
         Ok(())
     }
 
+    /// `exit N` exits with status N; any other command is echoed back.
+    async fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Result<()> {
+        let cmd = String::from_utf8_lossy(data).into_owned();
+        session.channel_success(channel)?;
+        let code = cmd.strip_prefix("exit ").and_then(|n| n.trim().parse::<u32>().ok());
+        if code.is_none() {
+            session.data(channel, format!("{cmd}\n").into_bytes())?;
+        }
+        session.exit_status_request(channel, code.unwrap_or(0))?;
+        session.eof(channel)?;
+        session.close(channel)?;
+        Ok(())
+    }
+
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<()> {
         if self.opts.shell_echo {
             session.channel_success(channel)?;

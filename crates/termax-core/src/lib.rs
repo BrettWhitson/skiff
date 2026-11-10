@@ -2,6 +2,7 @@
 //! sessions and file-system helpers. Contains no UI code.
 
 pub mod askpass;
+pub mod cli;
 pub mod config;
 pub mod forward;
 pub mod fs;
