@@ -30,12 +30,25 @@ pub fn font_dirs() -> Vec<PathBuf> {
 /// Primary-font candidates for `kind`, best first.
 pub fn candidates(kind: FontKind) -> Vec<PathBuf> {
     let names: &[&str] = match (kind, cfg!(windows), cfg!(target_os = "macos")) {
+        (FontKind::UiSemibold, ..) => return semibold_candidates(),
         (FontKind::Ui, true, _) => &["segoeui.ttf", "arial.ttf"],
         (FontKind::Mono, true, _) => &["consola.ttf", "cour.ttf"],
         (FontKind::Ui, _, true) => &["Helvetica.ttc", "Geneva.ttf"],
         (FontKind::Mono, _, true) => &["Menlo.ttc", "Monaco.ttf"],
         (FontKind::Ui, _, _) => &["DejaVuSans.ttf"],
         (FontKind::Mono, _, _) => &["DejaVuSansMono.ttf"],
+    };
+    in_dirs(&font_dirs(), names)
+}
+
+/// Semibold (or, failing that, bold) faces of the default UI font, best first.
+pub fn semibold_candidates() -> Vec<PathBuf> {
+    let names: &[&str] = if cfg!(windows) {
+        &["seguisb.ttf"]
+    } else if cfg!(target_os = "macos") {
+        &[]
+    } else {
+        &["DejaVuSans-Bold.ttf"]
     };
     in_dirs(&font_dirs(), names)
 }

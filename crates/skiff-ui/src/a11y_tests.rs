@@ -148,7 +148,7 @@ fn f6_moves_between_regions_and_back() {
     assert_eq!(h.tree().find("Left").map(|n| n.role), Some(Role::Region));
 }
 
-/// A focused button gets a 2px accent ring drawn outside its bounds.
+/// A keyboard-focused button gets a 2px focus ring, 2px outside its bounds.
 #[test]
 fn focus_ring_drawn_for_focused_button() {
     use crate::display::Prim;
@@ -159,11 +159,11 @@ fn focus_ring_drawn_for_focused_button() {
     };
     h.frame(vec![key(Key::Tab)], &mut f);
     h.frame(vec![], &mut f);
-    let accent = h.style.palette.accent;
+    let focus = h.style.palette.focus;
     let ring = h.list().prims.iter().any(|p| {
-        matches!(p, Prim::Border { rect, color, width, .. } if *color == accent && *width >= 2 && rect.x < r.x && rect.right() > r.right())
+        matches!(p, Prim::Border { rect, color, width, .. } if *color == focus && *width >= 2 && rect.x <= r.x - 4 && rect.right() >= r.right() + 4)
     });
-    assert!(ring, "a 2px accent ring outside the button");
+    assert!(ring, "a 2px focus ring 2px outside the button");
 }
 
 /// The selected row of a focused list shows a thin accent bar on its left edge.
@@ -199,9 +199,9 @@ fn focus_ring_stays_below_overlays() {
     };
     h.frame(vec![key(Key::Tab)], &mut f);
     h.frame(vec![], &mut f);
-    let accent = h.style.palette.accent;
+    let focus = h.style.palette.focus;
     let prims = &h.list().prims;
-    let ring = prims.iter().position(|p| matches!(p, Prim::Border { color, width, .. } if *color == accent && *width >= 2));
+    let ring = prims.iter().position(|p| matches!(p, Prim::Border { color, width, .. } if *color == focus && *width >= 2));
     let menu = prims.iter().position(|p| matches!(p, Prim::Rect { color, .. } if *color == menu_color));
     assert!(ring.expect("ring drawn") < menu.expect("menu drawn"), "the menu covers the ring");
 }

@@ -245,9 +245,9 @@ fn splitter_drag_respects_min_max() {
 fn context_menu_select_and_dismiss() {
     let mut h = Harness::new(400, 400, 1.0);
     let items = [
-        MenuItem { label: "Open", shortcut: Some("Enter"), enabled: true },
-        MenuItem { label: "Rename", shortcut: None, enabled: false },
-        MenuItem { label: "Delete", shortcut: Some("Del"), enabled: true },
+        MenuItem { label: "Open", shortcut: Some("Enter"), enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Rename", shortcut: None, enabled: false, ..MenuItem::DEFAULT },
+        MenuItem { label: "Delete", shortcut: Some("Del"), enabled: true, ..MenuItem::DEFAULT },
     ];
     let chosen = Cell::new(None);
     let open_at = Cell::new(None::<Point>);
@@ -330,7 +330,10 @@ fn full_frame_render_time_1080p() {
 #[test]
 fn open_menu_captures_keys_from_focused_list() {
     let mut h = Harness::new(400, 400, 1.0);
-    let items = [MenuItem { label: "Open", shortcut: None, enabled: true }, MenuItem { label: "Delete", shortcut: None, enabled: true }];
+    let items = [
+        MenuItem { label: "Open", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Delete", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+    ];
     let sel = Cell::new(None::<usize>);
     let act = Cell::new(None::<usize>);
     let chosen = Cell::new(None::<usize>);
@@ -368,9 +371,9 @@ fn open_menu_captures_keys_from_focused_list() {
 fn menu_items_shrinking_while_open_does_not_panic() {
     let mut h = Harness::new(400, 400, 1.0);
     let three = [
-        MenuItem { label: "a", shortcut: None, enabled: true },
-        MenuItem { label: "b", shortcut: None, enabled: true },
-        MenuItem { label: "c", shortcut: None, enabled: true },
+        MenuItem { label: "a", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "b", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "c", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
     ];
     let menu = Id::new("m");
     h.frame(vec![], &mut |ui: &mut Ui| {

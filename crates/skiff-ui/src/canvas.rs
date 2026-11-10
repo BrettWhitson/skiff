@@ -1,7 +1,9 @@
 //! A CPU pixel buffer (`0x00RRGGBB`) with clipping and alpha blending.
 
+use std::sync::OnceLock;
+
 use crate::color::Color;
-use crate::geom::Rect;
+use crate::geom::{Point, Rect};
 
 /// A pixel buffer that every drawing primitive ends up on; the shell copies
 /// it to the window.
@@ -44,6 +46,32 @@ fn rounded_coverage(px: i32, py: i32, r: Rect, radius: f32) -> f32 {
     let cy = fy.clamp(y0, y1.max(y0));
     let d = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
     (radius + 0.5 - d).clamp(0.0, 1.0)
+}
+
+/// Entries in the shadow falloff table.
+const SHADOW_LUT: usize = 256;
+/// The falloff table spans this many sigmas on each side of the edge.
+const SHADOW_SPAN: f32 = 3.0;
+
+/// Shadow opacity (0..=1) across a blurred edge, from `SHADOW_SPAN` sigmas
+/// inside to as far outside: the complement of the normal CDF (a logistic
+/// approximation), computed once.
+fn shadow_lut() -> &'static [f32; SHADOW_LUT] {
+    static LUT: OnceLock<[f32; SHADOW_LUT]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        std::array::from_fn(|i| {
+            let x = (i as f32 / (SHADOW_LUT - 1) as f32 * 2.0 - 1.0) * SHADOW_SPAN;
+            1.0 / (1.0 + (1.702 * x).exp())
+        })
+    })
+}
+
+/// Signed distance from (px, py) to a rounded rect (negative inside).
+fn rounded_sdf(px: f32, py: f32, r: Rect, radius: f32) -> f32 {
+    let (cx, cy) = (r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0);
+    let qx = (px - cx).abs() - (r.w as f32 / 2.0 - radius);
+    let qy = (py - cy).abs() - (r.h as f32 / 2.0 - radius);
+    (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - radius
 }
 
 impl Canvas {
@@ -189,6 +217,42 @@ impl Canvas {
                     let i = self.index(x, y);
                     self.pixels[i] = blend(self.pixels[i], c, (cov * 255.0) as u32);
                 }
+            }
+        }
+    }
+
+    /// A soft shadow of the rounded rect `r` moved down by `dy`, blurred
+    /// over `blur` pixels (sigma `blur / 2`), with `c`'s alpha at its
+    /// darkest. Pixels inside `r` itself are skipped: the opaque caster is
+    /// drawn over them next. The falloff comes from a cached table.
+    pub fn shadow(&mut self, r: Rect, radius: f32, dy: i32, blur: i32, c: Color) {
+        if r.is_empty() || c.a == 0 {
+            return;
+        }
+        let shape = r.translate(0, dy);
+        let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0).max(0.0);
+        let sigma = (blur as f32 / 2.0).max(0.5);
+        let reach = (sigma * SHADOW_SPAN).ceil() as i32;
+        let Some(area) = shape.inset(-reach).intersect(self.clip()) else { return };
+        // Hidden by the caster: its rect minus the rounded corners.
+        let k = radius.ceil() as i32;
+        let hidden = [Rect::new(r.x + k, r.y, r.w - 2 * k, r.h), Rect::new(r.x, r.y + k, r.w, r.h - 2 * k)];
+        let lut = shadow_lut();
+        let scale = (SHADOW_LUT - 1) as f32 / (2.0 * SHADOW_SPAN);
+        for y in area.y..area.bottom() {
+            let row = self.index(0, y);
+            for x in area.x..area.right() {
+                if hidden.iter().any(|h| h.contains(Point::new(x, y))) {
+                    continue;
+                }
+                let d = rounded_sdf(x as f32 + 0.5, y as f32 + 0.5, shape, radius) / sigma;
+                let i = ((d + SHADOW_SPAN) * scale).round();
+                if i >= (SHADOW_LUT - 1) as f32 {
+                    continue;
+                }
+                let cov = (lut[i.max(0.0) as usize] * 255.0) as u32;
+                let p = row + x as usize;
+                self.pixels[p] = blend(self.pixels[p], c, cov);
             }
         }
     }

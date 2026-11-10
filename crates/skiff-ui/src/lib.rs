@@ -57,6 +57,9 @@
 //! - `ui`: the per-frame context, input, focus, overlays, drag-and-drop.
 //! - `widgets`: buttons, inputs, lists, menus, tabs, tooltips, scroll areas...
 //! - `display`, `canvas`: drawing commands and the tiled CPU renderer.
+//! - `icons`: the in-house vector icon set.
+//! - `style`: design tokens (spacing, radii, heights, type scale, motion)
+//!   and palettes.
 //! - `text`: fonts, fallbacks, glyph cache, single-line layout.
 //! - `shell`: the winit / softbuffer window and event loop.
 //! - `a11y`, `a11y_kit`: accessibility tree and AccessKit bridge.
@@ -73,6 +76,7 @@ pub mod demo;
 pub mod display;
 pub mod dnd;
 pub mod geom;
+pub mod icons;
 pub mod input;
 pub mod layout;
 pub mod shell;

@@ -40,6 +40,23 @@ pub enum Role {
     Status,
     /// A draggable divider between two panes (value: the first pane's share).
     Splitter,
+    /// A non-text element with a text alternative (status dots, icons).
+    Image,
+    /// A table column header; sortable ones carry `Node::sort`.
+    ColumnHeader,
+    /// A number field stepped with buttons or arrow keys.
+    SpinButton,
+    /// A modal dialog that needs an answer (destructive confirms).
+    AlertDialog,
+    /// A section or page title.
+    Heading,
+}
+
+/// The order a sortable column header sorts by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SortDir {
+    Ascending,
+    Descending,
 }
 
 /// One accessible element as a widget described it this frame.
@@ -65,6 +82,10 @@ pub struct Node {
     pub disabled: bool,
     /// Changes are announced politely (status text, terminal output).
     pub live: bool,
+    /// `Some` only for the column header a table is sorted by.
+    pub sort: Option<SortDir>,
+    /// A modal node: the rest of the window is inert while it is open.
+    pub modal: bool,
     /// Child node ids, in drawing order.
     pub children: Vec<Id>,
 }
@@ -84,6 +105,8 @@ impl Node {
             expanded: None,
             disabled: false,
             live: false,
+            sort: None,
+            modal: false,
             children: vec![],
         }
     }

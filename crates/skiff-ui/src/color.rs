@@ -46,6 +46,26 @@ impl Color {
         Self::rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
     }
 
+    /// WCAG relative luminance (0 black .. 1 white), ignoring alpha.
+    pub fn luminance(self) -> f32 {
+        let lin = |v: u8| {
+            let c = v as f32 / 255.0;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(self.r) + 0.7152 * lin(self.g) + 0.0722 * lin(self.b)
+    }
+
+    /// WCAG contrast ratio with `other` (1..=21), ignoring alpha.
+    pub fn contrast(self, other: Color) -> f32 {
+        let (a, b) = (self.luminance(), other.luminance());
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// This (possibly translucent) colour composited over opaque `bg`.
+    pub fn over(self, bg: Color) -> Color {
+        bg.mix(self.with_alpha(bg.a), self.a as f32 / 255.0)
+    }
+
     /// Linear mix towards `other` by `t` (0..=1), ignoring alpha.
     pub fn mix(self, other: Color, t: f32) -> Color {
         let t = t.clamp(0.0, 1.0);

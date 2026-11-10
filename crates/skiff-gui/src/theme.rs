@@ -79,20 +79,29 @@ pub fn from_def(d: &ThemeDef) -> GuiTheme {
     let get = |s: &str, reset: Color| parse_color(s).and_then(|c| resolve(c, &ansi)).unwrap_or(reset);
     let bg = get(&d.bg, RESET_BG);
     let fg = get(&d.fg, RESET_FG);
+    let accent = get(&d.accent, fg);
     let palette = Palette {
         bg,
         surface: bg.mix(fg, 0.04),
         surface_alt: bg.mix(fg, 0.10),
+        overlay: bg.mix(fg, 0.07),
         fg,
         muted: get(&d.muted, bg.mix(fg, 0.5)),
-        accent: get(&d.accent, fg),
+        text_disabled: bg.mix(fg, 0.4),
+        accent,
         accent_fg: bg,
+        focus: accent,
         border: get(&d.border, bg.mix(fg, 0.2)),
         control: Color::BLACK, // set below
         selection: get(&d.selection_bg, bg.mix(fg, 0.25)),
+        hover: bg.mix(fg, 0.07),
         danger: get(&d.error, Color::hex(0xe5534b)),
         success: get(&d.success, Color::hex(0x57ab5a)),
         warning: get(&d.warning, Color::hex(0xc69026)),
+        // Bright blue from the theme's own terminal palette.
+        info: ansi[12],
+        // Darker over dark themes, lighter touch over light ones.
+        scrim: Color::rgba(0, 0, 0, if bg.luminance() < 0.2 { 150 } else { 100 }),
     };
     let mut palette = palette;
     palette.control = control_outline(&palette);
@@ -130,8 +139,11 @@ fn nudge(c: Color, toward: Color, ok: impl Fn(Color) -> bool) -> Color {
 fn make_readable(p: &mut Palette, min: f32) -> bool {
     let surface = p.surface;
     let unfocused = |s: Color| s.mix(surface, 0.5);
+    // Primary-button labels (`accent_fg` on the accent) read at `min`.
+    let away = if p.accent_fg.contrast(p.fg) > p.accent_fg.contrast(p.bg) { p.fg } else { p.bg };
+    p.accent = nudge(p.accent, away, |a| ratio(p.accent_fg, a) >= min);
     let (fg, accent) = (p.fg, p.accent);
-    let rest = [p.bg, p.surface, p.surface_alt];
+    let rest = [p.bg, p.surface, p.surface_alt, p.overlay, p.hover];
     // First pass: muted readable on the resting backgrounds only.
     let muted = nudge(p.muted, fg, |c| rest.iter().all(|&r| ratio(c, r) >= min));
     // The brightest `muted` may get while still looking dimmer than `fg`.
@@ -143,15 +155,21 @@ fn make_readable(p: &mut Palette, min: f32) -> bool {
         p.selection = nudge(p.bg, fg, |s| ratio(s, p.bg) >= MIN_VISIBLE);
     }
     // Second pass: muted readable on every row state, now the selection is fixed.
-    let rows = [p.bg, p.surface, p.surface_alt, p.selection, unfocused(p.selection)];
+    let rows = [p.bg, p.surface, p.surface_alt, p.overlay, p.hover, p.selection, unfocused(p.selection)];
     p.muted = nudge(muted, fg, |c| rows.iter().all(|&r| ratio(c, r) >= min));
     if ratio(p.muted, fg) < MIN_VISIBLE {
         p.muted = nudge(fg, p.bg, |c| ratio(c, fg) >= MIN_VISIBLE);
     }
-    // Status colours only need to read on the non-selected backgrounds.
-    for c in [&mut p.danger, &mut p.warning, &mut p.success] {
-        *c = nudge(*c, fg, |c| rows[..3].iter().all(|&r| ratio(c, r) >= min));
+    // Status colours read as text on the non-selected backgrounds, and on
+    // their own badge tint over each of them.
+    let plain = &rows[..5];
+    for c in [&mut p.danger, &mut p.warning, &mut p.success, &mut p.info] {
+        *c = nudge(*c, fg, |c| plain.iter().all(|&r| ratio(c, r) >= min && ratio(c, r.mix(c, skiff_ui::style::TINT)) >= min));
     }
+    // Disabled text and the focus ring: 3:1 (non-text contrast) everywhere.
+    p.text_disabled = nudge(p.text_disabled, fg, |c| plain.iter().all(|&r| ratio(c, r) >= 3.0));
+    let focus_on = [plain, &[p.selection]].concat();
+    p.focus = nudge(p.focus, fg, |c| focus_on.iter().all(|&r| ratio(c, r) >= 3.0));
     let text_reads = [fg, p.muted].iter().all(|&t| rows.iter().all(|&r| ratio(t, r) >= min));
     text_reads && ratio(p.muted, fg) >= MIN_VISIBLE && ratio(p.selection, p.bg) >= MIN_VISIBLE
 }

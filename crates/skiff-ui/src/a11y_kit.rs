@@ -4,7 +4,7 @@
 
 use accesskit::{Action, ActionData, ActionRequest, Live, NodeId, Toggled, TreeId, TreeInfo, TreeUpdate};
 
-use crate::a11y::{A11yAction, Node, Role, Tree};
+use crate::a11y::{A11yAction, Node, Role, SortDir, Tree};
 use crate::input::Event;
 use crate::ui::Id;
 
@@ -32,6 +32,11 @@ fn role(r: Role) -> accesskit::Role {
         Role::Dialog => K::Dialog,
         Role::Status => K::Status,
         Role::Splitter => K::Splitter,
+        Role::Image => K::Image,
+        Role::ColumnHeader => K::ColumnHeader,
+        Role::SpinButton => K::SpinButton,
+        Role::AlertDialog => K::AlertDialog,
+        Role::Heading => K::Heading,
     }
 }
 
@@ -64,12 +69,21 @@ fn node(n: &Node, root_title: &str) -> accesskit::Node {
     if n.live {
         k.set_live(Live::Polite);
     }
+    if let Some(s) = n.sort {
+        k.set_sort_direction(match s {
+            SortDir::Ascending => accesskit::SortDirection::Ascending,
+            SortDir::Descending => accesskit::SortDirection::Descending,
+        });
+    }
+    if n.modal {
+        k.set_modal();
+    }
     if !n.children.is_empty() {
         k.set_children(n.children.iter().map(|c| NodeId(c.0)).collect::<Vec<_>>());
     }
     // Advertise only the actions the widget for this role actually handles.
     match n.role {
-        Role::Button | Role::CheckBox | Role::ComboBox => {
+        Role::Button | Role::CheckBox | Role::ComboBox | Role::ColumnHeader => {
             k.add_action(Action::Click);
             k.add_action(Action::Focus);
         }
@@ -80,7 +94,7 @@ fn node(n: &Node, root_title: &str) -> accesskit::Node {
             k.add_action(Action::SetValue);
         }
         Role::PasswordInput | Role::List | Role::Terminal => k.add_action(Action::Focus),
-        Role::Splitter => {
+        Role::Splitter | Role::SpinButton => {
             k.add_action(Action::Focus);
             k.add_action(Action::Increment);
             k.add_action(Action::Decrement);
