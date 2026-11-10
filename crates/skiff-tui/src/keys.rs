@@ -24,10 +24,19 @@ pub enum Action {
     /// Split the terminal tab one above the other.
     SplitDown,
     FocusNextPane,
+    /// Swap the two panes of a split.
+    SwapPanes,
+    /// Move the divider of a split to the next snap point that way.
+    ResizePaneLeft,
+    ResizePaneRight,
+    ResizePaneUp,
+    ResizePaneDown,
+    /// Give the two panes of a split the same size.
+    EqualizePanes,
 }
 
 impl Action {
-    pub const ALL: [Action; 20] = [
+    pub const ALL: [Action; 26] = [
         Action::Tab(1),
         Action::Tab(2),
         Action::Tab(3),
@@ -48,6 +57,12 @@ impl Action {
         Action::SplitRight,
         Action::SplitDown,
         Action::FocusNextPane,
+        Action::SwapPanes,
+        Action::ResizePaneLeft,
+        Action::ResizePaneRight,
+        Action::ResizePaneUp,
+        Action::ResizePaneDown,
+        Action::EqualizePanes,
     ];
 
     /// The name used in the `[tui_keys]` table.
@@ -65,6 +80,12 @@ impl Action {
             Action::SplitRight => "split_right".into(),
             Action::SplitDown => "split_down".into(),
             Action::FocusNextPane => "focus_next_pane".into(),
+            Action::SwapPanes => "swap_panes".into(),
+            Action::ResizePaneLeft => "resize_pane_left".into(),
+            Action::ResizePaneRight => "resize_pane_right".into(),
+            Action::ResizePaneUp => "resize_pane_up".into(),
+            Action::ResizePaneDown => "resize_pane_down".into(),
+            Action::EqualizePanes => "equalize_panes".into(),
         }
     }
 
@@ -86,6 +107,12 @@ impl Action {
             Action::SplitRight => "split terminal side by side",
             Action::SplitDown => "split terminal top / bottom",
             Action::FocusNextPane => "other pane of a split",
+            Action::SwapPanes => "swap the panes of a split",
+            Action::ResizePaneLeft => "move a side-by-side divider left (25/33/50/67/75%)",
+            Action::ResizePaneRight => "move a side-by-side divider right",
+            Action::ResizePaneUp => "move a top / bottom divider up",
+            Action::ResizePaneDown => "move a top / bottom divider down",
+            Action::EqualizePanes => "split panes the same size",
         }
     }
 
@@ -107,6 +134,12 @@ impl Action {
             Action::SplitRight => &["alt+\\"],
             Action::SplitDown => &["alt+-"],
             Action::FocusNextPane => &["alt+o"],
+            Action::SwapPanes => &["alt+x"],
+            Action::ResizePaneLeft => &["alt+shift+left"],
+            Action::ResizePaneRight => &["alt+shift+right"],
+            Action::ResizePaneUp => &["alt+shift+up"],
+            Action::ResizePaneDown => &["alt+shift+down"],
+            Action::EqualizePanes => &["alt+="],
         }
     }
 }

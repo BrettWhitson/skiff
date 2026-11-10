@@ -307,7 +307,7 @@ them.
 
 ```toml
 [tui_keys]
-close_tab = "alt+x"
+close_tab = "alt+z"
 split_right = "alt+v"
 help = "f1, alt+h"
 ```
@@ -324,6 +324,9 @@ help = "f1, alt+h"
 | `snippets` | `alt+s` (terminal tabs) |
 | `split_right` / `split_down` | `alt+\` / `alt+-` (terminal tabs) |
 | `focus_next_pane` | `alt+o` (terminal tabs) |
+| `swap_panes` | `alt+x` (split tabs) |
+| `resize_pane_left` / `_right` / `_up` / `_down` | `alt+shift+left` / `right` / `up` / `down` (split tabs) |
+| `equalize_panes` | `alt+=` (split tabs) |
 
 An unknown action, a chord that doesn't parse, or a chord already bound to
 another action is reported when Skiff starts (and listed at the top of the
@@ -339,7 +342,14 @@ moves the focus to the other pane; keys, pastes, find, snippets and the
 mouse go to the focused pane, whose border is highlighted. `Alt+W` closes
 the focused pane and its session; with one pane left it closes the tab. A
 tab holds at most two panes: splitting a split tab again switches its direction. Each
-pane's terminal is resized to fit its half. Port-forward tabs can't be split.
+pane's terminal is resized to fit its part. Port-forward tabs can't be split.
+`Alt+X` swaps the two panes. `Alt+Shift+←` / `→` (side by side) or `↑` / `↓`
+(stacked) move the divider to the next of 25 / 33 / 50 / 67 / 75% (an arrow
+across the split goes to the shell), and `Alt+=` makes the panes equal. With
+`tui_mouse = "always"`, drag the border between the panes; it snaps to those
+shares when within a cell (hold `Alt` to place it freely). A pane keeps at
+least 10 columns by 3 rows. Dragging panes or tabs around, and more than two
+panes per tab, are GUI-only.
 
 ### Terminal tabs (both apps)
 
