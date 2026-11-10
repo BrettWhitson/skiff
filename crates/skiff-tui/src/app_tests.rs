@@ -1,6 +1,7 @@
-//! Host-list flows driven through `App::handle_event`. Every config and ssh
-//! config is a temp file; terminal tests connect only to the local
-//! skiff-testserver fixture.
+//! `App` tests driven through `App::handle_event`: host-list editing,
+//! forwards, terminal search / paste / snippets / mouse, split panes, SFTP
+//! questions and transfers. Every config and ssh config is a temp file;
+//! terminal and SFTP tests connect only to the local skiff-testserver fixture.
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use skiff_core::config::Config;
@@ -9,13 +10,17 @@ use skiff_core::state::{SortMode, UiState};
 
 use super::*;
 
+/// Test harness: an `App` over a temp config dir and its own runtime.
 struct T {
+    /// Holds `config.toml`, `ssh_config` and backups; removed on drop.
     dir: tempfile::TempDir,
     app: App,
+    /// Kept alive for the app's background tasks.
     _rt: tokio::runtime::Runtime,
 }
 
 impl T {
+    /// An app whose ssh config holds `ssh`.
     fn new(ssh: &str) -> T {
         T::with(ssh, |_| {})
     }
@@ -37,35 +42,42 @@ impl T {
         T { dir, app, _rt: rt }
     }
 
+    /// Presses `code` with no modifiers.
     fn key(&mut self, code: KeyCode) {
         self.app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
 
+    /// Presses `code` `n` times.
     fn keys(&mut self, code: KeyCode, n: usize) {
         for _ in 0..n {
             self.key(code);
         }
     }
 
+    /// Presses Ctrl+`c`.
     fn ctrl(&mut self, c: char) {
         self.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)));
     }
 
+    /// Types `s` one key at a time.
     fn typed(&mut self, s: &str) {
         for c in s.chars() {
             self.key(KeyCode::Char(c));
         }
     }
 
+    /// The ssh config file as it is on disk now.
     fn ssh_text(&self) -> String {
         std::fs::read_to_string(self.dir.path().join("ssh_config")).unwrap()
     }
 
+    /// Host names in the list, in display order.
     fn listed(&self) -> Vec<String> {
         self.app.filtered.iter().map(|&i| self.app.hosts[i].name.clone()).collect()
     }
 }
 
+/// Editing an ssh config host rewrites only the changed line and keeps a backup.
 #[test]
 fn edit_ssh_host_saves_in_place() {
     let mut t = T::new("# my servers\nHost web\n    HostName 10.0.0.5\n    Port 22\n");
@@ -81,6 +93,7 @@ fn edit_ssh_host_saves_in_place() {
     assert_eq!(t.app.hosts[0].port, Some(2200));
 }
 
+/// A new host is inserted before a trailing `Host *` block, not after it.
 #[test]
 fn add_to_ssh_config_lands_before_wildcard() {
     let mut t = T::new("Host web\n    HostName a\n\nHost *\n    User me\n");
@@ -94,6 +107,7 @@ fn add_to_ssh_config_lands_before_wildcard() {
     assert_eq!(t.ssh_text(), "Host web\n    HostName a\n\nHost db\n    HostName 10.0.0.9\n\nHost *\n    User me\n");
 }
 
+/// A host in a shared `Host a b` block won't open in the editor; the status says why.
 #[test]
 fn read_only_host_explains_why() {
     let mut t = T::new("Host a b\n    User x\n");
@@ -103,6 +117,7 @@ fn read_only_host_explains_why() {
     assert!(is_err && msg.contains("shared block"), "{msg}");
 }
 
+/// `H` shows hidden hosts, `o` sorts by recent use, and both persist to state.toml.
 #[test]
 fn hidden_toggle_and_sort_recent() {
     let mut t = T::new("Host a\nHost b\nHost c\n    # skiff: hidden\n");
@@ -117,6 +132,7 @@ fn hidden_toggle_and_sort_recent() {
     assert_eq!(st.sort, SortMode::Recent);
 }
 
+/// An out-of-range listen port keeps the forward form open with an error and saves nothing.
 #[test]
 fn forward_form_rejects_bad_port() {
     let mut t = T::new("Host a\n    HostName 10.0.0.1\n");
@@ -134,6 +150,7 @@ fn forward_form_rejects_bad_port() {
     assert!(t.app.cfg.forwards.is_empty());
 }
 
+/// The host editor, forward dialogs and help draw on a 60x16 screen without panicking.
 #[test]
 fn new_dialogs_render_on_a_small_screen() {
     let mut t = T::new("Host a\n    HostName 10.0.0.1\n");
@@ -158,6 +175,7 @@ fn set_readonly(p: &std::path::Path, ro: bool) {
     std::fs::set_permissions(p, perm).unwrap();
 }
 
+/// A save that fails to write keeps the editor open, and saving again succeeds.
 #[cfg(windows)]
 #[test]
 fn failed_save_can_be_retried() {
@@ -178,7 +196,8 @@ fn failed_save_can_be_retried() {
 }
 
 /// A forward through a custom connection to a closed port on 127.0.0.1;
-/// `-F none` keeps ssh away from the real ssh config.
+/// `-F none` keeps ssh away from the real ssh config. Checks the forwards
+/// panel's failed state, that it isn't recorded as history, restart, stop and edit.
 #[test]
 fn forwards_panel_shows_state_stop_and_edit() {
     use skiff_core::config::Connection;
@@ -232,6 +251,7 @@ fn forwards_panel_shows_state_stop_and_edit() {
     }
 }
 
+/// The terminal cursor sits on the selected host row, which is marked with `›`.
 #[test]
 fn cursor_follows_selected_host() {
     use ratatui::backend::Backend;
@@ -248,6 +268,7 @@ fn cursor_follows_selected_host() {
     assert!(row.starts_with('›'), "selection marked by a symbol, not only color: {row:?}");
 }
 
+/// Presses Alt+`c`.
 fn alt(t: &mut T, c: char) {
     t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)));
 }
@@ -264,6 +285,7 @@ fn fixture_terminal(t: &mut T) -> skiff_testserver::TestFixture {
     fx
 }
 
+/// The active terminal tab's visible screen text (empty for other tabs).
 fn screen(t: &T) -> String {
     match &t.app.tabs[t.app.active].kind {
         TabKind::Terminal(s) => {
@@ -274,6 +296,7 @@ fn screen(t: &T) -> String {
     }
 }
 
+/// Waits up to 15 s for `s` to appear on the active terminal's screen.
 fn wait_screen(t: &T, s: &str) {
     let start = std::time::Instant::now();
     while !screen(t).contains(s) {
@@ -286,6 +309,7 @@ fn wait_screen(t: &T, s: &str) {
     }
 }
 
+/// Find counts matches, scrolls back to one, and Esc returns to live output.
 #[test]
 fn tui_search_scrolls_and_counts() {
     let mut t = T::new("");
@@ -309,6 +333,7 @@ fn tui_search_scrolls_and_counts() {
     assert_eq!(s.scroll_offset(), 0, "Esc returns to live output");
 }
 
+/// A multi-line paste into a terminal asks for confirmation first.
 #[test]
 fn tui_multiline_paste_confirms() {
     let mut t = T::new("");
@@ -317,6 +342,7 @@ fn tui_multiline_paste_confirms() {
     assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste { .. }, .. })));
 }
 
+/// Picking a snippet types its command into the terminal and closes the picker.
 #[test]
 fn tui_snippet_picker_sends() {
     let mut t = T::new("");
@@ -329,6 +355,7 @@ fn tui_snippet_picker_sends() {
     wait_screen(&t, "echo hi-snippet");
 }
 
+/// `text` as plain key presses (`\r` as Enter), the way a Windows console delivers a paste.
 fn press_keys(text: &str) -> Vec<Event> {
     text.chars()
         .map(|c| {
@@ -338,6 +365,7 @@ fn press_keys(text: &str) -> Vec<Event> {
         .collect()
 }
 
+/// A long key burst with line breaks is treated as a paste; a short one is typing.
 #[test]
 fn tui_key_burst_is_a_paste() {
     // Windows consoles deliver a paste as a burst of key presses.
@@ -350,6 +378,7 @@ fn tui_key_burst_is_a_paste() {
     assert!(matches!(t.app.modal, Some(Modal::Confirm { action: ConfirmAction::Paste { .. }, .. })));
 }
 
+/// Draws the app once on an 80x26 test screen.
 fn draw(t: &mut T) -> ratatui::Terminal<ratatui::backend::TestBackend> {
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 26)).unwrap();
     term.draw(|f| crate::ui::draw(f, &mut t.app)).unwrap();
@@ -365,16 +394,19 @@ fn find_text(term: &ratatui::Terminal<ratatui::backend::TestBackend>, s: &str) -
     })
 }
 
+/// Sends `bytes` to the active terminal's session (the fixture shell echoes them).
 fn write(t: &mut T, bytes: &[u8]) {
     if let TabKind::Terminal(s) = &mut t.app.tabs[t.app.active].kind {
         s.write(bytes);
     }
 }
 
+/// Sends a mouse event at screen cell (`column`, `row`) with no modifiers.
 fn mouse(t: &mut T, kind: crossterm::event::MouseEventKind, column: u16, row: u16) {
     t.app.handle_event(Event::Mouse(crossterm::event::MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }));
 }
 
+/// Alt shortcuts match an uppercase letter (Caps Lock), but Alt+Shift chords aren't shortcuts.
 #[test]
 fn alt_shortcuts_ignore_case_but_leave_alt_shift_to_the_shell() {
     let mut t = T::new("");
@@ -384,6 +416,7 @@ fn alt_shortcuts_ignore_case_but_leave_alt_shift_to_the_shell() {
     assert!(matches!(t.app.modal, Some(Modal::Help { .. })), "Alt+H with Caps Lock on");
 }
 
+/// Find takes a pasted query, highlights the current match and picks up matches in new output.
 #[test]
 fn tui_search_highlights_and_follows_new_output() {
     let mut t = T::new("");
@@ -409,6 +442,8 @@ fn tui_search_highlights_and_follows_new_output() {
     assert_eq!(t.app.search_status().as_deref(), Some("match 1/2"));
 }
 
+/// A program holding a mouse button hears the release: outside the terminal,
+/// when a dialog opens, or when the tab changes.
 #[test]
 fn tui_mouse_release_outside_reaches_the_program() {
     use crossterm::event::{MouseButton as B, MouseEventKind as K};
@@ -436,6 +471,7 @@ fn tui_mouse_release_outside_reaches_the_program() {
     assert_eq!(t.app.mouse_held, None, "released when the tab changes");
 }
 
+/// With `tui_mouse = "always"`: tab clicks switch tabs, the wheel scrolls, a drag selects and copies.
 #[test]
 fn tui_mouse_always_clicks_tabs_scrolls_and_copies() {
     use crossterm::event::{MouseButton as B, MouseEventKind as K};
@@ -469,6 +505,7 @@ fn tui_mouse_always_clicks_tabs_scrolls_and_copies() {
     assert_eq!(t.app.clipboard_out.as_deref(), Some("alpha"), "a drag copies");
 }
 
+/// Renaming a host moves its saved forwards and history to the new name.
 #[test]
 fn rename_carries_forwards_and_history() {
     use skiff_core::forward::{Forward, ForwardKind};
@@ -488,6 +525,7 @@ fn rename_carries_forwards_and_history() {
     assert_eq!(hist.recent(5), ["web2"]);
 }
 
+/// `[tui_keys]` remaps help to F1, reports a bad entry, and the help shows both.
 #[test]
 fn tui_keys_remap_end_to_end() {
     let mut t = T::with("", |cfg| {
@@ -507,6 +545,7 @@ fn tui_keys_remap_end_to_end() {
     assert!(t.app.modal.is_none(), "the help key closes it again");
 }
 
+/// The help scrolls, and End reaches its last line on a 24-row screen.
 #[test]
 fn help_scrolls_on_a_small_screen() {
     let mut t = T::new("");
@@ -544,6 +583,8 @@ fn connecting_sftp_tab(t: &mut T) -> String {
     tag
 }
 
+/// Sends an askpass question with `tag` and `prompt` through the app's
+/// queue; returns where the answer arrives and the token that withdraws it.
 fn ask(t: &mut T, tag: &str, prompt: &str) -> (oneshot::Receiver<Option<String>>, tokio_util::sync::CancellationToken) {
     let (reply, rx) = oneshot::channel();
     let cancelled = tokio_util::sync::CancellationToken::new();
@@ -553,6 +594,8 @@ fn ask(t: &mut T, tag: &str, prompt: &str) -> (oneshot::Receiver<Option<String>>
     (rx, cancelled)
 }
 
+/// The ask dialog masks secrets, answers yes/no, cancels on Esc, closes when
+/// withdrawn, refuses stale attempts, and shows notices on the status line.
 #[test]
 fn askpass_modal_masks_answers_and_cancels() {
     let mut t = T::new("");
@@ -604,6 +647,8 @@ fn askpass_modal_masks_answers_and_cancels() {
     assert!(find_text(&draw(&mut t), prompt).is_none());
 }
 
+/// A question waits (tab flagged) until its own tab is active, then ignores
+/// keys typed within the delay.
 #[test]
 fn background_questions_wait_for_their_own_tab() {
     let mut t = T::new("");
@@ -639,6 +684,7 @@ fn pump(t: &mut T, what: &str, done: impl Fn(&App) -> bool) {
     }
 }
 
+/// The active tab as an SFTP tab (panics otherwise).
 fn sftp(app: &App) -> &SftpTab {
     match &app.tabs[app.active].kind {
         TabKind::Sftp(s) => s,
@@ -646,6 +692,7 @@ fn sftp(app: &App) -> &SftpTab {
     }
 }
 
+/// State of the newest transfer in the first SFTP tab, if any.
 fn last_state(app: &App) -> Option<crate::sftp_tab::TransferState> {
     let s = app.tabs.iter().find_map(|t| match &t.kind {
         TabKind::Sftp(s) => Some(s),
@@ -654,6 +701,8 @@ fn last_state(app: &App) -> Option<crate::sftp_tab::TransferState> {
     s.transfers.last().map(|t| t.state.clone())
 }
 
+/// Against the local fixture: an existing remote file asks overwrite / skip /
+/// cancel; `X` cancels running transfers; closing the tab cancels its transfers.
 #[test]
 fn transfers_ask_before_overwriting_and_cancel() {
     use crate::sftp_tab::TransferState as St;
@@ -729,16 +778,19 @@ fn local_shell(t: &mut T) {
     t.app.push_tab("sh".into(), TabKind::Terminal(Box::new(s)));
 }
 
+/// A session's visible screen text.
 fn pane_text(s: &TerminalSession) -> String {
     s.parser.lock().unwrap().screen().contents()
 }
 
+/// The active split tab's (focused, other) sessions.
 fn panes(t: &T) -> (&TerminalSession, &TerminalSession) {
     let tab = &t.app.tabs[t.app.active];
     let TabKind::Terminal(focused) = &tab.kind else { panic!() };
     (focused, &tab.split.as_ref().expect("split").other)
 }
 
+/// Waits up to 15 s for `s` in the focused (or the other) pane.
 fn wait_pane(t: &T, focused: bool, s: &str) {
     let start = std::time::Instant::now();
     loop {
@@ -751,6 +803,8 @@ fn wait_pane(t: &T, focused: bool, s: &str) {
     }
 }
 
+/// Split panes get ptys that fit their borders, and keys, pastes and clicks
+/// go to the right pane; closing one pane keeps the other.
 #[test]
 fn split_panes_size_and_route_input() {
     let mut t = T::new("");
@@ -799,6 +853,7 @@ fn split_panes_size_and_route_input() {
     assert!(pane_text(s).contains("left-pane-mark"), "the other pane stays");
 }
 
+/// A waiting question in tab 10 doesn't suggest Alt+9 (which opens tab 9).
 #[test]
 fn waiting_tab_past_nine_has_no_shortcut_hint() {
     let mut t = T::new("");
@@ -813,6 +868,7 @@ fn waiting_tab_past_nine_has_no_shortcut_hint() {
     assert!(find_text(&term, "(Alt+9)").is_none(), "Alt+9 opens tab 9, not this one");
 }
 
+/// Pane areas, minimum pane size, divider hit-testing and drag snapping.
 #[test]
 fn split_divider_math() {
     use crate::ui::{divider_ratio, on_divider, split_areas};
@@ -831,6 +887,8 @@ fn split_divider_math() {
     assert_eq!(divider_ratio(area, SplitDir::Right, 49, 5, true), 50.0 / 80.0);
 }
 
+/// Alt+Shift+X swaps panes (Alt+X stays the shell's), Alt+Shift+arrows step
+/// the divider, Alt+= equalizes, and a mouse drag snaps it.
 #[test]
 fn split_panes_swap_resize_equalize_and_drag() {
     use crossterm::event::{MouseButton as B, MouseEventKind as K};
@@ -868,6 +926,7 @@ fn split_panes_swap_resize_equalize_and_drag() {
     assert_eq!(size(panes(&t).0).1, 18, "the left pane is 20 columns with its border");
 }
 
+/// Readline / emacs Alt keys aren't taken as shortcuts; Alt+/ still opens find.
 #[test]
 fn readline_alt_keys_reach_the_shell() {
     let mut t = T::new("");

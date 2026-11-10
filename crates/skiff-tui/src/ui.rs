@@ -1,3 +1,8 @@
+//! Rendering for the TUI: draws the tab bar, the active tab (host list,
+//! terminal with optional split, or SFTP panes), the status line and any open
+//! modal from the `App` state each frame. Also holds the split-pane geometry
+//! that the mouse handling in `app` shares.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
@@ -23,6 +28,8 @@ use skiff_core::panes;
 use skiff_core::status::Status as HostStatus;
 use skiff_core::terminal::TerminalSession;
 
+/// Draws one whole frame. Also records layout facts (tab label columns, pane
+/// areas, terminal size) back into `app` for mouse handling and resizing.
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.theme.plain = app.plain;
     let area = f.area();
@@ -37,6 +44,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         TabKind::Sftp(_) => draw_sftp(f, app, body),
     }
     draw_status(f, app, status_area);
+    // Forward states are computed up front: `forward_state` borrows `app`
+    // mutably, while the modal is drawn from a shared borrow.
     let states: Vec<String> = match app.modal {
         Some(Modal::Forwards { .. }) => (0..app.cfg.forwards.len()).map(|i| app.forward_state(i)).collect(),
         _ => vec![],
@@ -44,6 +53,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_modal(f, app, area, &states);
 }
 
+/// The standard panel frame: a rounded border with a title, highlighted when
+/// focused; in plain mode just the title line, without box drawing.
 fn block<'a>(t: &Theme, title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
     if t.plain {
         // The title stays as a text line; no box-drawing for readers to spell out.
@@ -56,12 +67,16 @@ fn block<'a>(t: &Theme, title: impl Into<Line<'a>>, focused: bool) -> Block<'a> 
         .style(t.base())
 }
 
+/// Draws the top row of numbered tab labels, marking tabs waiting on an ssh
+/// prompt (`?`) or with a failed SFTP connection; stores each label's
+/// columns in `app.tab_cols` so clicks can pick a tab.
 fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let mut spans = vec![Span::styled(" Skiff ", t.title()), Span::styled("│", t.muted())];
     let mut x = area.x + unicode_width(" Skiff │");
     let mut cols = vec![];
     let waiting = app.waiting_tabs();
+    // One label per tab; `x` tracks the screen column for the click map.
     for (i, tab) in app.tabs.iter().enumerate() {
         let asks = waiting.contains(&i);
         let marker = match &tab.kind {
@@ -86,8 +101,12 @@ fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
     app.tab_cols = cols;
 }
 
+/// Draws the bottom line. In priority order: the find bar while searching,
+/// an error (plus any security-key notice), a notice, an info message, a
+/// pointer to another tab waiting for an answer, else key hints for the tab.
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
+    // The find bar replaces the status line and owns the cursor.
     if let Some(Modal::Search { query, .. }) = &app.modal {
         let count = app.search_status().unwrap_or_default();
         let head = " Find: ";
@@ -153,6 +172,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 // ---------------------------------------------------------------- hosts
 
+/// Draws the Hosts tab: the filterable host list with status marks on the
+/// left and the selected host's details (including its ssh command) on the right.
 fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme.clone();
     let [left, right] = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
@@ -184,6 +205,7 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
             list_area,
         );
     } else {
+        // Names are padded to the longest shown (capped at 28) so targets line up.
         let name_w = app.filtered.iter().map(|&i| app.hosts[i].name.chars().count()).max().unwrap_or(0).min(28);
         let items: Vec<ListItem> = app
             .filtered
@@ -254,6 +276,7 @@ pub fn split_areas(area: Rect, dir: SplitDir, ratio: f32) -> (Rect, Rect) {
         SplitDir::Down => (area.height, panes::MIN_ROWS + 2),
     };
     let first = (total as f32 * ratio).round() as u16;
+    // `min` includes the two border cells; too small for both: halve it.
     let first = if total >= 2 * min { first.clamp(min, total - min) } else { total / 2 };
     let sizes = [Constraint::Length(first), Constraint::Fill(1)];
     let [a, b] = match dir {
@@ -282,12 +305,14 @@ pub fn divider_ratio(area: Rect, dir: SplitDir, col: u16, row: u16, snapping: bo
         SplitDir::Right => (col, area.x, area.width),
         SplitDir::Down => (row, area.y, area.height),
     };
+    // +1: the pointer's cell becomes the first pane's last (border) cell.
     let r = (pos.saturating_sub(start) + 1) as f32 / total.max(1) as f32;
     let r = if snapping { panes::snap(r, total as i32, 1).unwrap_or(r) } else { r };
     r.clamp(panes::MIN_RATIO, 1.0 - panes::MIN_RATIO)
 }
 
-/// Draws one terminal pane (sized to fit `area`); returns its content area.
+/// Draws one terminal pane, resizing its session to fit `area`; returns the
+/// content area inside the border. The title shows disconnection or scrollback.
 fn draw_session(f: &mut Frame, t: &Theme, s: &mut TerminalSession, area: Rect, title_text: &str, focused: bool, close: &str) -> Rect {
     let alive = s.is_alive();
     let scroll = s.scroll_offset();
@@ -306,6 +331,7 @@ fn draw_session(f: &mut Frame, t: &Theme, s: &mut TerminalSession, area: Rect, t
         f.render_widget(b, area);
         return inner;
     };
+    // Only a live, focused pane at the bottom of its output shows the cursor.
     let mut cursor = Cursor::default();
     if !focused || !alive || scroll > 0 || parser.screen().hide_cursor() {
         cursor.hide();
@@ -314,12 +340,16 @@ fn draw_session(f: &mut Frame, t: &Theme, s: &mut TerminalSession, area: Rect, t
     inner
 }
 
+/// Draws a terminal tab (both panes when split, the focused one titled as
+/// focused), records pane geometry in `app` for the mouse, then overlays the
+/// mouse selection and search matches on the focused pane.
 fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme.clone();
     let active = app.active;
     let tab = &mut app.tabs[active];
     let title_text = tab.title.clone();
     app.split_area = tab.split.as_ref().map(|_| area);
+    // `area` becomes the focused pane's rect; `other` the unfocused one's.
     let (area, other) = match &tab.split {
         None => (area, None),
         Some(sp) => {
@@ -345,9 +375,12 @@ fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
     let Ok(parser) = s.parser.lock() else {
         return;
     };
+    // Absolute line number of the pane's top row, to map selection and
+    // search positions (absolute lines) onto screen rows.
     let top = s.scrolled().saturating_sub(parser.screen().scrollback() as u64);
     drop(parser);
     let buf = f.buffer_mut();
+    // Restyles cells of one content row, clipped to the pane.
     let mut paint = |row: u16, cols: std::ops::Range<u16>, style: Style| {
         for c in cols.start..cols.end.min(inner.width) {
             if row < inner.height {
@@ -380,12 +413,15 @@ fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Stores the terminal content size as (rows, cols), the size new sessions start at.
 fn app_term_area(inner: Rect, slot: &mut (u16, u16)) {
     *slot = (inner.height, inner.width);
 }
 
 // ---------------------------------------------------------------- sftp
 
+/// Draws an SFTP tab: local and remote panes side by side (the remote one
+/// shows connecting / failed states instead), with the transfer list below.
 fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme.clone();
     let active = app.active;
@@ -394,6 +430,7 @@ fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let s = s.as_mut();
 
+    // Transfer box: up to 6 rows plus its border, hidden when empty.
     let transfer_h = if s.transfers.is_empty() { 0 } else { (s.transfers.len() as u16).min(6) + 2 };
     let [panes, transfers] = Layout::vertical([Constraint::Min(5), Constraint::Length(transfer_h)]).areas(area);
     let [left, right] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(panes);
@@ -433,10 +470,13 @@ fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// A pane's path for its title, with `…` while the listing loads.
 fn s_path(p: &Pane) -> String {
     if p.loading { format!("{} …", p.path) } else { p.path.clone() }
 }
 
+/// Draws one file pane as a name / size / modified table, keeping its scroll
+/// offset in `pane`; a listing error takes two lines at the bottom.
 fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: String, focused: bool) {
     let b = block(t, title, focused);
     let inner = b.inner(area);
@@ -452,6 +492,7 @@ fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: Strin
         .entries
         .iter()
         .map(|e| {
+            // Directories get a trailing `/` and accent; symlinks a `→`.
             let name_style = if e.is_dir { Style::new().fg(t.accent).add_modifier(Modifier::BOLD) } else { Style::new().fg(t.fg) };
             let mut name = e.name.clone();
             if e.is_dir && name != ".." {
@@ -485,6 +526,7 @@ fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: Strin
     }
 }
 
+/// Draws the transfer list, newest first: state mark, label, and progress.
 fn draw_transfers(f: &mut Frame, t: &Theme, s: &SftpTab, area: Rect) {
     let b = block(t, " Transfers (X: cancel newest running · x: clear finished) ", false);
     let inner = b.inner(area);
@@ -540,6 +582,7 @@ fn format_time(t: SystemTime) -> String {
 
 // ---------------------------------------------------------------- modals
 
+/// A `w` x `h` rect centred in `area`, shrunk to leave a one-cell margin.
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width.saturating_sub(2));
     let h = h.min(area.height.saturating_sub(2));
@@ -557,15 +600,18 @@ fn row_cursor(f: &mut Frame, area: Rect, selected: usize, offset: usize) {
     }
 }
 
+/// Puts the terminal cursor at `input`'s caret, for a field drawn from (`x`, `y`).
 fn set_cursor(f: &mut Frame, x: u16, y: u16, input: &TextInput) {
     let offset = unicode_width(input.before_cursor());
     f.set_cursor_position(Position::new(x + offset, y));
 }
 
+/// Display width of `s` in terminal cells (wide characters count double).
 fn unicode_width(s: &str) -> u16 {
     Line::raw(s).width() as u16
 }
 
+/// Draws the open modal, if any, centred over `area` on a cleared background.
 /// `states`: each saved forward's state, while the forwards list is open.
 fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
     let t = &app.theme;
@@ -627,6 +673,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 k(". / r / x", "hidden files / refresh / clear transfers"),
             ]);
             let b = block(t, format!(" Help (↑↓ PgUp PgDn scroll · Esc close) — config: {} ", app.cfg_path.display()), true);
+            // Clamp the scroll so the last line stays at the bottom.
             let visible = b.inner(r).height;
             let scroll = (*scroll).min((lines.len() as u16).saturating_sub(visible));
             f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(b), r);
@@ -664,6 +711,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             let b = block(t, ed.title(), true);
             let inner = b.inner(r);
             f.render_widget(b, r);
+            // One line per row; the focused row's hint replaces the footer.
             let mut hint = "";
             for (i, row) in rows.iter().enumerate() {
                 let focused = i == ed.focus;
@@ -746,6 +794,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
         }
         Modal::Search { .. } => {} // drawn on the status line
         Modal::Ask { host, input, req } => {
+            // ssh's own prompt text; secrets get a masked field, yes/no questions none.
             let secret = req.kind == AskKind::Secret;
             let prompt: Vec<Line> = req.prompt.trim_end().lines().map(|l| Line::raw(l.to_string())).collect();
             let r = centered(area, 76, prompt.len() as u16 + 6);
@@ -806,7 +855,8 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
     }
 }
 
-/// The list symbol for a host's status (shape differs too, not only color).
+/// The list symbol for a host's status (shape differs too, not only color);
+/// in plain mode a word instead, for screen readers.
 fn status_symbol(t: &Theme, s: Option<&HostStatus>) -> (&'static str, Style) {
     if t.plain {
         let word = match s {
@@ -858,6 +908,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// The epoch and a leap day render as the right UTC date and time.
     #[test]
     fn formats_time() {
         assert_eq!(format_time(UNIX_EPOCH), "1970-01-01 00:00");

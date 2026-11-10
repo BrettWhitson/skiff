@@ -1,3 +1,8 @@
+//! The TUI's whole state and behavior: the host list, tabs (terminals, splits,
+//! SFTP browsers, forwards), modal dialogs, and the handling of keys, mouse,
+//! pastes and the `Msg`s background tasks send back. `ui` draws this state;
+//! `main` runs the loop that feeds events in and drains messages each turn.
+
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,25 +38,36 @@ use skiff_core::terminal::{TerminalSession, encode_key};
 /// How long a question must be on screen before it takes keys.
 const QUESTION_DELAY: Duration = Duration::from_millis(250);
 
+/// A terminal session's screen parser, shared so a session can be identified
+/// (and written to) after focus moves away from it.
 type SharedParser = Arc<std::sync::Mutex<vt100::Parser>>;
 use skiff_core::theme::{self, ThemeDef};
 
 /// Results from background tasks, delivered to the UI thread.
+///
+/// `tab` fields are tab ids (`Tab::id`), not indexes, so a message for a tab
+/// closed meanwhile is simply dropped. `Status` is a host reachability probe's
+/// result.
 pub enum Msg {
+    /// An SFTP tab's connection finished (or failed).
     SftpConnected {
         tab: u64,
         result: Result<Arc<RemoteConn>, String>,
     },
+    /// A remote directory listing as (path, entries, name to select); `seq`
+    /// lets the tab ignore replies to listings it has since replaced.
     RemoteListing {
         tab: u64,
         seq: u64,
         result: Result<(String, Vec<FileEntry>, Option<String>), String>,
     },
+    /// Transfer `id` has moved `done` bytes so far.
     TransferProgress {
         tab: u64,
         id: u64,
         done: u64,
     },
+    /// Transfer `id` finished, with its summary or error.
     TransferDone {
         tab: u64,
         id: u64,
@@ -64,6 +80,8 @@ pub enum Msg {
         path: String,
         reply: oneshot::Sender<OverwriteDecision>,
     },
+    /// A remote file operation (mkdir, rename, delete) finished; `keep`
+    /// names the entry to keep selected after the relisting.
     RemoteOpDone {
         tab: u64,
         result: Result<(), String>,
@@ -79,10 +97,13 @@ pub enum Msg {
 
 /// A question from the background that waits for its turn on screen.
 pub enum Question {
+    /// ssh asks for a password, code or host-key answer.
     Ask(AskRequest),
+    /// A transfer asks whether to overwrite `path` (see `Msg::TransferAsk`).
     Overwrite { tab: u64, id: u64, path: String, reply: oneshot::Sender<OverwriteDecision> },
 }
 
+/// How a split terminal tab lays out its two panes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitDir {
     /// Side by side.
@@ -97,6 +118,7 @@ pub enum SplitDir {
 pub struct Split {
     /// The pane without focus.
     pub other: Box<TerminalSession>,
+    /// Side by side or stacked.
     pub dir: SplitDir,
     /// The focused pane is the first one (left or top).
     pub focus_first: bool,
@@ -104,14 +126,21 @@ pub struct Split {
     pub ratio: f32,
 }
 
+/// What a tab shows.
 pub enum TabKind {
+    /// The host list (always tab 0, never closed).
     Hosts,
+    /// An ssh session (a shell, or a port forward); the focused pane when split.
     Terminal(Box<TerminalSession>),
+    /// A dual-pane SFTP browser.
     Sftp(Box<SftpTab>),
 }
 
+/// One tab in the tab bar.
 pub struct Tab {
+    /// Stable id that background messages address the tab by.
     pub id: u64,
+    /// Label in the tab bar (numbered when opened to be unique).
     pub title: String,
     pub kind: TabKind,
     /// History to record once the session proves it connected.
@@ -124,21 +153,31 @@ pub struct Tab {
     pub split: Option<Split>,
 }
 
+/// What a one-line `Prompt` does with its text in the active SFTP pane.
 pub enum PromptAction {
+    /// Create a directory of that name.
     Mkdir,
+    /// Rename entry `from` to the text.
     Rename { from: String },
+    /// Go to the path typed.
     Goto,
 }
 
+/// A one-line text prompt (SFTP mkdir, rename, go to).
 pub struct Prompt {
     pub title: String,
     pub input: TextInput,
     pub action: PromptAction,
 }
 
+/// What a yes/no `Modal::Confirm` does when confirmed (`Quit`: quit with
+/// sessions still open).
 pub enum ConfirmAction {
+    /// Delete the named host from its config.
     DeleteHost(String),
+    /// Delete saved forward `i` from the config, then reopen the forwards list.
     DeleteForward(usize),
+    /// Delete the selected entry of the active SFTP pane.
     DeleteFile {
         name: String,
         is_dir: bool,
@@ -152,20 +191,27 @@ pub enum ConfirmAction {
     },
 }
 
+/// The dialog over the screen, if any (one at a time); it takes all keys.
+/// `Confirm` is a yes/no question that runs its `ConfirmAction` on yes.
 pub enum Modal {
     /// Keys; scrolled down `scroll` lines.
     Help {
         scroll: u16,
     },
+    /// Theme list, previewed live; `original` is restored on cancel.
     ThemePicker {
         selected: usize,
         original: String,
     },
+    /// The host editor (new or existing host).
     Editor(Box<Editor>),
+    /// The add/edit port-forward form.
     Forward(ForwardForm),
+    /// The list of saved forwards with their state.
     Forwards {
         selected: usize,
     },
+    /// A one-line text prompt.
     Prompt(Prompt),
     Confirm {
         text: String,
@@ -201,9 +247,13 @@ pub enum Modal {
 /// ends, line numbers as `termx::ScrollTracker` counts them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
+    /// Id of the tab whose terminal the selection is in.
     pub tab: u64,
+    /// Where the press started.
     pub anchor: (u64, u16),
+    /// Where the pointer is (or was released).
     pub head: (u64, u16),
+    /// The pointer moved after the press (a plain click selects nothing).
     pub dragged: bool,
 }
 
@@ -214,24 +264,37 @@ impl Selection {
     }
 }
 
+/// The whole TUI: config, host list, tabs, dialogs and input state.
 pub struct App {
+    /// The loaded `config.toml`.
     pub cfg: Config,
     /// What `cfg` looked like when last loaded or saved; saves write only the difference.
     cfg_saved: Config,
     pub cfg_path: PathBuf,
+    /// The active theme, resolved for ratatui.
     pub theme: Theme,
     /// Plain mode (`--plain` or `settings.tui_plain`).
     pub plain: bool,
+    /// Every known host (ssh config and `config.toml`).
     pub hosts: Vec<HostEntry>,
+    /// Indexes into `hosts` in display order, after hiding, sorting and filtering.
     pub filtered: Vec<usize>,
+    /// Selected row of `filtered`.
     pub host_selected: usize,
+    /// First visible row of the host list (scroll position, kept by `ui`).
     pub host_offset: usize,
+    /// The host list's filter text.
     pub filter: TextInput,
+    /// The filter field has the keys.
     pub filtering: bool,
+    /// Open tabs; tab 0 is the host list.
     pub tabs: Vec<Tab>,
+    /// Index of the shown tab.
     pub active: usize,
     pub modal: Option<Modal>,
+    /// Status line message: text, is-error, and when it was set (it clears after a few seconds).
     pub status: Option<(String, bool, Instant)>,
+    /// Set when the main loop should exit.
     pub should_quit: bool,
     /// Last known size of the terminal content area, used for new sessions.
     pub term_area: (u16, u16),
@@ -280,13 +343,19 @@ pub struct App {
     /// ssh notices that need no answer ("touch your security key"), with
     /// the host they're for; shown on the status line until withdrawn.
     pub notices: Vec<(String, AskRequest)>,
+    /// The id the next tab gets.
     next_id: u64,
+    /// The tokio runtime background work runs on.
     rt: Handle,
+    /// Cloned into background tasks to send `Msg`s back.
     tx: UnboundedSender<Msg>,
+    /// Where `drain_messages` reads those `Msg`s.
     rx: UnboundedReceiver<Msg>,
 }
 
 impl App {
+    /// Builds the app from a loaded config: applies the theme and keys,
+    /// collects hosts and, with `status_checks = "on_start"`, starts probing them.
     pub fn new(cfg: Config, cfg_path: PathBuf, rt: Handle) -> Self {
         let (tx, rx) = unbounded_channel();
         let history_path = History::path_for(&cfg_path);
@@ -351,6 +420,7 @@ impl App {
     pub fn enable_askpass(&mut self, helper: PathBuf) {
         match Broker::start(&self.rt, helper) {
             Ok((broker, mut rx)) => {
+                // Relay the broker's requests into the UI's message queue.
                 let tx = self.tx.clone();
                 self.rt.spawn(async move {
                     while let Some(req) = rx.recv().await {
@@ -370,6 +440,7 @@ impl App {
     fn prompter(&mut self) -> Option<Arc<Broker>> {
         let broker = self.askpass.clone()?;
         let bin = self.cfg.settings.ssh_binary.clone();
+        // Asked once; an unknown version is given the benefit of the doubt.
         let version = *self.ssh_version.get_or_insert_with(|| skiff_core::sshver::client_version(&bin).ok());
         match version {
             Some(v) if !skiff_core::sshver::supports_askpass_require(v) => {
@@ -393,6 +464,8 @@ impl App {
 
     // ----- themes -----
 
+    /// The built-in themes with config themes on top: a config theme with a
+    /// built-in's name replaces it, others are appended.
     pub fn all_themes(&self) -> Vec<ThemeDef> {
         let mut list = theme::builtin();
         for t in &self.cfg.themes {
@@ -404,6 +477,8 @@ impl App {
         list
     }
 
+    /// Switches to theme `name`; an unknown or invalid theme leaves the
+    /// current one and shows an error.
     fn apply_theme_name(&mut self, name: &str) {
         let themes = self.all_themes();
         // The host terminal owns its colors, so "auto" is simply "terminal".
@@ -419,6 +494,7 @@ impl App {
 
     // ----- hosts -----
 
+    /// Re-reads the host list from the config and ssh config, then refilters.
     pub fn reload_hosts(&mut self) {
         let (hosts, warning) = hosts::collect(&self.cfg);
         self.hosts = hosts;
@@ -428,6 +504,8 @@ impl App {
         self.refilter();
     }
 
+    /// Rebuilds `filtered`: without a filter, the visible hosts in the chosen
+    /// sort order; with one, the fuzzy matches best first (ties in list order).
     fn refilter(&mut self) {
         let q = self.filter.value.trim().to_string();
         let mut shown = hosts::visible(&self.hosts, self.ui_state.show_hidden);
@@ -435,6 +513,7 @@ impl App {
             history::order(&self.hosts, &mut shown, self.ui_state.sort, &self.history);
             self.filtered = shown;
         } else {
+            // Score descending, then original index for a stable order.
             let mut scored: Vec<(i64, usize)> =
                 shown.into_iter().filter_map(|i| hosts::fuzzy_score(&q, &self.hosts[i]).map(|s| (s, i))).collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -443,10 +522,12 @@ impl App {
         self.host_selected = self.host_selected.min(self.filtered.len().saturating_sub(1));
     }
 
+    /// The host under the cursor in the host list, if the list isn't empty.
     pub fn selected_host(&self) -> Option<&HostEntry> {
         self.filtered.get(self.host_selected).map(|&i| &self.hosts[i])
     }
 
+    /// Moves the host cursor by `delta` rows, stopping at either end.
     fn move_host(&mut self, delta: i64) {
         if self.filtered.is_empty() {
             return;
@@ -455,6 +536,7 @@ impl App {
         self.host_selected = (self.host_selected as i64 + delta).clamp(0, max) as usize;
     }
 
+    /// Writes the changes to `cfg` since the last load or save to `config.toml`.
     fn save_config(&mut self) {
         match self.cfg.save(&self.cfg_saved, &self.cfg_path) {
             Ok(()) => self.cfg_saved = self.cfg.clone(),
@@ -464,16 +546,19 @@ impl App {
 
     // ----- status -----
 
+    /// Shows an informational message on the status line.
     pub fn set_info(&mut self, s: impl Into<String>) {
         self.status = Some((s.into(), false, Instant::now()));
     }
 
+    /// Shows an error on the status line.
     pub fn set_error(&mut self, s: impl Into<String>) {
         self.status = Some((s.into(), true, Instant::now()));
     }
 
     // ----- tabs -----
 
+    /// `base`, or `base (2)`, `base (3)`… if an open tab already has that title.
     fn unique_title(&self, base: String) -> String {
         let mut title = base.clone();
         let mut n = 2;
@@ -484,6 +569,7 @@ impl App {
         title
     }
 
+    /// Adds a tab at the end with a fresh id and a unique title, and shows it.
     fn push_tab(&mut self, title: String, kind: TabKind) {
         let id = self.next_id;
         self.next_id += 1;
@@ -510,6 +596,7 @@ impl App {
         if files { self.open_sftp_with(host) } else { self.open_terminal_with(host) }
     }
 
+    /// Opens a terminal tab to the selected host.
     fn open_terminal(&mut self) {
         let Some(host) = self.selected_host().cloned() else {
             return;
@@ -517,6 +604,8 @@ impl App {
         self.open_terminal_with(host);
     }
 
+    /// Starts ssh to `host` in a new terminal tab sized to the content area;
+    /// history is recorded later, once the session proves it connected.
     fn open_terminal_with(&mut self, host: HostEntry) {
         let (rows, cols) = self.term_area;
         match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &host.shell_args(), rows, cols, self.cfg.settings.scrollback) {
@@ -561,6 +650,7 @@ impl App {
         );
     }
 
+    /// Records a successful connection to `name` in the history file.
     fn record(&mut self, name: &str, kind: ConnKind) {
         if let Err(e) = self.history.update(&self.history_path, |h| h.record(name, kind, history::now())) {
             self.set_error(format!("saving history: {e:#}"));
@@ -573,6 +663,8 @@ impl App {
         if old == new {
             return;
         }
+        // An unnamed forward's title shows its host, so retitle the tabs
+        // running the forwards that changed.
         let titles: Vec<String> = self.cfg.forwards.iter().map(Forward::title).collect();
         if hostform::rename_forwards(&mut self.cfg, old, new) {
             self.save_config();
@@ -602,12 +694,14 @@ impl App {
         }
     }
 
+    /// Writes the sort order and hidden-host toggle to `state.toml`.
     fn save_ui_state(&mut self) {
         if let Err(e) = self.ui_state.save(&UiState::path_for(&self.cfg_path)) {
             self.set_error(format!("saving state: {e:#}"));
         }
     }
 
+    /// Switches the host list to the next sort order and saves it.
     fn cycle_sort(&mut self) {
         self.ui_state.sort = self.ui_state.sort.next();
         self.save_ui_state();
@@ -615,6 +709,7 @@ impl App {
         self.set_info(format!("Sort: {}", self.ui_state.sort.label()));
     }
 
+    /// Shows or hides hosts marked hidden, and saves the choice.
     fn toggle_hidden(&mut self) {
         self.ui_state.show_hidden = !self.ui_state.show_hidden;
         self.save_ui_state();
@@ -655,6 +750,7 @@ impl App {
         }
     }
 
+    /// The tab (index) running the saved forward titled `title`.
     fn forward_tab(&self, title: &str) -> Option<usize> {
         self.tabs.iter().position(|t| t.forward.as_deref() == Some(title))
     }
@@ -673,6 +769,7 @@ impl App {
         if s.is_alive() {
             return "running".into();
         }
+        // ssh exited: find its error message on the tab's screen.
         let text = s.parser.lock().map(|p| p.screen().contents()).unwrap_or_default();
         let lines: Vec<String> = text.lines().map(String::from).collect();
         match skiff_core::forward::error_line(&lines) {
@@ -691,6 +788,8 @@ impl App {
         }
     }
 
+    /// Saves the forward form (adding or replacing a forward) and starts it.
+    /// An invalid form comes back with its error, to stay open.
     fn save_forward_form(&mut self, mut form: ForwardForm) -> Option<Modal> {
         match form.to_forward() {
             Err(e) => {
@@ -709,6 +808,7 @@ impl App {
         }
     }
 
+    /// Opens an SFTP tab to the selected host.
     fn open_sftp(&mut self) {
         let Some(host) = self.selected_host().cloned() else {
             return;
@@ -716,6 +816,8 @@ impl App {
         self.open_sftp_with(host);
     }
 
+    /// Opens an SFTP tab to `host` and starts connecting in the background.
+    /// The local pane starts at `local_start_dir`, else home, else `.`.
     fn open_sftp_with(&mut self, host: HostEntry) {
         let local = self
             .cfg
@@ -754,6 +856,7 @@ impl App {
     /// command (a new connection to the same host) and takes the focus. An
     /// already split tab changes direction.
     pub fn split(&mut self, dir: SplitDir) {
+        // The new pane starts at half the content area along the split.
         let (rows, cols) = self.term_area;
         let (rows, cols) = match dir {
             SplitDir::Right => (rows, cols / 2),
@@ -822,6 +925,7 @@ impl App {
         }
     }
 
+    /// Quits at once with only the host list open; otherwise asks first.
     fn request_quit(&mut self) {
         if self.tabs.len() > 1 {
             let n = self.tabs.len() - 1;
@@ -834,6 +938,7 @@ impl App {
         }
     }
 
+    /// Opens the theme picker on the current theme.
     fn open_theme_picker(&mut self) {
         let themes = self.all_themes();
         let selected = themes.iter().position(|t| t.name == self.theme.name).unwrap_or(0);
@@ -842,15 +947,20 @@ impl App {
 
     // ----- background messages -----
 
+    /// Called every loop turn: applies all pending background messages,
+    /// queues and shows questions, records connections that proved up, and
+    /// expires the status message.
     pub fn drain_messages(&mut self) {
         let mut connected: Vec<String> = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
+            // Messages not addressed to an SFTP tab are handled here and skipped.
             let msg = match msg {
                 Msg::Status { host, status } => {
                     self.statuses.insert(host, status);
                     continue;
                 }
                 Msg::Ask(req) if req.kind == AskKind::Notice => {
+                    // A notice is shown, not answered; one nobody owns is dismissed.
                     match self.ask_owner(&req) {
                         Some(i) => {
                             let TabKind::Sftp(s) = &self.tabs[i].kind else { unreachable!("an sftp tab") };
@@ -926,6 +1036,7 @@ impl App {
         for (name, kind) in done {
             self.record(&name, kind);
         }
+        // Status messages clear after six seconds.
         if let Some((_, _, at)) = &self.status
             && at.elapsed() > Duration::from_secs(6)
         {
@@ -1006,6 +1117,7 @@ impl App {
         self.questions = waiting;
     }
 
+    /// The SFTP tab with id `id`, if it is still open.
     fn sftp_tab_mut(&mut self, id: u64) -> Option<&mut SftpTab> {
         self.tabs.iter_mut().find_map(|t| match &mut t.kind {
             TabKind::Sftp(s) if t.id == id => Some(s.as_mut()),
@@ -1033,6 +1145,8 @@ impl App {
         }
     }
 
+    /// Routes one terminal event (key press or repeat, paste, mouse), then
+    /// makes sure a held mouse button still reaches its program.
     pub fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
@@ -1055,6 +1169,7 @@ impl App {
             TabKind::Terminal(s) => Arc::ptr_eq(&s.parser, parser),
             _ => false,
         };
+        // Nothing held, or the session that saw the press still has the keys.
         if self.mouse_held.is_none() || (focused && self.modal.is_none()) {
             if self.mouse_held.is_none() {
                 self.mouse_target = None;
@@ -1064,6 +1179,7 @@ impl App {
         let (button, cell) = (self.mouse_held.take().unwrap_or(0), *cell);
         let parser = parser.clone();
         self.mouse_target = None;
+        // Find that session in any tab, focused pane or not.
         let session = self.tabs.iter_mut().find_map(|t| {
             let other = t.split.as_mut().map(|sp| &mut sp.other);
             match &mut t.kind {
@@ -1096,14 +1212,9 @@ impl App {
         self.cfg.settings.tui_mouse == TuiMouse::Always || self.wants_mouse()
     }
 
-    /// A click on the tab bar switches tabs. In the terminal, a program
-    /// that asked for the mouse gets it (see `wants_mouse`); a button it
-    /// saw go down is released even outside the terminal, at its edge.
-    /// Otherwise, with `tui_mouse = "always"` (or Shift held while a
-    /// program has the mouse), the wheel scrolls the scrollback and a drag
-    /// selects text and copies it.
     /// With `tui_mouse = "always"`, the border between the panes of a split
     /// drags (snapping to 25 / 33 / 50 / 67 / 75% unless Alt is held).
+    /// True when `m` was part of a divider drag and needs nothing else.
     fn drag_divider(&mut self, m: &MouseEvent) -> bool {
         let always = self.cfg.settings.tui_mouse == TuiMouse::Always;
         let (Some(area), Some(sp)) = (self.split_area, self.tabs[self.active].split.as_mut()) else {
@@ -1124,10 +1235,17 @@ impl App {
         true
     }
 
+    /// A click on the tab bar switches tabs. In the terminal, a program
+    /// that asked for the mouse gets it (see `wants_mouse`); a button it
+    /// saw go down is released even outside the terminal, at its edge.
+    /// Otherwise, with `tui_mouse = "always"` (or Shift held while a
+    /// program has the mouse), the wheel scrolls the scrollback and a drag
+    /// selects text and copies it. Dialogs ignore the mouse.
     fn handle_mouse(&mut self, m: MouseEvent) {
         if self.modal.is_some() {
             return;
         }
+        // Tab bar (row 0).
         if m.kind == MouseEventKind::Down(MouseButton::Left)
             && m.row == 0
             && let Some(i) = self.tab_cols.iter().position(|&(a, b)| (a..b).contains(&m.column))
@@ -1156,6 +1274,7 @@ impl App {
         // The cell under the pointer, clamped to the terminal.
         let cell =
             (m.column.clamp(ox, (ox + cols).saturating_sub(1).max(ox)) - ox, m.row.clamp(oy, (oy + rows).saturating_sub(1).max(oy)) - oy);
+        // Shift takes the mouse back from the program, unless it holds a button.
         let program = self.wants_mouse() && (self.mouse_held.is_some() || !shift);
         let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else {
             return;
@@ -1171,6 +1290,8 @@ impl App {
             MouseButton::Middle => 1,
             MouseButton::Right => 2,
         };
+        // Report to the program; once it saw a press, drags and the release
+        // reach it even outside the terminal (at the clamped edge cell).
         if program {
             let held = self.mouse_held.is_some();
             let ev = match m.kind {
@@ -1201,6 +1322,7 @@ impl App {
         if !always {
             return; // the user's terminal does its own thing
         }
+        // The pointer as an absolute (line, col), counting the scrollback view.
         let top = s.scrolled().saturating_sub(offset as u64);
         let at = (top + cell.1 as u64, cell.0);
         match m.kind {
@@ -1222,6 +1344,7 @@ impl App {
                     sel.dragged = true;
                 }
             }
+            // Releasing after a drag copies the selected text (via OSC 52).
             MouseEventKind::Up(MouseButton::Left) => match self.selection {
                 Some(sel) if sel.tab == tab_id && sel.dragged => {
                     let (a, b) = sel.span();
@@ -1292,6 +1415,8 @@ impl App {
         }
     }
 
+    /// A paste goes to the open dialog's field (first line only; an ask
+    /// takes it only for a secret), else to the terminal or the host filter.
     fn handle_paste(&mut self, text: &str) {
         let line = text.lines().next().unwrap_or("");
         if self.question_too_new() {
@@ -1342,6 +1467,8 @@ impl App {
         }
     }
 
+    /// Routes a key: the open dialog takes everything, then global shortcuts,
+    /// then the active tab's own keys.
     fn handle_key(&mut self, key: KeyEvent) {
         if self.modal.is_some() {
             self.handle_modal_key(key);
@@ -1361,7 +1488,7 @@ impl App {
     /// tabs (the defaults are Alt chords; letters match in either case for
     /// Caps Lock, and Alt+Shift letter chords are left for the shell except
     /// `swap_panes`; the defaults avoid readline / emacs Alt keys). Terminal-only
-    /// actions elsewhere let the key through.
+    /// actions elsewhere let the key through. True when the key was used.
     fn handle_global_key(&mut self, key: KeyEvent) -> bool {
         let Some(action) = self.keys.match_key(&key) else {
             return false;
@@ -1394,6 +1521,7 @@ impl App {
                     sp.ratio = 0.5;
                 }
             }
+            // A resize that doesn't apply leaves the key for the shell.
             Action::ResizePaneLeft => return split && self.resize_split(SplitDir::Right, false),
             Action::ResizePaneRight => return split && self.resize_split(SplitDir::Right, true),
             Action::ResizePaneUp => return split && self.resize_split(SplitDir::Down, false),
@@ -1403,6 +1531,8 @@ impl App {
         true
     }
 
+    /// Keys in the host list: the filter field while filtering, else the
+    /// list's single-letter commands.
     fn hosts_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if self.filtering {
@@ -1463,12 +1593,15 @@ impl App {
         }
     }
 
+    /// Opens the host editor for a new host, saved to the first ssh config
+    /// file, or to Skiff's own config when there is none.
     fn new_host(&mut self) {
         let set = self.load_set();
         let dest = if set.docs.is_empty() { Dest::Skiff } else { Dest::SshConfig(0) };
         self.modal = Some(Modal::Editor(Box::new(Editor::new(HostForm::new_host(dest), set))));
     }
 
+    /// Re-reads `config.toml` (theme, hosts, keys) after outside edits.
     fn reload_config(&mut self) {
         match Config::load_or_create(&self.cfg_path) {
             Ok(cfg) => {
@@ -1483,6 +1616,7 @@ impl App {
         }
     }
 
+    /// Opens the host editor on the selected host (or shows why it can't be edited).
     fn edit_selected(&mut self) {
         let Some(h) = self.selected_host().cloned() else {
             return;
@@ -1494,6 +1628,8 @@ impl App {
         }
     }
 
+    /// Asks to delete the selected host; an ssh config host in a read-only
+    /// place is refused up front.
     fn delete_selected(&mut self) {
         let Some(h) = self.selected_host().cloned() else {
             return;
@@ -1513,6 +1649,7 @@ impl App {
 
     /// Writes what a host change touched, then refreshes the list.
     fn after_host_change(&mut self, saved: Saved, set: &mut ConfigSet) -> Result<(), String> {
+        // ssh config edits are written with backups; others go to config.toml.
         if let Saved::Ssh(_) = saved {
             set.save(&backups_dir(&self.cfg_path)).map_err(|e| format!("{e:#}"))?;
         } else {
@@ -1522,6 +1659,8 @@ impl App {
         Ok(())
     }
 
+    /// Keys in a terminal tab go to the session (Shift+PageUp/Down scroll
+    /// half a screen); once the session ended, Enter starts it again.
     fn terminal_key(&mut self, key: KeyEvent) {
         self.selection = None;
         let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else {
@@ -1546,6 +1685,8 @@ impl App {
         }
     }
 
+    /// Keys in an SFTP tab: navigation, copy, file operations (which open a
+    /// prompt or confirmation) and transfer control, on the focused pane.
     fn sftp_key(&mut self, key: KeyEvent) {
         let TabKind::Sftp(s) = &mut self.tabs[self.active].kind else {
             return;
@@ -1559,6 +1700,7 @@ impl App {
             }
         }
         let side = s.focus;
+        // Collected here and applied after the match, while `s` borrows `self`.
         let mut modal = None;
         let mut err = None;
         let mut info = None;
@@ -1626,6 +1768,8 @@ impl App {
         }
     }
 
+    /// Keys for the open dialog. The modal is taken out and each arm returns
+    /// what to show next (`None` closes it).
     fn handle_modal_key(&mut self, key: KeyEvent) {
         if self.question_too_new() {
             return;
@@ -1646,6 +1790,7 @@ impl App {
                 KeyCode::End | KeyCode::Char('G') => Some(Modal::Help { scroll: u16::MAX }),
                 _ => Some(modal),
             },
+            // Moving previews the theme; Enter saves it, Esc restores the original.
             Modal::ThemePicker { mut selected, original } => {
                 let names: Vec<String> = self.all_themes().into_iter().map(|t| t.name).collect();
                 match key.code {
@@ -1679,6 +1824,7 @@ impl App {
                 _ => Some(Modal::Confirm { text, action }),
             },
             Modal::Search { mut query, mut search } => match key.code {
+                // Closing the search returns the view to the live screen.
                 KeyCode::Esc => {
                     if let TabKind::Terminal(s) = &mut self.tabs[self.active].kind
                         && let Ok(mut p) = s.parser.lock()
@@ -1718,11 +1864,14 @@ impl App {
                             // May open the paste confirmation.
                             termx::SnippetSend::Paste { body, enter } => self.send_to_terminal(&body, enter),
                         }
+                        // Keep the paste confirmation if one opened; else close.
                         self.modal.take()
                     }
                     _ => Some(Modal::Snippets { selected }),
                 }
             }
+            // Answers go straight back to ssh; Esc declines. A notice only
+            // closes with Esc.
             Modal::Ask { host, mut input, req } => match (req.kind, key.code) {
                 (_, KeyCode::Esc) => {
                     let _ = req.reply.send(None);
@@ -1849,6 +1998,7 @@ impl App {
         None
     }
 
+    /// Carries out a confirmed action.
     fn run_confirm(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::Quit => self.should_quit = true,
@@ -1883,6 +2033,8 @@ impl App {
         }
     }
 
+    /// Applies a submitted prompt to the active SFTP tab's focused pane; an
+    /// empty answer (or a rename to the same name) does nothing.
     fn run_prompt(&mut self, p: Prompt) {
         let value = p.input.value.trim().to_string();
         if value.is_empty() {
@@ -1896,6 +2048,7 @@ impl App {
             PromptAction::Rename { from } if from != value => s.file_op(FileOp::Rename { from, to: value }),
             PromptAction::Rename { .. } => {}
             PromptAction::Goto => {
+                // `~` expands only on the local side; remote paths go as typed.
                 let side = s.focus;
                 let path = if side == Side::Local { sshconfig::expand_tilde(&value).display().to_string() } else { value };
                 s.navigate(side, path, None);
@@ -1915,6 +2068,7 @@ const PASTE_BURST_CHARS: usize = 8;
 /// forming a paste: a line break and at least `PASTE_BURST_CHARS` chars.
 fn key_burst_text(events: &[Event]) -> Option<String> {
     let mut text = String::new();
+    // Any non-key event, modifier chord or special key means it's typing.
     for e in events {
         let Event::Key(k) = e else { return None };
         if k.kind == KeyEventKind::Release {

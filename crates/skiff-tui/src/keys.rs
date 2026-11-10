@@ -6,6 +6,9 @@ use std::fmt;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+/// A global TUI command that can be bound to key chords. Variants without a
+/// doc are as named: tab navigation, closing a tab, opening the theme picker,
+/// help or snippets list, and quitting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
     /// Switch to tab n (1-9).
@@ -23,6 +26,7 @@ pub enum Action {
     SplitRight,
     /// Split the terminal tab one above the other.
     SplitDown,
+    /// Move focus to the other pane of a split.
     FocusNextPane,
     /// Swap the two panes of a split.
     SwapPanes,
@@ -36,6 +40,7 @@ pub enum Action {
 }
 
 impl Action {
+    /// Every action, including each of the nine tab slots.
     pub const ALL: [Action; 26] = [
         Action::Tab(1),
         Action::Tab(2),
@@ -89,10 +94,12 @@ impl Action {
         }
     }
 
+    /// The action a `[tui_keys]` entry name refers to, if any.
     pub fn from_config_name(s: &str) -> Option<Action> {
         Action::ALL.into_iter().find(|a| a.config_name() == s)
     }
 
+    /// Description shown next to the action's keys in the help screen.
     pub fn label(self) -> &'static str {
         match self {
             Action::Tab(_) => "switch to tab",
@@ -116,6 +123,8 @@ impl Action {
         }
     }
 
+    /// The built-in chords, in `[tui_keys]` syntax. All use Alt, chosen to
+    /// avoid the readline / emacs Alt keys a shell needs.
     pub fn defaults(self) -> &'static [&'static str] {
         match self {
             Action::Tab(n) => {
@@ -147,13 +156,18 @@ impl Action {
 /// A key with modifiers. Letters are stored lower case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Chord {
+    /// The key itself.
     pub code: KeyCode,
+    /// Ctrl / Alt / Shift that must be held.
     pub mods: KeyModifiers,
 }
 
+/// The modifiers a chord compares; others (Super, Hyper, ...) are ignored.
 const MODS: KeyModifiers = KeyModifiers::CONTROL.union(KeyModifiers::ALT).union(KeyModifiers::SHIFT);
 
 impl Chord {
+    /// Parses config text like `alt+w`, `ctrl+shift+x` or `f4`
+    /// (case-insensitive). Rejects chords without Ctrl or Alt unless an F-key.
     pub fn parse(s: &str) -> Result<Chord, String> {
         let t = s.trim().to_ascii_lowercase();
         let mut parts: Vec<&str> = t.split('+').map(str::trim).collect();
@@ -165,6 +179,7 @@ impl Chord {
         let Some(key) = parts.pop().filter(|k| !k.is_empty()) else {
             return Err(format!("\"{s}\" has no key"));
         };
+        // Everything before the key is a modifier name.
         let mut mods = KeyModifiers::NONE;
         for m in parts {
             mods |= match m {
@@ -174,6 +189,7 @@ impl Chord {
                 other => return Err(format!("unknown modifier \"{other}\" in \"{s}\"")),
             };
         }
+        // Named keys, then any single character, then F1-F12.
         let code = match key {
             "left" => KeyCode::Left,
             "right" => KeyCode::Right,
@@ -207,6 +223,8 @@ impl Chord {
         Ok(chord)
     }
 
+    /// Whether a key press triggers this chord. Letters match regardless of
+    /// case (Caps Lock); Shift is ignored for symbols.
     pub fn matches(&self, key: &KeyEvent) -> bool {
         let code = match key.code {
             KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
@@ -245,6 +263,7 @@ impl Chord {
 }
 
 impl fmt::Display for Chord {
+    /// Writes the chord for display, e.g. `Ctrl+Shift+X`, `Alt+←`, `F4`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (m, name) in [(KeyModifiers::CONTROL, "Ctrl"), (KeyModifiers::ALT, "Alt"), (KeyModifiers::SHIFT, "Shift")] {
             if self.mods.contains(m) {
@@ -269,12 +288,15 @@ impl fmt::Display for Chord {
     }
 }
 
+/// The active bindings: each action's chords, after `[tui_keys]` overrides.
 #[derive(Debug, Clone)]
 pub struct Keymap {
+    /// Chords per action; an action may have several (or none).
     binds: BTreeMap<Action, Vec<Chord>>,
 }
 
 impl Default for Keymap {
+    /// The built-in bindings, with no overrides.
     fn default() -> Self {
         Self::new(&BTreeMap::new()).0
     }
@@ -290,6 +312,7 @@ impl Keymap {
             Action::ALL.into_iter().map(|a| (a, a.defaults().iter().map(|s| Chord::parse(s).expect("valid default")).collect())).collect();
         let mut errors = vec![];
         let mut changed = vec![];
+        // Apply each override; a shell control key or parse error keeps the default.
         for (name, value) in overrides {
             let Some(action) = Action::from_config_name(name) else {
                 errors.push(format!("[tui_keys] {name}: unknown action"));
@@ -324,6 +347,7 @@ impl Keymap {
         (Keymap { binds }, errors)
     }
 
+    /// The chords bound to `a` (empty if none).
     pub fn chords(&self, a: Action) -> &[Chord] {
         self.binds.get(&a).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -348,6 +372,7 @@ impl Keymap {
         }
     }
 
+    /// The action a key press triggers, if any.
     pub fn match_key(&self, key: &KeyEvent) -> Option<Action> {
         self.binds.iter().find_map(|(a, chords)| chords.iter().any(|c| c.matches(key)).then_some(*a))
     }
@@ -357,14 +382,17 @@ impl Keymap {
 mod tests {
     use super::*;
 
+    /// A `[tui_keys]` table from name / value pairs.
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
+    /// A key press event.
     fn key(c: KeyCode, m: KeyModifiers) -> KeyEvent {
         KeyEvent::new(c, m)
     }
 
+    /// The default keymap matches the documented keys and displays them compactly.
     #[test]
     fn defaults_are_current_bindings() {
         let (k, errors) = Keymap::new(&BTreeMap::new());
@@ -379,6 +407,8 @@ mod tests {
         assert_eq!(k.show(Action::NextTab), "Alt+→ / Alt+]");
     }
 
+    /// Overrides replace defaults; bad names, chords and clashes are reported
+    /// and keep the defaults; swapping two actions' keys is allowed.
     #[test]
     fn overrides_and_validation() {
         let (k, errors) = Keymap::new(&map(&[
@@ -408,6 +438,7 @@ mod tests {
         assert_eq!(k.match_key(&key(KeyCode::Char('f'), KeyModifiers::ALT)), Some(Action::Quit));
     }
 
+    /// Symbol chords match with or without Shift, and the shell's control keys can't be bound.
     #[test]
     fn symbol_chords_ignore_shift_and_shell_keys_are_refused() {
         let (k, errors) = Keymap::new(&map(&[
@@ -434,6 +465,7 @@ mod tests {
         assert_eq!(k.show(Action::CloseTab), "Ctrl+Shift+C", "Shift tells letters apart");
     }
 
+    /// No default binding takes a readline / emacs Alt key.
     #[test]
     fn defaults_leave_readline_and_emacs_alt_keys_to_the_shell() {
         let k = Keymap::default();
@@ -447,6 +479,7 @@ mod tests {
         assert_eq!(k.match_key(&key(KeyCode::Char('\''), KeyModifiers::ALT)), Some(Action::Theme));
     }
 
+    /// Config names are unique and round-trip through `from_config_name`.
     #[test]
     fn every_action_has_a_unique_name() {
         let names: std::collections::BTreeSet<String> = Action::ALL.iter().map(|a| a.config_name()).collect();
