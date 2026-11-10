@@ -126,12 +126,12 @@ impl Action {
             Action::NextTab => &["alt+right", "alt+]"],
             Action::PrevTab => &["alt+left", "alt+["],
             Action::CloseTab => &["alt+w"],
-            Action::Theme => &["alt+t"],
+            Action::Theme => &["alt+'"],
             Action::Help => &["alt+h"],
             Action::Quit => &["alt+q"],
-            Action::Find => &["alt+f"],
+            Action::Find => &["alt+/"],
             Action::Snippets => &["alt+s"],
-            Action::SplitRight => &["alt+\\"],
+            Action::SplitRight => &["alt+|"],
             Action::SplitDown => &["alt+-"],
             Action::FocusNextPane => &["alt+o"],
             Action::SwapPanes => &["alt+shift+x"],
@@ -386,7 +386,7 @@ mod tests {
             ("nope", "alt+z"),
             ("help", "alt+banana"),
             ("theme", "x"),
-            ("quit", "alt+f"), // taken by find
+            ("quit", "alt+/"), // taken by find
         ]));
         assert_eq!(
             errors,
@@ -394,7 +394,7 @@ mod tests {
                 "[tui_keys] help: unknown key \"banana\" in \"alt+banana\"",
                 "[tui_keys] nope: unknown action",
                 "[tui_keys] theme: \"x\" needs Ctrl or Alt (or use F1-F12)",
-                "[tui_keys] quit: Alt+F is already bound to find",
+                "[tui_keys] quit: Alt+/ is already bound to find",
             ]
         );
         assert_eq!(k.match_key(&key(KeyCode::Char('X'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)), Some(Action::CloseTab));
@@ -432,6 +432,19 @@ mod tests {
         assert_eq!(k.show(Action::Quit), "Alt+Q");
         assert_eq!(k.show(Action::Snippets), "Ctrl+Alt+C");
         assert_eq!(k.show(Action::CloseTab), "Ctrl+Shift+C", "Shift tells letters apart");
+    }
+
+    #[test]
+    fn defaults_leave_readline_and_emacs_alt_keys_to_the_shell() {
+        let k = Keymap::default();
+        let mut keys: Vec<KeyCode> = "bfdulct.y<>\\".chars().map(KeyCode::Char).collect();
+        keys.push(KeyCode::Backspace);
+        for code in keys {
+            assert_eq!(k.match_key(&key(code, KeyModifiers::ALT)), None, "Alt+{code:?}");
+        }
+        assert_eq!(k.match_key(&key(KeyCode::Char('/'), KeyModifiers::ALT)), Some(Action::Find));
+        assert_eq!(k.match_key(&key(KeyCode::Char('|'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::SplitRight));
+        assert_eq!(k.match_key(&key(KeyCode::Char('\''), KeyModifiers::ALT)), Some(Action::Theme));
     }
 
     #[test]

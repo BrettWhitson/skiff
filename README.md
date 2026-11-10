@@ -98,6 +98,7 @@ is set.
 | `TERMAX_CONFIG` | `SKIFF_CONFIG` (`TERMAX_CONFIG` still works in this release) |
 | `# termax:` comments in ssh config | `# skiff:` (old ones are read and rewritten when the host is edited) |
 | `*.termax-part` leftovers | `*.skiff-part` (both are skipped when copying folders) |
+| TUI `Alt+F` find, `Alt+T` theme, `Alt+\` split side by side | `Alt+/`, `Alt+'`, `Alt+\|` (`Alt+F`, `Alt+T` and `Alt+\` now reach the shell: readline / emacs forward-word, transpose-words, delete-horizontal-space). Put the old keys back with `find = "alt+f"` etc. in `[tui_keys]` |
 
 ```toml
 [settings]
@@ -233,7 +234,7 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | Everywhere | `Alt+1`…`Alt+9` | Switch tab |
 | | `Alt+←` / `Alt+→` (or `Alt+[` / `Alt+]`) | Previous / next tab |
 | | `Alt+W` | Close tab |
-| | `Alt+T` | Theme picker |
+| | `Alt+'` | Theme picker |
 | | `Alt+H` | Help |
 | | `Alt+Q` | Quit |
 | Hosts | `Enter` | Open terminal |
@@ -249,9 +250,9 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | | `Space` | Toggle "Save to" / Hidden |
 | | `Enter` in Other options | Add a line |
 | Terminal | `Shift+PgUp` / `Shift+PgDn` | Scrollback |
-| | `Alt+F` | Find in the output (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
+| | `Alt+/` | Find in the output (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
 | | `Alt+S` | Snippets (`Enter` sends) |
-| | `Alt+\` / `Alt+-` | Split side by side / one above the other |
+| | `Alt+\|` / `Alt+-` | Split side by side / one above the other |
 | | `Alt+O` | Focus the other pane (`Alt+W` closes the focused one) |
 | | `Enter` after disconnect | Reconnect |
 | SFTP | `Tab` / `←` `→` | Switch pane |
@@ -317,12 +318,12 @@ help = "f1, alt+h"
 | `tab_1` … `tab_9` | `alt+1` … `alt+9` |
 | `next_tab` / `prev_tab` | `alt+right, alt+]` / `alt+left, alt+[` |
 | `close_tab` | `alt+w` (in a split tab: the focused pane) |
-| `theme` | `alt+t` |
+| `theme` | `alt+'` |
 | `help` | `alt+h` |
 | `quit` | `alt+q` |
-| `find` | `alt+f` (terminal tabs) |
+| `find` | `alt+/` (terminal tabs) |
 | `snippets` | `alt+s` (terminal tabs) |
-| `split_right` / `split_down` | `alt+\` / `alt+-` (terminal tabs) |
+| `split_right` / `split_down` | `alt+\|` / `alt+-` (terminal tabs) |
 | `focus_next_pane` | `alt+o` (terminal tabs) |
 | `swap_panes` | `alt+shift+x` (split tabs) |
 | `resize_pane_left` / `_right` / `_up` / `_down` | `alt+shift+left` / `right` / `up` / `down` (split tabs) |
@@ -335,7 +336,7 @@ always show the keys in effect.
 
 ### TUI split panes
 
-`Alt+\` splits a terminal tab side by side and `Alt+-` one above the other.
+`Alt+|` splits a terminal tab side by side and `Alt+-` one above the other.
 The new pane is a second connection to the same host (it runs the same ssh
 command) and takes the focus. `Alt+O` (or a click, with the mouse captured)
 moves the focus to the other pane; keys, pastes, find, snippets and the

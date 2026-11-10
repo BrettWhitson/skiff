@@ -1359,7 +1359,8 @@ impl App {
 
     /// Shortcuts from the keymap work everywhere, including inside terminal
     /// tabs (the defaults are Alt chords; letters match in either case for
-    /// Caps Lock, and Alt+Shift chords are left for the shell). Terminal-only
+    /// Caps Lock, and Alt+Shift letter chords are left for the shell except
+    /// `swap_panes`; the defaults avoid readline / emacs Alt keys). Terminal-only
     /// actions elsewhere let the key through.
     fn handle_global_key(&mut self, key: KeyEvent) -> bool {
         let Some(action) = self.keys.match_key(&key) else {

@@ -298,7 +298,7 @@ fn tui_search_scrolls_and_counts() {
         s.write(text.as_bytes());
     }
     wait_screen(&t, "row59");
-    alt(&mut t, 'f');
+    alt(&mut t, '/');
     t.typed("needle");
     t.key(KeyCode::Enter);
     assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"));
@@ -392,7 +392,7 @@ fn tui_search_highlights_and_follows_new_output() {
     wait_screen(&t, "needle\n");
     t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT | KeyModifiers::SHIFT)));
     assert!(t.app.modal.is_none(), "Alt+Shift+F goes to the shell");
-    alt(&mut t, 'f');
+    alt(&mut t, '/');
     t.app.handle_event(Event::Paste("needle".into()));
     assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"), "a paste goes into the query");
     let term = draw(&mut t);
@@ -755,7 +755,7 @@ fn wait_pane(t: &T, focused: bool, s: &str) {
 fn split_panes_size_and_route_input() {
     let mut t = T::new("");
     local_shell(&mut t);
-    alt(&mut t, '\\');
+    alt(&mut t, '|');
     let sp = t.app.tabs[t.app.active].split.as_ref().expect("split");
     assert!(!sp.focus_first, "the new (right) pane has the focus");
     draw(&mut t); // 80x26: the body is 80x24 at row 1
@@ -837,7 +837,7 @@ fn split_panes_swap_resize_equalize_and_drag() {
     let mut t = T::new("");
     t.app.cfg.settings.tui_mouse = skiff_core::config::TuiMouse::Always;
     local_shell(&mut t);
-    alt(&mut t, '\\');
+    alt(&mut t, '|');
     draw(&mut t);
     let split = |t: &T| {
         let sp = t.app.tabs[t.app.active].split.as_ref().unwrap();
@@ -866,4 +866,16 @@ fn split_panes_swap_resize_equalize_and_drag() {
     draw(&mut t);
     let size = |s: &TerminalSession| s.parser.lock().unwrap().screen().size();
     assert_eq!(size(panes(&t).0).1, 18, "the left pane is 20 columns with its border");
+}
+
+#[test]
+fn readline_alt_keys_reach_the_shell() {
+    let mut t = T::new("");
+    local_shell(&mut t);
+    for c in ['f', 't', 'b', 'd', '.', '\\'] {
+        alt(&mut t, c);
+        assert!(t.app.modal.is_none() && t.app.tabs[t.app.active].split.is_none(), "Alt+{c} is the shell's");
+    }
+    alt(&mut t, '/');
+    assert!(matches!(t.app.modal, Some(Modal::Search { .. })), "Alt+/ finds");
 }
