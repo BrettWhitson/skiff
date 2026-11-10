@@ -225,6 +225,8 @@ fn clean_stale(parent: &Path, name: &str, max_age: Duration) {
 /// symlinks as symlinks. Elsewhere a link to a directory (symlink or
 /// junction) is recreated as a link if possible, else left out and added to
 /// `skipped_links`; it is never followed, so a link loop can't recurse.
+// On Unix `skipped_links` is only passed down (links are always recreated).
+#[cfg_attr(unix, allow(clippy::only_used_in_recursion))]
 fn copy_tree(from: &Path, to: &Path, skipped_links: &mut Vec<PathBuf>) -> std::io::Result<()> {
     // Create the target private first; its real permissions are applied after
     // the contents are copied.
