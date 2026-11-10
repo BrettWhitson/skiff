@@ -74,6 +74,18 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
+    if let Some(Modal::Search { query, .. }) = &app.modal {
+        let count = app.search_status().unwrap_or_default();
+        let head = " Find: ";
+        let line = Line::from(vec![
+            Span::styled(head, t.title()),
+            Span::raw(query.value.clone()),
+            Span::styled(format!("  {count}  · Enter older · Shift+Enter newer · Esc close"), t.muted()),
+        ]);
+        f.render_widget(Paragraph::new(line).style(t.base()), area);
+        set_cursor(f, area.x + head.len() as u16, area.y, query);
+        return;
+    }
     let line = if let Some((msg, is_err, _)) = &app.status {
         let kind = if *is_err { "Error" } else { "Info" };
         Line::from(Span::styled(format!(" {kind}: {msg}"), Style::new().fg(if *is_err { t.error } else { t.success })))
@@ -81,7 +93,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         let hints = match &app.tabs[app.active].kind {
             TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear",
             TabKind::Hosts => "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · ? help",
-            TabKind::Terminal(_) => "Alt+1-9 tabs · Alt+←/→ cycle · Alt+W close · Shift+PgUp/PgDn scroll · Alt+H help",
+            TabKind::Terminal(_) => "Alt+1-9 tabs · Alt+←/→ cycle · Alt+W close · Alt+F find · Alt+S snippets · Shift+PgUp/PgDn scroll · Alt+H help",
             TabKind::Sftp(_) => "Tab pane · Enter open · Bksp up · c copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh",
         };
         Line::from(Span::styled(format!(" {hints}"), t.muted()))
@@ -203,6 +215,7 @@ fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = b.inner(area);
     s.resize(inner.height, inner.width);
     app_term_area(inner, &mut app.term_area);
+    app.term_origin = (inner.x, inner.y);
 
     let TabKind::Terminal(s) = &app.tabs[active].kind else { return };
     let parser = s.parser.lock().unwrap();
@@ -562,6 +575,22 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             let inner = b.inner(r);
             f.render_widget(Paragraph::new(p.input.value.as_str()).block(b), r);
             set_cursor(f, inner.x, inner.y, &p.input);
+        }
+        Modal::Search { .. } => {} // drawn on the status line
+        Modal::Snippets { selected } => {
+            let list = app.tab_snippets();
+            let r = centered(area, 76, list.len().max(1) as u16 + 4);
+            f.render_widget(Clear, r);
+            let b = block(t, " Snippets (Enter send · Esc close) ", true);
+            if list.is_empty() {
+                f.render_widget(Paragraph::new("No snippets. Add [[snippet]] entries to config.toml.").style(t.muted()).block(b), r);
+            } else {
+                let items: Vec<ListItem> = list.iter().map(|s| ListItem::new(format!(" {}  —  {}", s.name, s.command))).collect();
+                let mut state = ListState::default().with_selected(Some(*selected));
+                let inner = b.inner(r);
+                f.render_stateful_widget(List::new(items).highlight_style(t.selected()).highlight_symbol(MARK).block(b), r, &mut state);
+                row_cursor(f, inner, *selected, state.offset());
+            }
         }
         Modal::Confirm { text, .. } => {
             let w = (unicode_width(text) + 6).clamp(30, 80);

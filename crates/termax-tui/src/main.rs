@@ -8,7 +8,7 @@ mod ui;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
 use crossterm::execute;
 
 use crate::app::App;
@@ -116,8 +116,16 @@ fn main() -> Result<()> {
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
-    loop {
+    let mut mouse = false;
+    let result = (|| loop {
         terminal.draw(|f| ui::draw(f, app))?;
+        // Capture the mouse only while a program in the active terminal asked
+        // for it, so the user's terminal keeps its own selection otherwise.
+        let want = app.wants_mouse();
+        if want != mouse {
+            mouse = want;
+            let _ = if want { execute!(std::io::stdout(), EnableMouseCapture) } else { execute!(std::io::stdout(), DisableMouseCapture) };
+        }
         if app.should_quit {
             return Ok(());
         }
@@ -131,5 +139,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
             }
         }
         app.drain_messages();
+    })();
+    if mouse {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
     }
+    result
 }

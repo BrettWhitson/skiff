@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use termax_core::termx::{self, Match, MouseEv};
 use termax_core::fs::connect::RemoteConn;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -48,6 +49,8 @@ pub struct Tab {
     pub record: Option<(String, ConnKind, Instant)>,
     /// The saved forward (by title) this tab runs.
     pub forward: Option<String>,
+    /// The host a terminal tab is connected to (for its snippets).
+    pub host: Option<String>,
 }
 
 pub enum PromptAction {
@@ -67,6 +70,8 @@ pub enum ConfirmAction {
     DeleteForward(usize),
     DeleteFile { name: String, is_dir: bool },
     Quit,
+    /// A multi-line paste into the active terminal.
+    Paste(String),
 }
 
 pub enum Modal {
@@ -77,6 +82,10 @@ pub enum Modal {
     Forwards { selected: usize },
     Prompt(Prompt),
     Confirm { text: String, action: ConfirmAction },
+    /// Find in the active terminal's output; `current` indexes `matches`.
+    Search { query: TextInput, matches: Vec<Match>, current: usize },
+    /// Saved commands for the active terminal's host.
+    Snippets { selected: usize },
 }
 
 pub struct App {
@@ -100,6 +109,8 @@ pub struct App {
     pub should_quit: bool,
     /// Last known size of the terminal content area, used for new sessions.
     pub term_area: (u16, u16),
+    /// Screen position of the terminal content's top-left cell (mouse reports).
+    pub term_origin: (u16, u16),
     /// Reachability per host name.
     pub statuses: HashMap<String, HostStatus>,
     pub history: History,
@@ -133,12 +144,13 @@ impl App {
             host_offset: 0,
             filter: TextInput::default(),
             filtering: false,
-            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts, record: None, forward: None }],
+            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts, record: None, forward: None, host: None }],
             active: 0,
             modal: None,
             status: None,
             should_quit: false,
             term_area: (24, 80),
+            term_origin: (1, 1),
             next_id: 1,
             rt,
             tx,
@@ -249,7 +261,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let title = self.unique_title(title);
-        self.tabs.push(Tab { id, title, kind, record: None, forward: None });
+        self.tabs.push(Tab { id, title, kind, record: None, forward: None, host: None });
         self.active = self.tabs.len() - 1;
     }
 
@@ -272,7 +284,9 @@ impl App {
         match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &host.shell_args(), rows, cols, self.cfg.settings.scrollback) {
             Ok(s) => {
                 self.push_tab(host.name.clone(), TabKind::Terminal(Box::new(s)));
-                self.tabs.last_mut().expect("pushed").record = Some((host.name.clone(), ConnKind::Terminal, Instant::now()));
+                let tab = self.tabs.last_mut().expect("pushed");
+                tab.record = Some((host.name.clone(), ConnKind::Terminal, Instant::now()));
+                tab.host = Some(host.name.clone());
             }
             Err(e) => self.set_error(format!("{e:#}")),
         }
@@ -521,8 +535,117 @@ impl App {
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
             Event::Paste(text) => self.handle_paste(&text),
+            Event::Mouse(m) => self.handle_mouse(m),
             _ => {}
         }
+    }
+
+    /// The active terminal has a program that asked for the mouse.
+    pub fn wants_mouse(&self) -> bool {
+        self.modal.is_none()
+            && matches!(&self.tabs[self.active].kind, TabKind::Terminal(s)
+                if s.parser.lock().is_ok_and(|p| p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None))
+    }
+
+    /// Reports a mouse event to the program in the active terminal. Shift
+    /// is left to the user's terminal (its own selection).
+    fn handle_mouse(&mut self, m: MouseEvent) {
+        if m.modifiers.contains(KeyModifiers::SHIFT) || !self.wants_mouse() {
+            return;
+        }
+        let (ox, oy) = self.term_origin;
+        let (rows, cols) = self.term_area;
+        let (Some(col), Some(row)) = (m.column.checked_sub(ox), m.row.checked_sub(oy)) else { return };
+        if col >= cols || row >= rows {
+            return;
+        }
+        let button = |b: MouseButton| match b {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+        };
+        let ev = match m.kind {
+            MouseEventKind::Down(b) => MouseEv::Press(button(b)),
+            MouseEventKind::Up(b) => MouseEv::Release(button(b)),
+            MouseEventKind::Drag(b) => MouseEv::Drag(button(b)),
+            MouseEventKind::Moved => MouseEv::Move,
+            MouseEventKind::ScrollUp => MouseEv::WheelUp,
+            MouseEventKind::ScrollDown => MouseEv::WheelDown,
+            _ => return,
+        };
+        let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else { return };
+        let Ok((mode, enc)) = s.parser.lock().map(|p| (p.screen().mouse_protocol_mode(), p.screen().mouse_protocol_encoding())) else {
+            return;
+        };
+        let (alt, ctrl) = (m.modifiers.contains(KeyModifiers::ALT), m.modifiers.contains(KeyModifiers::CONTROL));
+        if let Some(bytes) = termx::encode_mouse(mode, enc, ev, col, row, false, alt, ctrl) {
+            s.write(&bytes);
+        }
+    }
+
+    /// "match i/n" while searching ("no matches", or empty before typing).
+    pub fn search_status(&self) -> Option<String> {
+        let Some(Modal::Search { query, matches, current }) = &self.modal else { return None };
+        Some(match (query.value.is_empty(), matches.len()) {
+            (true, _) => String::new(),
+            (false, 0) => "no matches".into(),
+            (false, n) => format!("match {}/{n}", current + 1),
+        })
+    }
+
+    /// The snippets usable in the active terminal tab.
+    pub fn tab_snippets(&self) -> Vec<&termx::Snippet> {
+        let host = self.tabs[self.active].host.as_deref().unwrap_or("");
+        termx::snippets_for(&self.cfg.snippets, host)
+    }
+
+    /// Sends `text` to the active terminal. A paste, or multi-line text, goes
+    /// through the paste rule and may ask first.
+    fn send_to_terminal(&mut self, text: &str, is_paste: bool) {
+        let title = self.tabs[self.active].title.clone();
+        let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else { return };
+        let multi = text.trim_end_matches('\r').contains(['\n', '\r']);
+        if !is_paste && !multi {
+            s.write(text.as_bytes());
+            return;
+        }
+        let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
+        match termx::paste_lines(text, bracketed, self.cfg.settings.confirm_multiline_paste) {
+            Some(n) => {
+                let what = if n == 1 { "1 line".to_string() } else { format!("{n} lines") };
+                let text_owned = text.to_string();
+                self.modal = Some(Modal::Confirm { text: format!("Paste {what} into {title}?"), action: ConfirmAction::Paste(text_owned) });
+            }
+            None => s.paste(text),
+        }
+    }
+
+    /// Re-runs the search for `query`; the newest match becomes current and
+    /// the view scrolls to it.
+    fn run_search(&mut self, query: &TextInput) -> (Vec<Match>, usize) {
+        let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else { return (vec![], 0) };
+        let Ok(mut p) = s.parser.lock() else { return (vec![], 0) };
+        let (lines, history) = termx::screen_lines(&mut p);
+        drop(p);
+        let matches = termx::find(&lines, &query.value);
+        let current = matches.len().saturating_sub(1);
+        self.scroll_to_match(&matches, current, history);
+        (matches, current)
+    }
+
+    fn scroll_to_match(&mut self, matches: &[Match], current: usize, history: usize) {
+        let TabKind::Terminal(s) = &mut self.tabs[self.active].kind else { return };
+        let Some(m) = matches.get(current) else { return };
+        let rows = s.rows() as usize;
+        let off = termx::scroll_offset_for(m.line, history, rows).saturating_sub(rows / 3);
+        if let Ok(mut p) = s.parser.lock() {
+            p.screen_mut().set_scrollback(off);
+        }
+    }
+
+    fn history_len(&self) -> usize {
+        let TabKind::Terminal(s) = &self.tabs[self.active].kind else { return 0 };
+        s.parser.lock().map(|mut p| termx::screen_lines(&mut p).1).unwrap_or(0)
     }
 
     fn handle_paste(&mut self, text: &str) {
@@ -548,7 +671,7 @@ impl App {
             None => {}
         }
         match &mut self.tabs[self.active].kind {
-            TabKind::Terminal(s) => s.paste(text),
+            TabKind::Terminal(_) => self.send_to_terminal(text, true),
             TabKind::Hosts if self.filtering => {
                 self.filter.insert_str(line);
                 self.refilter();
@@ -590,6 +713,12 @@ impl App {
             KeyCode::Char('t') => self.open_theme_picker(),
             KeyCode::Char('h') => self.modal = Some(Modal::Help),
             KeyCode::Char('q') => self.request_quit(),
+            KeyCode::Char('f') if matches!(self.tabs[self.active].kind, TabKind::Terminal(_)) => {
+                self.modal = Some(Modal::Search { query: TextInput::default(), matches: vec![], current: 0 });
+            }
+            KeyCode::Char('s') if matches!(self.tabs[self.active].kind, TabKind::Terminal(_)) => {
+                self.modal = Some(Modal::Snippets { selected: 0 });
+            }
             _ => return false,
         }
         true
@@ -842,6 +971,47 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => None,
                 _ => Some(Modal::Confirm { text, action }),
             },
+            Modal::Search { mut query, mut matches, mut current } => match key.code {
+                KeyCode::Esc => {
+                    if let TabKind::Terminal(s) = &mut self.tabs[self.active].kind
+                        && let Ok(mut p) = s.parser.lock()
+                    {
+                        p.screen_mut().set_scrollback(0);
+                    }
+                    None
+                }
+                KeyCode::Enter => {
+                    let n = matches.len();
+                    if n > 0 {
+                        // Enter: next older match; Shift+Enter: newer.
+                        current = if key.modifiers.contains(KeyModifiers::SHIFT) { (current + 1) % n } else { (current + n - 1) % n };
+                        let history = self.history_len();
+                        self.scroll_to_match(&matches, current, history);
+                    }
+                    Some(Modal::Search { query, matches, current })
+                }
+                _ => {
+                    if query.handle_key(key) {
+                        (matches, current) = self.run_search(&query);
+                    }
+                    Some(Modal::Search { query, matches, current })
+                }
+            },
+            Modal::Snippets { selected } => {
+                let n = self.tab_snippets().len();
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => None,
+                    KeyCode::Down | KeyCode::Char('j') if n > 0 => Some(Modal::Snippets { selected: (selected + 1) % n }),
+                    KeyCode::Up | KeyCode::Char('k') if n > 0 => Some(Modal::Snippets { selected: (selected + n - 1) % n }),
+                    KeyCode::Enter if selected < n => {
+                        let text = self.tab_snippets()[selected].text();
+                        // A multi-line snippet may open the paste confirmation.
+                        self.send_to_terminal(&text, false);
+                        self.modal.take()
+                    }
+                    _ => Some(Modal::Snippets { selected }),
+                }
+            }
             Modal::Prompt(mut p) => match key.code {
                 KeyCode::Esc => None,
                 KeyCode::Enter => {
@@ -921,6 +1091,11 @@ impl App {
     fn run_confirm(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::Quit => self.should_quit = true,
+            ConfirmAction::Paste(text) => {
+                if let TabKind::Terminal(s) = &mut self.tabs[self.active].kind {
+                    s.paste(&text);
+                }
+            }
             ConfirmAction::DeleteHost(name) => {
                 let Some(h) = self.hosts.iter().find(|h| h.name == name).cloned() else { return };
                 let mut set = self.load_set();
