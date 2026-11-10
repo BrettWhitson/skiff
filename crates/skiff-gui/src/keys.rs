@@ -10,8 +10,9 @@ pub use skiff_ui::input::{Event, Key, Modifiers};
 
 /// An app command that can be bound to key chords. Each has a `[keys]`
 /// config name, a human label and per-platform default chords; tab, zoom
-/// and UI-scale actions mirror their labels, and the `*Pane*` actions act on
-/// the split panes of the focused terminal tab.
+/// and UI-scale actions mirror their labels, and the split, `*Pane*` and
+/// `*Group*` actions act on the dock's groups (the `*_pane_*` config names
+/// are kept from when splits were panes inside a terminal tab).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
     /// Open the command palette (`[keys]` name `quick_switcher`, kept
@@ -35,31 +36,41 @@ pub enum Action {
     UiScaleUp,
     UiScaleDown,
     UiScaleReset,
-    /// Split the terminal: a new pane on the right.
+    /// Split the focused tab into a new group on the right (a terminal
+    /// opens another session to its host).
     SplitRight,
-    /// Split the terminal: a new pane below.
+    /// Split the focused tab into a new group below.
     SplitDown,
-    /// Move focus to the next pane of the split.
+    /// Focus the next group (reading order, wrapping).
     FocusNextPane,
-    /// Close the focused pane.
+    /// Close the focused group's tabs.
     ClosePane,
-    /// Swap the focused pane with its neighbor on that side.
+    /// Move the focused tab into the group on that side (a new group there
+    /// when there is none and its group has other tabs).
     MovePaneLeft,
     MovePaneRight,
     MovePaneUp,
     MovePaneDown,
-    /// Move the divider beside the focused pane to the next snap point.
+    /// Move the focused tab into a new group to the right of / below its own.
+    MoveToNewGroupRight,
+    MoveToNewGroupDown,
+    /// Focus the group on that side.
+    FocusGroupLeft,
+    FocusGroupRight,
+    FocusGroupUp,
+    FocusGroupDown,
+    /// Move the divider beside the focused group to the next snap point.
     ResizePaneLeft,
     ResizePaneRight,
     ResizePaneUp,
     ResizePaneDown,
-    /// Give the panes of a row the same size.
+    /// Give the groups of a row the same size.
     EqualizePanes,
 }
 
 impl Action {
     /// Every action, in declaration order.
-    pub const ALL: [Action; 29] = [
+    pub const ALL: [Action; 35] = [
         Action::QuickSwitcher,
         Action::NewTab,
         Action::CloseTab,
@@ -84,6 +95,12 @@ impl Action {
         Action::MovePaneRight,
         Action::MovePaneUp,
         Action::MovePaneDown,
+        Action::MoveToNewGroupRight,
+        Action::MoveToNewGroupDown,
+        Action::FocusGroupLeft,
+        Action::FocusGroupRight,
+        Action::FocusGroupUp,
+        Action::FocusGroupDown,
         Action::ResizePaneLeft,
         Action::ResizePaneRight,
         Action::ResizePaneUp,
@@ -118,6 +135,12 @@ impl Action {
             Action::MovePaneRight => "move_pane_right",
             Action::MovePaneUp => "move_pane_up",
             Action::MovePaneDown => "move_pane_down",
+            Action::MoveToNewGroupRight => "move_to_new_group_right",
+            Action::MoveToNewGroupDown => "move_to_new_group_down",
+            Action::FocusGroupLeft => "focus_group_left",
+            Action::FocusGroupRight => "focus_group_right",
+            Action::FocusGroupUp => "focus_group_up",
+            Action::FocusGroupDown => "focus_group_down",
             Action::ResizePaneLeft => "resize_pane_left",
             Action::ResizePaneRight => "resize_pane_right",
             Action::ResizePaneUp => "resize_pane_up",
@@ -145,19 +168,25 @@ impl Action {
             Action::UiScaleUp => "Larger interface",
             Action::UiScaleDown => "Smaller interface",
             Action::UiScaleReset => "Reset interface size",
-            Action::SplitRight => "Split pane right",
-            Action::SplitDown => "Split pane down",
-            Action::FocusNextPane => "Next pane",
-            Action::ClosePane => "Close pane",
-            Action::MovePaneLeft => "Move pane left",
-            Action::MovePaneRight => "Move pane right",
-            Action::MovePaneUp => "Move pane up",
-            Action::MovePaneDown => "Move pane down",
+            Action::SplitRight => "Split right",
+            Action::SplitDown => "Split down",
+            Action::FocusNextPane => "Next group",
+            Action::ClosePane => "Close group",
+            Action::MovePaneLeft => "Move tab to group left",
+            Action::MovePaneRight => "Move tab to group right",
+            Action::MovePaneUp => "Move tab to group above",
+            Action::MovePaneDown => "Move tab to group below",
+            Action::MoveToNewGroupRight => "Move tab to new group right",
+            Action::MoveToNewGroupDown => "Move tab to new group below",
+            Action::FocusGroupLeft => "Focus group left",
+            Action::FocusGroupRight => "Focus group right",
+            Action::FocusGroupUp => "Focus group above",
+            Action::FocusGroupDown => "Focus group below",
             Action::ResizePaneLeft => "Move divider left",
             Action::ResizePaneRight => "Move divider right",
             Action::ResizePaneUp => "Move divider up",
             Action::ResizePaneDown => "Move divider down",
-            Action::EqualizePanes => "Equalize panes",
+            Action::EqualizePanes => "Equalize groups",
         }
     }
 
@@ -195,6 +224,11 @@ impl Action {
                 MovePaneRight => &["cmd+ctrl+shift+right"],
                 MovePaneUp => &["cmd+ctrl+shift+up"],
                 MovePaneDown => &["cmd+ctrl+shift+down"],
+                MoveToNewGroupRight | MoveToNewGroupDown => &[],
+                FocusGroupLeft => &["cmd+alt+left"],
+                FocusGroupRight => &["cmd+alt+right"],
+                FocusGroupUp => &["cmd+alt+up"],
+                FocusGroupDown => &["cmd+alt+down"],
                 ResizePaneLeft => &["cmd+ctrl+left"],
                 ResizePaneRight => &["cmd+ctrl+right"],
                 ResizePaneUp => &["cmd+ctrl+up"],
@@ -227,6 +261,11 @@ impl Action {
             MovePaneRight => &["ctrl+alt+shift+right"],
             MovePaneUp => &["ctrl+alt+shift+up"],
             MovePaneDown => &["ctrl+alt+shift+down"],
+            MoveToNewGroupRight | MoveToNewGroupDown => &[],
+            FocusGroupLeft => &["ctrl+alt+left"],
+            FocusGroupRight => &["ctrl+alt+right"],
+            FocusGroupUp => &["ctrl+alt+up"],
+            FocusGroupDown => &["ctrl+alt+down"],
             ResizePaneLeft => &["alt+shift+left"],
             ResizePaneRight => &["alt+shift+right"],
             ResizePaneUp => &["alt+shift+up"],

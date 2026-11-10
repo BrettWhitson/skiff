@@ -135,7 +135,7 @@ fn keybindings_reset_and_filter() {
     assert!(f.h.tree().find("Changed from the default").is_none());
     f.app.settings.keys.filter = "split".into();
     f.frame(vec![]);
-    assert!(f.try_find("Split pane right").is_some() && f.try_find("Close tab").is_none(), "{:?}", f.texts());
+    assert!(f.try_find("Split right").is_some() && f.try_find("Close tab").is_none(), "{:?}", f.texts());
     assert_eq!(super::keys::keycaps("Ctrl++"), ["Ctrl", "+"]);
 }
 

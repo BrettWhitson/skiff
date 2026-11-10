@@ -11,7 +11,8 @@
 //!   the toolkit `App` implementation that lays out every screen.
 //! - [`sidebar`]: the host list with filter, sort, status dots and menus.
 //! - [`term`]: terminal tabs (system ssh in a pty, drawn on a cell grid),
-//!   with selection, search and split panes.
+//!   with selection and search.
+//! - [`dock`]: tab groups in a split layout; any tab docks by drag or key.
 //! - [`files`]: two-pane file-transfer tabs over local disk or SFTP.
 //! - [`forwards`]: the port-forward manager tab.
 //! - [`settings`]: the settings tab (connections, appearance, keys, snippets).
@@ -25,6 +26,7 @@
 //! - `testing`: helpers shared by tests and examples (hidden from docs).
 
 pub mod app;
+pub mod dock;
 pub mod engine;
 pub mod files;
 pub mod forwards;

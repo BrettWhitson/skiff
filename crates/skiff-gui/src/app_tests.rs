@@ -442,7 +442,7 @@ fn f6_cycles_regions_from_terminal() {
     let mut f = Fixture::new();
     f.double_click_text("alpha");
     f.frame(vec![]);
-    let term = crate::term::split::pane_id(f.app.tabs[0].id, 0);
+    let term = crate::term::term_id(f.app.tabs[0].id);
     assert_eq!(f.h.state.focused(), Some(term));
     let f6 = |shift| Event::KeyDown { key: Key::F(6), mods: Modifiers { shift, ..Modifiers::NONE }, text: None };
     f.frame(vec![f6(false)]);
@@ -465,11 +465,12 @@ fn tab_strip_arrows_keep_focus_on_strip() {
     let key = |key, shift| Event::KeyDown { key, mods: Modifiers { shift, ..Modifiers::NONE }, text: None };
     f.frame(vec![key(Key::F(6), true)]);
     f.frame(vec![]);
-    assert_eq!(f.h.state.focused(), Some(Id::new("tabs")));
+    let strip = crate::dock::strip_id(f.app.dock.focus);
+    assert_eq!(f.h.state.focused(), Some(strip));
     f.frame(vec![key(Key::Left, false)]);
     f.frame(vec![]);
     assert_eq!(f.app.active, 0);
-    assert_eq!(f.h.state.focused(), Some(Id::new("tabs")), "arrows stay on the strip, not the shell");
+    assert_eq!(f.h.state.focused(), Some(strip), "arrows stay on the strip, not the shell");
 }
 
 /// Shift+F10 on a selected host opens its context menu.
@@ -573,10 +574,10 @@ fn palette_runs_snippet() {
     args.push("-tt".into());
     args.push(fx.destination());
     let host = f.app.hosts[0].clone();
-    f.app.push_tab(TabKind::Terminal(Box::new(TermSplit::new(TermTab::with_command(host, "ssh".into(), args, 500)))));
+    f.app.push_tab(TabKind::Terminal(Box::new(TermTab::with_command(host, "ssh".into(), args, 500))));
     f.frame(vec![]);
     let screen = |f: &Fixture| match &f.app.tabs[f.app.active].kind {
-        TabKind::Terminal(t) => t.focused().session.as_ref().map(|s| s.parser.lock().unwrap().screen().contents()).unwrap_or_default(),
+        TabKind::Terminal(t) => t.session.as_ref().map(|s| s.parser.lock().unwrap().screen().contents()).unwrap_or_default(),
         _ => String::new(),
     };
     let wait = |f: &mut Fixture, s: &str| {
@@ -744,4 +745,24 @@ fn empty_sidebar_imports_ssh_config() {
     assert_eq!(f.app.hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["gamma"]);
     assert!(std::fs::read_to_string(&f.path).unwrap().contains("load_ssh_config = true"));
     assert!(f.try_find("gamma").is_some());
+}
+
+/// While a terminal's context menu holds the keyboard, app shortcuts stand
+/// aside: the menu's own item shortcut acts once and closes the menu.
+#[test]
+fn shortcuts_stand_aside_while_a_context_menu_is_open() {
+    let mut f = Fixture::new();
+    f.double_click_text("alpha");
+    f.frame(vec![]);
+    let r = f.h.tree().find("Terminal: alpha").expect("terminal").bounds;
+    let at = Point::new(r.x + 30, r.y + 80);
+    f.frame(vec![Event::MouseMove(at), Event::MouseDown(MouseButton::Right, at), Event::MouseUp(MouseButton::Right, at)]);
+    f.frame(vec![]);
+    assert!(f.try_find("Split right").is_some(), "the menu is open");
+    let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+    f.frame(vec![Event::KeyDown { key: Key::Char('d'), mods: ctrl_shift, text: None }]);
+    f.frame(vec![]);
+    f.frame(vec![]);
+    assert_eq!(f.app.dock.groups.len(), 2, "split once, by the menu");
+    assert!(f.try_find("Split right").is_none(), "the menu closed");
 }

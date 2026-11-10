@@ -2,8 +2,8 @@
 //!
 //! `TermTab` owns one terminal session plus its view state; `view` draws it
 //! each frame and routes keys, mouse, wheel, paste and search. The submodules
-//! split out rendering, input encoding, selection, find, announcements and
-//! the split-pane layout (`split`).
+//! split out rendering, input encoding, selection, find and announcements.
+//! Splitting is the dock's job (`crate::dock`): each terminal is one tab.
 
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,6 @@ pub mod mouse;
 pub mod render;
 pub mod search;
 pub mod select;
-pub mod split;
 
 /// Half-period of the cursor blink (on for this long, then off).
 const BLINK: Duration = Duration::from_millis(530);
@@ -106,10 +105,16 @@ pub struct TermTab {
     /// Actions chosen from this terminal's own menu, run next frame (the
     /// app's action list is only for the frame it was filled in).
     queued: Vec<Action>,
-    /// Which pane this is ("pane 1 of 2"), while the tab is split; set by the split view.
+    /// Where this terminal is in the dock ("group 1 of 2") while there are
+    /// several groups; set by the app each frame.
     pub pane_label: Option<String>,
-    /// Split or close asked for from this terminal's menu (the split view runs it).
+    /// Split or close-group asked for from this terminal's menu (the app runs it).
     pub pane_request: Option<Action>,
+}
+
+/// The widget id of the terminal of tab `tab`.
+pub fn term_id(tab: u64) -> Id {
+    Id::new(("term", tab))
 }
 
 /// Rows × columns that fit `rect` (at least 2 × 10, as the pty needs).
@@ -195,7 +200,7 @@ impl TermTab {
         self.resync = true;
     }
 
-    /// The terminal's accessible name ("Terminal: web, pane 2 of 2").
+    /// The terminal's accessible name ("Terminal: web, group 2 of 2").
     pub fn a11y_name(&self) -> String {
         match &self.pane_label {
             Some(p) => format!("Terminal: {}, {p}", self.host.name),
@@ -203,7 +208,7 @@ impl TermTab {
         }
     }
 
-    /// A new terminal to the same host, the same way (a split pane).
+    /// A new terminal to the same host, the same way (a split).
     pub fn sibling(&self) -> TermTab {
         let mut t = TermTab::with_command(self.host.clone(), self.program.clone(), self.args.clone(), self.scrollback);
         (t.blink, t.announce, t.confirm_paste, t.font_px) = (self.blink, self.announce, self.confirm_paste, self.font_px);
@@ -557,7 +562,7 @@ pub fn view(
     paste_bar(ui, id, tab);
 }
 
-/// The right-click menu: Copy, Paste, and splitting or closing the pane,
+/// The right-click menu: Copy, Paste, and splitting or closing the group,
 /// with icons and each action's shortcut.
 fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab, keymap: &Keymap) {
     let menu = id.with("menu");
@@ -583,7 +588,7 @@ fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab, keymap: &Ke
         MenuItem::SEPARATOR,
         with_key(MenuItem::new("Split right").icon(Icon::SplitH), &keys[2]),
         with_key(MenuItem::new("Split down").icon(Icon::SplitV), &keys[3]),
-        with_key(MenuItem::new("Close pane").icon(Icon::Close).enabled(split), &keys[4]),
+        with_key(MenuItem::new("Close group").icon(Icon::Close).enabled(split), &keys[4]),
     ];
     match context_menu(ui, menu, &items) {
         Some(0) => tab.queued.push(Action::Copy),

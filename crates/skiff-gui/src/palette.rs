@@ -47,7 +47,7 @@ pub enum Cmd {
 impl Cmd {
     /// Every command, in the order `>` lists them; the first
     /// `SUGGESTED` are suggested on an empty query.
-    pub const ALL: [Cmd; 20] = [
+    pub const ALL: [Cmd; 24] = [
         Cmd::NewConnection,
         Cmd::Forwards,
         Cmd::Action(Action::Settings),
@@ -57,6 +57,10 @@ impl Cmd {
         Cmd::Action(Action::SplitDown),
         Cmd::Action(Action::FocusNextPane),
         Cmd::Action(Action::ClosePane),
+        Cmd::Action(Action::MoveToNewGroupRight),
+        Cmd::Action(Action::MoveToNewGroupDown),
+        Cmd::Action(Action::MovePaneLeft),
+        Cmd::Action(Action::MovePaneRight),
         Cmd::Action(Action::EqualizePanes),
         Cmd::Action(Action::CloseTab),
         Cmd::Action(Action::NextTab),
@@ -96,13 +100,14 @@ impl Cmd {
             Cmd::Forwards => Icon::Forward,
             Cmd::CheckStatus | Cmd::ReloadConfig => Icon::Refresh,
             Cmd::Action(Action::Settings) => Icon::Settings,
-            Cmd::Action(Action::SplitRight) => Icon::SplitH,
-            Cmd::Action(Action::SplitDown) => Icon::SplitV,
+            Cmd::Action(Action::SplitRight | Action::MoveToNewGroupRight) => Icon::SplitH,
+            Cmd::Action(Action::SplitDown | Action::MoveToNewGroupDown) => Icon::SplitV,
+            Cmd::Action(Action::MovePaneLeft) => Icon::ChevronLeft,
             Cmd::Action(Action::Find) => Icon::Search,
             Cmd::Action(Action::CloseTab | Action::ClosePane) => Icon::Close,
             Cmd::Action(Action::ZoomIn | Action::UiScaleUp) => Icon::Plus,
             Cmd::Action(Action::ZoomOut | Action::UiScaleDown) => Icon::Minus,
-            Cmd::Action(Action::NextTab) => Icon::ChevronRight,
+            Cmd::Action(Action::NextTab | Action::MovePaneRight) => Icon::ChevronRight,
             Cmd::Action(Action::PrevTab) => Icon::ChevronLeft,
             Cmd::Action(_) => Icon::Terminal,
         }

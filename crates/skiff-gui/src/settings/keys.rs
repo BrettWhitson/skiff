@@ -1,4 +1,4 @@
-//! The Keybindings page: actions grouped (Tabs, Panes, Terminal, View,
+//! The Keybindings page: actions grouped (Tabs, Groups, Terminal, View,
 //! App), each with its chords drawn as keycaps. Click (or Enter on) the
 //! keycaps to record a new chord (saved to `[keys]` at once); a changed
 //! binding shows an accent dot and a Reset button. A filter narrows the
@@ -21,6 +21,7 @@ use crate::keys::{Action, Chord};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Tabs,
+    /// The dock's tab groups (`*_pane_*` config names kept).
     Panes,
     Terminal,
     View,
@@ -35,7 +36,7 @@ impl Group {
     pub fn label(self) -> &'static str {
         match self {
             Group::Tabs => "Tabs",
-            Group::Panes => "Panes",
+            Group::Panes => "Groups",
             Group::Terminal => "Terminal",
             Group::View => "View",
             Group::App => "App",
@@ -48,7 +49,8 @@ pub fn group(a: Action) -> Group {
     use Action::*;
     match a {
         NewTab | CloseTab | NextTab | PrevTab => Group::Tabs,
-        SplitRight | SplitDown | FocusNextPane | ClosePane | MovePaneLeft | MovePaneRight | MovePaneUp | MovePaneDown | ResizePaneLeft
+        SplitRight | SplitDown | FocusNextPane | ClosePane | MovePaneLeft | MovePaneRight | MovePaneUp | MovePaneDown
+        | MoveToNewGroupRight | MoveToNewGroupDown | FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown | ResizePaneLeft
         | ResizePaneRight | ResizePaneUp | ResizePaneDown | EqualizePanes => Group::Panes,
         Copy | Paste | Find | ZoomIn | ZoomOut | ZoomReset => Group::Terminal,
         ToggleSidebar | UiScaleUp | UiScaleDown | UiScaleReset => Group::View,

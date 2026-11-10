@@ -28,14 +28,14 @@ use skiff_ui::widgets::{
     ToastEvent, ToastKind, Toasts, dialog, dialog_dismiss, empty_state, splitter_h, status_dot, tabs_with, text, toasts_in,
 };
 
+use crate::dock::{Dock, DockDrag, Drop, Zone};
 use crate::engine::{Engine, Msg};
 use crate::files::{FilesTab, Location};
 use crate::forwards::{ForwardsState, Running};
 use crate::keys::{Action, Keymap};
 use crate::palette::{Cmd, Item, PaletteState};
 use crate::sidebar::{Sidebar, SidebarAction, SidebarCtx, sidebar};
-use crate::term::TermTab;
-use crate::term::split::{Dir, PaneDrag, TabDrop, TermSplit, Zone};
+use crate::term::{TermTab, term_id};
 use crate::theme::{GuiTheme, from_def};
 
 /// Starts the askpass broker; its questions arrive as `Msg::Ask`.
@@ -58,12 +58,50 @@ const CONFIG_POLL: Duration = Duration::from_secs(1);
 const STATUS_H: i32 = 22;
 /// How many recent warnings `GuiApp::warnings` keeps.
 const WARNINGS_KEPT: usize = 20;
+/// The narrowest a dock group gets, logical px.
+const MIN_GROUP_W: i32 = 200;
+/// The least height below a dock group's tab strip, logical px.
+const MIN_GROUP_H: i32 = 96;
+/// How much a terminal in a group without focus is dimmed toward the
+/// background (0..=1; `gui.dim_inactive_panes`).
+const DIM: f32 = 0.15;
+
+/// What one dock group is drawn with this frame.
+struct GroupCtx<'a> {
+    /// The group's id.
+    id: u64,
+    /// Its whole area (strip and content).
+    rect: Rect,
+    /// The Settings gear ends its strip (the top-right group).
+    gear: bool,
+    /// "Group 2 of 3" ("" with a single group).
+    words: String,
+    /// There are several groups.
+    many: bool,
+    /// Tabs shown last frame.
+    prev_visible: &'a [u64],
+}
+
+/// What the groups asked for this frame, carried out after they are drawn.
+#[derive(Default)]
+struct GroupEvents {
+    /// A tab dropped somewhere it changes something.
+    drop: Option<(u64, Drop)>,
+    /// Tabs whose close button was clicked.
+    close: Vec<u64>,
+    /// A tab chosen in a strip (or the group whose "+" was clicked).
+    show: Option<u64>,
+    /// A "+" was clicked: the palette opens.
+    plus: bool,
+    /// A press landed in this group.
+    pressed: Option<u64>,
+}
 
 /// What a tab shows. Settings and Forwards are singletons; their state
 /// lives on `GuiApp` so it survives closing the tab.
 pub enum TabKind {
-    /// A terminal tab: one or more panes to the same host.
-    Terminal(Box<TermSplit>),
+    /// A terminal tab: one session to a host.
+    Terminal(Box<TermTab>),
     /// A two-pane file-transfer tab.
     Files(Box<FilesTab>),
     /// The settings screen.
@@ -127,10 +165,13 @@ pub struct GuiApp {
     pub toasts: Toasts,
     /// Background runtime; results come back as `Msg`s.
     pub engine: Engine,
-    /// Open tabs, in strip order.
+    /// Open tabs (any order: the dock's groups hold their strip order).
     pub tabs: Vec<Tab>,
-    /// Index into `tabs` of the shown tab.
+    /// Index into `tabs` of the focused tab (shown in the focused group).
     pub active: usize,
+    /// The tab groups and their split layout (kept in step with `tabs` and
+    /// `active` by `sync_dock`).
+    pub dock: Dock,
     /// The id the next tab gets.
     next_tab_id: u64,
     /// Host sidebar state.
@@ -157,8 +198,13 @@ pub struct GuiApp {
     pub askpass: Option<skiff_core::askpass::Broker>,
     /// `ssh -V`, read when the first file tab opens.
     ssh_version: Option<Option<(u32, u32)>>,
-    /// The tab shown last frame (focus moves into a newly shown terminal).
-    shown_tab: Option<u64>,
+    /// The focused tab and its group at the end of last frame (keyboard
+    /// focus moves into a tab focused or moved some other way than by its
+    /// strip).
+    last_focus: Option<(u64, u64)>,
+    /// Tabs shown in some group last frame (a terminal coming into view
+    /// takes its screen as read).
+    visible_tabs: Vec<u64>,
     /// A files tab whose close waits for "Close anyway" (transfers running).
     pub(crate) closing: Option<u64>,
     /// Form state of the settings tab (kept while the tab is closed).
@@ -269,6 +315,7 @@ impl GuiApp {
             engine,
             tabs: vec![],
             active: 0,
+            dock: Dock::default(),
             next_tab_id: 1,
             sidebar: Sidebar::default(),
             palette_open: false,
@@ -282,7 +329,8 @@ impl GuiApp {
             start_dir: local_start_dir(&cfg_start),
             askpass,
             ssh_version: None,
-            shown_tab: None,
+            last_focus: None,
+            visible_tabs: vec![],
             closing: None,
             settings: Default::default(),
             pending_fonts: None,
@@ -335,7 +383,8 @@ impl GuiApp {
 
     // ----- tabs -------------------------------------------------------
 
-    /// Appends a tab with a fresh id and makes it active; returns the id.
+    /// Adds a tab with a fresh id and makes it the focused tab (it joins
+    /// the focused group, at the end of its strip); returns the id.
     pub(crate) fn push_tab(&mut self, kind: TabKind) -> u64 {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
@@ -349,7 +398,7 @@ impl GuiApp {
     pub fn open_terminal(&mut self, host: &HostEntry) -> u64 {
         let term = TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback);
         self.pending_records.push((term.uid, host.name.clone(), Instant::now()));
-        self.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))))
+        self.push_tab(TabKind::Terminal(Box::new(term)))
     }
 
     /// Shows the Forwards tab (opening it if needed).
@@ -423,24 +472,46 @@ impl GuiApp {
         if self.closing == Some(id) {
             self.closing = None;
         }
-        if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+        if let Some(i) = self.tab_index(id) {
+            self.sync_dock();
+            let focused = self.active_tab_id();
+            // The tab shown in its place: its strip neighbor, or the group
+            // that takes its group's space.
+            let next = self.dock.remove_tab(id);
             let mut t = self.tabs.remove(i);
             if let TabKind::Files(f) = &mut t.kind {
                 f.shutdown(self.askpass.as_ref().map(|b| (b, id)));
             }
             drop(t);
-            // Keep the active index on a valid tab (the one to the left).
-            if self.active >= i && self.active > 0 {
-                self.active -= 1;
-            }
+            let keep = if focused == Some(id) { next.or_else(|| self.dock.focused().map(|g| g.active)) } else { focused };
+            self.active = keep.and_then(|k| self.tab_index(k)).unwrap_or(0);
+            self.sync_dock();
         }
     }
 
-    /// The tab strip label for tab `i` (terminals show the host and pane count).
+    /// Index into `tabs` of tab `id`.
+    pub fn tab_index(&self, id: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+
+    /// Makes tab `id` the focused tab (its group is focused next sync).
+    pub fn show_tab(&mut self, id: u64) {
+        if let Some(i) = self.tab_index(id) {
+            self.active = i;
+        }
+    }
+
+    /// Brings the dock in line with the open tabs and the focused one.
+    pub fn sync_dock(&mut self) {
+        let ids: Vec<u64> = self.tabs.iter().map(|t| t.id).collect();
+        let active = self.active_tab_id();
+        self.dock.sync(&ids, active);
+    }
+
+    /// The tab strip label for tab `i` (terminals show the host).
     pub fn tab_title(&self, i: usize) -> String {
         match &self.tabs[i].kind {
-            TabKind::Terminal(t) if t.panes.len() > 1 => format!("{} ({} panes)", t.host().name, t.panes.len()),
-            TabKind::Terminal(t) => t.host().name.clone(),
+            TabKind::Terminal(t) => t.host.name.clone(),
             // The strip draws its own icon in place of the title's arrow.
             TabKind::Files(f) => f.title().trim_start_matches("\u{21C5} ").to_string(),
             TabKind::Settings => "Settings".into(),
@@ -452,7 +523,7 @@ impl GuiApp {
     /// dot (with its words), or the icon of the other kinds.
     fn tab_lead(&mut self, i: usize) -> (Option<(Dot, &'static str)>, Option<Icon>) {
         match &mut self.tabs[i].kind {
-            TabKind::Terminal(t) => (Some(t.focused_mut().conn_state()), None),
+            TabKind::Terminal(t) => (Some(t.conn_state()), None),
             TabKind::Files(_) => (None, Some(Icon::Transfer)),
             TabKind::Settings => (None, Some(Icon::Settings)),
             TabKind::Forwards => (None, Some(Icon::Forward)),
@@ -678,17 +749,12 @@ impl GuiApp {
     /// two seconds in, and for forwards that came up.
     fn record_connections(&mut self) {
         let mut done = vec![];
-        // By terminal, not tab: a terminal may move to another tab meanwhile.
+        // By terminal, not tab id (a tab's terminal is found by its uid).
         self.pending_records.retain(|(uid, name, at)| {
-            let Some(t) = self
-                .tabs
-                .iter_mut()
-                .filter_map(|tab| match &mut tab.kind {
-                    TabKind::Terminal(split) => Some(split),
-                    _ => None,
-                })
-                .find_map(|split| split.panes.iter_mut().find(|p| p.term.uid == *uid).map(|p| &mut p.term))
-            else {
+            let Some(t) = self.tabs.iter_mut().find_map(|tab| match &mut tab.kind {
+                TabKind::Terminal(t) if t.uid == *uid => Some(t),
+                _ => None,
+            }) else {
                 return false;
             };
             // After 2 s with output: record if still alive, stop tracking either
@@ -873,13 +939,13 @@ impl GuiApp {
                 }
                 self.forwards = st;
             }
-            // Snippets go to the focused pane of the active terminal tab.
+            // Snippets go to the focused terminal.
             Item::Snippet(i) => {
                 let Some(snippet) = self.cfg.snippets.get(i).cloned() else {
                     return;
                 };
                 if let Some(TabKind::Terminal(t)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
-                    t.focused_mut().send_snippet(&snippet);
+                    t.send_snippet(&snippet);
                 }
             }
         }
@@ -942,7 +1008,7 @@ impl GuiApp {
                     .snippets
                     .iter()
                     .enumerate()
-                    .filter(|(_, s)| s.host.as_deref().is_none_or(|h| h == t.host().name))
+                    .filter(|(_, s)| s.host.as_deref().is_none_or(|h| h == t.host.name))
                     .map(|(i, s)| (i, s.name.clone()))
                     .collect(),
                 _ => vec![],
@@ -998,8 +1064,7 @@ impl GuiApp {
                     self.request_close_tab(id);
                 }
             }
-            Action::NextTab if !self.tabs.is_empty() => self.active = (self.active + 1) % self.tabs.len(),
-            Action::PrevTab if !self.tabs.is_empty() => self.active = (self.active + self.tabs.len() - 1) % self.tabs.len(),
+            Action::NextTab | Action::PrevTab => return self.cycle_tab(a == Action::NextTab),
             Action::ToggleSidebar => {
                 self.geometry.sidebar_collapsed = !self.geometry.sidebar_collapsed;
                 self.geometry_changed();
@@ -1025,85 +1090,168 @@ impl GuiApp {
             | Action::MovePaneRight
             | Action::MovePaneUp
             | Action::MovePaneDown
+            | Action::MoveToNewGroupRight
+            | Action::MoveToNewGroupDown
+            | Action::FocusGroupLeft
+            | Action::FocusGroupRight
+            | Action::FocusGroupUp
+            | Action::FocusGroupDown
             | Action::ResizePaneLeft
             | Action::ResizePaneRight
             | Action::ResizePaneUp
             | Action::ResizePaneDown
-            | Action::EqualizePanes => return self.pane_action(a),
+            | Action::EqualizePanes => return self.group_action(a),
             Action::Copy | Action::Paste | Action::Find | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => self.view_actions.push(a),
-            Action::NextTab | Action::PrevTab => return false, // no tabs
         }
         true
     }
 
-    /// Splits, closes or moves between the active terminal's panes. False
-    /// when there is nothing to do (no terminal tab, no pane that way, or
-    /// a single pane to equalize).
-    fn pane_action(&mut self, a: Action) -> bool {
-        let Some(Tab { id, kind: TabKind::Terminal(t) }) = self.tabs.get_mut(self.active) else {
+    /// Shows the next (or previous) tab of the focused group, wrapping;
+    /// false when it has a single tab (or none).
+    fn cycle_tab(&mut self, forward: bool) -> bool {
+        self.sync_dock();
+        let Some(g) = self.dock.focused() else { return false };
+        let n = g.tabs.len();
+        if n < 2 {
             return false;
-        };
-        let id = *id;
-        match a {
-            Action::SplitRight => t.split(Dir::Right),
-            Action::SplitDown => t.split(Dir::Down),
-            Action::FocusNextPane => t.focus_next(true),
-            // Closing the last pane closes the tab.
-            Action::ClosePane if !t.close_focused() => self.request_close_tab(id),
-            Action::MovePaneLeft => return t.move_focused(Zone::Left),
-            Action::MovePaneRight => return t.move_focused(Zone::Right),
-            Action::MovePaneUp => return t.move_focused(Zone::Top),
-            Action::MovePaneDown => return t.move_focused(Zone::Bottom),
-            Action::ResizePaneLeft => return t.resize_focused(Zone::Left),
-            Action::ResizePaneRight => return t.resize_focused(Zone::Right),
-            Action::ResizePaneUp => return t.resize_focused(Zone::Top),
-            Action::ResizePaneDown => return t.resize_focused(Zone::Bottom),
-            Action::EqualizePanes => return t.equalize(),
-            _ => {}
         }
+        let i = g.tabs.iter().position(|t| *t == g.active).unwrap_or(0);
+        let next = g.tabs[if forward { (i + 1) % n } else { (i + n - 1) % n }];
+        self.show_tab(next);
         true
     }
 
-    /// A terminal tab dropped onto a pane of tab `into`: on a side, its
-    /// panes join that tab there (sessions keep running); on the centre,
-    /// it is just shown.
-    pub fn drop_tab_on_pane(&mut self, d: TabDrop, into: u64) {
-        let Some(from_i) = self.tabs.iter().position(|t| t.id == d.from) else { return };
-        if d.zone == Zone::Center {
-            self.active = from_i;
-            return;
+    /// The dock actions (split, close, focus, move, resize, equalize) on
+    /// the focused tab and group. False when one does not apply (no group
+    /// that way, a lone tab already at that edge, nothing to equalize), so
+    /// its key can go to the shell instead.
+    fn group_action(&mut self, a: Action) -> bool {
+        self.sync_dock();
+        let Some(tab) = self.active_tab_id() else { return false };
+        let side = |a| match a {
+            Action::MovePaneLeft | Action::FocusGroupLeft | Action::ResizePaneLeft => Zone::Left,
+            Action::MovePaneRight
+            | Action::FocusGroupRight
+            | Action::ResizePaneRight
+            | Action::SplitRight
+            | Action::MoveToNewGroupRight => Zone::Right,
+            Action::MovePaneUp | Action::FocusGroupUp | Action::ResizePaneUp => Zone::Top,
+            _ => Zone::Bottom,
+        };
+        match a {
+            Action::SplitRight | Action::SplitDown => self.split_focused(side(a)),
+            Action::FocusNextPane => self.focus_group(|d| d.focus_next(true)),
+            Action::FocusGroupLeft | Action::FocusGroupRight | Action::FocusGroupUp | Action::FocusGroupDown => {
+                self.focus_group(|d| d.focus_toward(side(a)))
+            }
+            Action::ClosePane => self.close_group(),
+            Action::MovePaneLeft | Action::MovePaneRight | Action::MovePaneUp | Action::MovePaneDown => {
+                self.dock.move_target(tab, side(a)).is_some_and(|to| self.move_tab(tab, to))
+            }
+            Action::MoveToNewGroupRight | Action::MoveToNewGroupDown => {
+                let to = Drop::Beside { group: self.dock.focus, zone: side(a) };
+                self.move_tab(tab, to)
+            }
+            Action::ResizePaneLeft | Action::ResizePaneRight | Action::ResizePaneUp | Action::ResizePaneDown => {
+                self.dock.resize_focused(side(a))
+            }
+            Action::EqualizePanes => self.dock.equalize(),
+            _ => false,
         }
-        // Only a different terminal tab, dropped on a pane that still exists.
-        let target_ok =
-            matches!(self.tabs.iter().find(|t| t.id == into).map(|t| &t.kind), Some(TabKind::Terminal(t)) if t.layout.contains(d.target));
-        if d.from == into || !target_ok || !matches!(self.tabs[from_i].kind, TabKind::Terminal(_)) {
-            return;
-        }
-        let Tab { kind: TabKind::Terminal(src), .. } = self.tabs.remove(from_i) else { return };
-        let Some(into_i) = self.tabs.iter().position(|t| t.id == into) else { return };
-        // If the merge is refused, put the source tab back where it was.
-        if let TabKind::Terminal(t) = &mut self.tabs[into_i].kind
-            && let Err(back) = t.absorb(*src, d.target, d.zone)
-        {
-            self.tabs.insert(from_i, Tab { id: d.from, kind: TabKind::Terminal(back) });
-        }
-        self.active = self.tabs.iter().position(|t| t.id == into).unwrap_or(0);
     }
 
-    /// Moves pane `key` of tab `tab` into a tab of its own (its session
-    /// keeps running), shown at once.
-    pub fn pop_out_pane(&mut self, tab: u64, key: u64) {
-        let Some(TabKind::Terminal(t)) = self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.kind) else { return };
-        if let Some(term) = t.take(key) {
-            self.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))));
+    /// Splits the focused tab towards `zone`: a terminal opens a new session
+    /// to the same host, and a file transfer a new tab on the same two
+    /// places, in a new group on that side; Settings and Forwards (one of
+    /// each) move there instead, when their group has other tabs.
+    fn split_focused(&mut self, zone: Zone) -> bool {
+        let (Some(tab), group) = (self.active_tab_id(), self.dock.focus) else { return false };
+        let new = match &self.tabs[self.active].kind {
+            TabKind::Terminal(t) => {
+                let s = t.sibling();
+                self.push_tab(TabKind::Terminal(Box::new(s)))
+            }
+            TabKind::Files(f) => {
+                let (l, r) = (f.panes[0].loc.clone(), f.panes[1].loc.clone());
+                self.open_files(l, r)
+            }
+            TabKind::Settings | TabKind::Forwards => tab,
+        };
+        if self.move_tab(new, Drop::Beside { group, zone }) {
+            return true;
         }
+        // A new tab that could not be placed stays where it joined.
+        new != tab
+    }
+
+    /// Moves tab `tab` as `to` says (a drop or a keyboard move): it shows,
+    /// its group gets focus, and screen readers hear where it went. False
+    /// when nothing would change.
+    pub fn move_tab(&mut self, tab: u64, to: Drop) -> bool {
+        self.sync_dock();
+        let Some(group) = self.dock.apply(tab, to) else { return false };
+        self.show_tab(tab);
+        let title = self.tab_index(tab).map(|i| self.tab_title(i)).unwrap_or_default();
+        let place = match to {
+            Drop::Beside { zone, .. } => {
+                let side = match zone {
+                    Zone::Left => "on the left",
+                    Zone::Right => "on the right",
+                    Zone::Top => "above",
+                    Zone::Bottom | Zone::Center => "below",
+                };
+                format!("moved to a new group {side}")
+            }
+            Drop::Into { .. } => match self.dock.position_words(group) {
+                w if w.is_empty() => "moved".to_string(),
+                w => format!("moved to {}", w.to_lowercase()),
+            },
+        };
+        self.announce(format!("{title} {place}"));
+        true
+    }
+
+    /// Focuses another group (`f` picks it on the dock; false if none):
+    /// its shown tab becomes the focused tab, and it is announced.
+    fn focus_group(&mut self, f: impl FnOnce(&mut Dock) -> bool) -> bool {
+        if !f(&mut self.dock) {
+            return false;
+        }
+        let Some(g) = self.dock.focused() else { return false };
+        let (id, tab) = (g.id, g.active);
+        self.show_tab(tab);
+        let title = self.tab_index(tab).map(|i| self.tab_title(i)).unwrap_or_default();
+        let words = self.dock.position_words(id);
+        self.announce(format!("{words}: {title}"));
+        true
+    }
+
+    /// Closes the focused group's tabs (each asks first if it must). With a
+    /// single group only the focused tab closes, so the window never
+    /// empties by surprise.
+    fn close_group(&mut self) -> bool {
+        let Some(g) = self.dock.focused() else { return false };
+        let tabs = if self.dock.groups.len() > 1 { g.tabs.clone() } else { vec![g.active] };
+        for id in tabs {
+            self.request_close_tab(id);
+        }
+        self.sync_dock();
+        let n = self.dock.groups.len();
+        self.announce(format!("Group closed, {n} group{} left", if n == 1 { "" } else { "s" }));
+        true
+    }
+
+    /// Says `text` through the dock's live region (screen readers).
+    fn announce(&mut self, text: String) {
+        self.dock.announce = skiff_ui::a11y::fresh_announcement(&self.dock.announce, format!("{text}."));
     }
 
     /// Runs the app shortcuts in this frame's input, taking out the keys of
     /// those that applied. A modal dialog (or the palette) owns the
-    /// keyboard: shortcuts stand aside until it is answered.
+    /// keyboard: shortcuts stand aside until it is answered. So does an
+    /// open context menu, whose own item shortcuts then act (and close it).
     fn handle_shortcuts(&mut self, ui: &mut Ui) {
-        if ui.modal_open() {
+        if ui.modal_open() || skiff_ui::widgets::menu_holds_keyboard(ui) {
             return;
         }
         let in_term = self.in_terminal();
@@ -1330,119 +1478,265 @@ impl GuiApp {
         }
     }
 
-    /// The tab strip (with the Settings gear and any close question) above
-    /// the active tab's content; handles tab drags, reordering and closing.
+    /// The main area: the dock's groups (each a tab strip above its shown
+    /// tab), the dividers between them and, while a tab is dragged, the
+    /// drop overlays. Keyboard focus and the focused group follow each
+    /// other: a press or focus inside a group focuses it, and a tab focused
+    /// some other way (palette, shortcut, drop) gets keyboard focus.
     fn main_area(&mut self, ui: &mut Ui, rect: Rect) {
-        let parts = ui.split_v(rect, &[L::Px(tokens::TAB_H), L::Fill], 0);
+        self.sync_dock();
+        if let Some(id) = self.closing {
+            self.close_confirm(ui, id);
+        }
+        let Some(mut shown) = self.dock.layout.clone() else {
+            self.visible_tabs.clear();
+            self.empty_area(ui, rect);
+            return;
+        };
+        // Every group keeps a minimum size, for this frame only: the stored
+        // shares come back when the window grows again.
+        let gap = ui.px(crate::dock::GAP).max(1);
+        let min = self.group_min(ui);
+        shown.enforce_min(rect, gap, min);
+        let (rects, dividers) = shown.arrange(rect, gap);
+        let n = rects.len();
+        // The gear ends the strip of the group at the top right.
+        let gear_group = rects.iter().filter(|(_, r)| r.y == rect.y).max_by_key(|(_, r)| r.right()).map(|(g, _)| *g);
+        let pressed_at = ui.input().events.iter().find_map(|e| match e {
+            Event::MouseDown(skiff_ui::input::MouseButton::Left, p) => Some(*p),
+            _ => None,
+        });
+        let mut ev = GroupEvents::default();
+        let prev_visible = std::mem::take(&mut self.visible_tabs);
+        for &(gid, r) in &rects {
+            let words = self.dock.position_words(gid);
+            let shown_title = self.dock.group(gid).and_then(|g| self.tab_index(g.active)).map(|i| self.tab_title(i)).unwrap_or_default();
+            let ctx = GroupCtx { id: gid, rect: r, gear: gear_group == Some(gid), words, many: n > 1, prev_visible: &prev_visible };
+            if n > 1 {
+                let name = format!("{}: {shown_title}", ctx.words);
+                ui.a11y_group(Id::new(("dock-group", gid)), skiff_ui::a11y::Role::Region, &name, |ui| self.group_ui(ui, &ctx, &mut ev));
+            } else {
+                self.group_ui(ui, &ctx, &mut ev);
+            }
+            if pressed_at.is_some_and(|p| r.contains(p)) && !ui.dragging() {
+                ev.pressed = Some(gid);
+            }
+        }
+        if n > 1 {
+            // Dividers are keyed by `Divider::key` (not path), so a focused
+            // divider keeps focus when the tree around it changes.
+            let layout = self.dock.layout.as_mut().expect("checked above");
+            ui.region(Id::new("region-dock-dividers"), "Group dividers", |ui| {
+                for d in &dividers {
+                    crate::dock::view::divider(ui, Id::new("dock-divider").with(d.key), d, gap, layout);
+                }
+            });
+        }
+        // What the groups asked for, now that none is borrowed.
+        if let Some((tab, to)) = ev.drop {
+            self.move_tab(tab, to);
+            ui.request_repaint_in(Duration::ZERO);
+        }
+        for id in ev.close {
+            self.request_close_tab(id);
+        }
+        if let Some(t) = ev.show {
+            self.show_tab(t);
+        }
+        if ev.plus {
+            self.palette_open = true;
+        }
+        self.run_menu_requests(ui);
+        self.follow_focus(ui, &rects, ev.pressed);
+    }
+
+    /// The smallest a group may get (w, h) in px: room for a few tabs, and
+    /// below its strip `MIN_COLS` x `MIN_ROWS` terminal cells or so.
+    fn group_min(&self, ui: &Ui) -> (i32, i32) {
+        (ui.px(MIN_GROUP_W), ui.px(tokens::TAB_H + MIN_GROUP_H))
+    }
+
+    /// One group: its tab strip (in a "Tabs" region, with the gear in the
+    /// top-right group) above its shown tab (in a "Content" region), and
+    /// the drop overlays while a tab is dragged over either.
+    fn group_ui(&mut self, ui: &mut Ui, ctx: &GroupCtx, ev: &mut GroupEvents) {
+        let Some(group) = self.dock.group(ctx.id).cloned() else { return };
+        let parts = ui.split_v(ctx.rect, &[L::Px(tokens::TAB_H), L::Fill], 0);
         let (strip, content) = (parts[0], parts[1]);
-        // The strip's background and bottom border (the tabs draw theirs over it).
+        let p = self.theme.palette;
         let bw = ui.px(1).max(1);
-        ui.painter().rect(strip, self.theme.palette.surface, 0.0);
-        ui.painter().rect(Rect::new(strip.x, strip.bottom() - bw, strip.w, bw), self.theme.palette.border, 0.0);
-        let titles: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
-        let leads: Vec<_> = (0..self.tabs.len()).map(|i| self.tab_lead(i)).collect();
+        ui.painter().rect(strip, p.surface, 0.0);
+        ui.painter().rect(Rect::new(strip.x, strip.bottom() - bw, strip.w, bw), p.border, 0.0);
+        let idx: Vec<usize> = group.tabs.iter().filter_map(|t| self.tab_index(*t)).collect();
+        let titles: Vec<String> = idx.iter().map(|&i| self.tab_title(i)).collect();
+        let leads: Vec<_> = idx.iter().map(|&i| self.tab_lead(i)).collect();
         let tt: Vec<TabTitle> = titles
             .iter()
             .zip(&leads)
             .map(|(t, (status, icon))| TabTitle { text: t, closable: true, status: *status, icon: *icon })
             .collect();
-        // The close question sits over the strip, in its region (Tab reaches it).
-        // The Settings gear ends the strip: always there, sidebar or not.
-        let side = strip.h;
-        let tab_strip = Rect::new(strip.x, strip.y, (strip.w - side).max(0), strip.h);
-        let gear_rect = crate::gear::rect(ui, strip);
+        let focused = ctx.id == self.dock.focus;
+        let tab_strip = if ctx.gear { Rect::new(strip.x, strip.y, (strip.w - strip.h).max(0), strip.h) } else { strip };
         let tip = crate::gear::tip(self.keymap.chords(Action::Settings).first().map(|c| c.to_string()));
         let plus_tip = match self.keymap.chords(Action::NewTab).first() {
             Some(c) => format!("New tab ({c})"),
             None => "New tab".into(),
         };
-        let (r, gear) = ui.region(Id::new("region-tabs"), "Tabs", |ui| {
-            let opts = TabsOpts { plus_tooltip: Some(&plus_tip) };
-            let r = tabs_with(ui, Id::new("tabs"), tab_strip, &tt, &mut self.active, opts);
-            let gear = crate::gear::button(ui, gear_rect, &tip);
+        let before = group.tabs.iter().position(|t| *t == group.active).unwrap_or(0);
+        let mut active = before;
+        let (r, gear) = ui.region(Id::new(("region-tabs", ctx.id)), "Tabs", |ui| {
+            let opts = TabsOpts { plus_tooltip: Some(&plus_tip), inactive: ctx.many && !focused };
+            let r = tabs_with(ui, crate::dock::strip_id(ctx.id), tab_strip, &tt, &mut active, opts);
+            let gear = ctx.gear && crate::gear::button(ui, crate::gear::rect(ui, strip), &tip);
             (r, gear)
         });
-        if let Some(id) = self.closing {
-            self.close_confirm(ui, id);
-        }
         if gear {
             self.open_settings();
         }
-        // A terminal tab dragged off the strip can be dropped onto a pane.
+        // Reorders within the strip (drag or Shift+arrows).
+        if let Some((from, to)) = r.moved {
+            self.dock.reorder(ctx.id, from, to);
+        }
+        if let Some(&t) = group.tabs.get(active)
+            && active != before
+        {
+            ev.show = Some(t);
+        }
+        if let Some(t) = r.closed.and_then(|i| group.tabs.get(i)) {
+            ev.close.push(*t);
+        }
+        if r.plus_clicked {
+            ev.plus = true;
+            ev.show = Some(group.active);
+        }
+        // Any tab dragged out of its strip starts a dock drag.
         if let Some(i) = r.dragged_out
-            && let Some(Tab { id, kind: TabKind::Terminal(_) }) = self.tabs.get(i)
+            && let Some(&t) = group.tabs.get(i)
         {
-            ui.start_drag(Box::new(PaneDrag::Tab(*id)), titles[i].clone());
+            ui.start_drag(Box::new(DockDrag { tab: t }), titles[i].clone());
         }
-        // A pane dropped on the strip gets a tab of its own.
-        if matches!(ui.drag_payload::<PaneDrag>(), Some(PaneDrag::Pane { .. })) {
-            let d = ui.drop_target::<PaneDrag>(tab_strip);
-            if d.hovered {
-                crate::term::split::drop_zone(ui, tab_strip, self.theme.palette.accent);
+        let shown = group.tabs.get(active).copied().unwrap_or(group.active);
+        let si = self.tab_index(shown);
+        ui.region(Id::new(("region-content", ctx.id)), "Content", |ui| match si {
+            Some(i) => self.tab_content(ui, i, content, focused, ctx),
+            None => ui.painter().rect(content, p.bg, 0.0),
+        });
+        // With several groups, the unfocused terminals dim a little and an
+        // accent line goes round the focused group's content.
+        if ctx.many {
+            let term = si.is_some_and(|i| matches!(self.tabs[i].kind, TabKind::Terminal(_)));
+            if !focused && term && self.cfg.gui.dim_inactive_panes && !self.theme.name.starts_with("high-contrast") {
+                let veil = self.theme.term_bg.with_alpha((DIM * 255.0).round() as u8);
+                ui.painter().rect(content, veil, 0.0);
             }
-            if let Some(PaneDrag::Pane { tab, key }) = d.dropped {
-                self.pop_out_pane(tab, key);
+            if focused {
+                ui.painter().border(content, p.accent, bw, 0.0);
             }
         }
-        if let Some((from, to)) = r.moved
-            && from < self.tabs.len()
-            && to < self.tabs.len()
-        {
-            let t = self.tabs.remove(from);
-            self.tabs.insert(to, t);
+        self.drop_overlays(ui, ctx.id, strip, &r.tab_rects, content, ev);
+    }
+
+    /// While a tab is dragged: an insertion marker on this group's strip,
+    /// or on its content the dock guide and a preview of the area a drop
+    /// in the zone under the pointer would give the tab. Only drops that
+    /// change something (and leave both halves their minimum size) are
+    /// offered; a release elsewhere does nothing.
+    fn drop_overlays(&mut self, ui: &mut Ui, gid: u64, strip: Rect, tab_rects: &[Rect], content: Rect, ev: &mut GroupEvents) {
+        use crate::dock::view;
+        let Some(&DockDrag { tab }) = ui.drag_payload::<DockDrag>() else { return };
+        let accent = self.theme.palette.accent;
+        let mouse = ui.input().mouse;
+        let on_strip = ui.drop_target::<DockDrag>(strip);
+        if on_strip.hovered {
+            let to = Drop::Into { group: gid, index: Some(view::insertion_index(tab_rects, mouse.x)) };
+            if self.dock.can_drop(tab, to) {
+                if let Drop::Into { index: Some(i), .. } = to {
+                    view::insertion_marker(ui, tab_rects, strip, i, accent);
+                }
+                if on_strip.dropped.is_some() {
+                    ev.drop = Some((tab, to));
+                }
+            }
         }
-        if let Some(i) = r.closed
-            && let Some(id) = self.tabs.get(i).map(|t| t.id)
-        {
-            self.request_close_tab(id);
+        let on_content = ui.drop_target::<DockDrag>(content);
+        if !on_content.hovered {
+            return;
+        }
+        let gap = ui.px(crate::dock::GAP).max(1);
+        let min = self.group_min(ui);
+        let to = |z: Zone| match z {
+            Zone::Center => Drop::Into { group: gid, index: None },
+            zone => Drop::Beside { group: gid, zone },
+        };
+        let offered = |z: Zone| self.dock.can_drop(tab, to(z)) && z.fits(content, gap, min);
+        let guide = view::guide_rects(ui, content);
+        let zone = view::zone_under(&guide, content, mouse);
+        if offered(zone) {
+            view::drop_preview(ui, zone.preview(content, gap), accent);
+        }
+        if guide.iter().any(|(z, _)| offered(*z)) {
+            view::draw_guide(ui, &guide, zone, offered);
+        }
+        if on_content.dropped.is_some() && offered(zone) {
+            ev.drop = Some((tab, to(zone)));
+        }
+    }
+
+    /// The main area with no tab open: a strip with only "+" and the gear
+    /// above the empty state.
+    fn empty_area(&mut self, ui: &mut Ui, rect: Rect) {
+        let parts = ui.split_v(rect, &[L::Px(tokens::TAB_H), L::Fill], 0);
+        let (strip, content) = (parts[0], parts[1]);
+        let p = self.theme.palette;
+        let bw = ui.px(1).max(1);
+        ui.painter().rect(strip, p.surface, 0.0);
+        ui.painter().rect(Rect::new(strip.x, strip.bottom() - bw, strip.w, bw), p.border, 0.0);
+        let tip = crate::gear::tip(self.keymap.chords(Action::Settings).first().map(|c| c.to_string()));
+        let tab_strip = Rect::new(strip.x, strip.y, (strip.w - strip.h).max(0), strip.h);
+        let (r, gear) = ui.region(Id::new("region-tabs"), "Tabs", |ui| {
+            let mut none = 0;
+            let r = tabs_with(ui, crate::dock::strip_id(0), tab_strip, &[], &mut none, TabsOpts::default());
+            (r, crate::gear::button(ui, crate::gear::rect(ui, strip), &tip))
+        });
+        if gear {
+            self.open_settings();
         }
         if r.plus_clicked {
             self.palette_open = true;
         }
-        // Closing or moving may have left `active` past the end.
-        self.active = self.active.min(self.tabs.len().saturating_sub(1));
-        ui.region(Id::new("region-content"), "Content", |ui| self.tab_content(ui, content));
+        ui.region(Id::new("region-content"), "Content", |ui| {
+            ui.painter().rect(content, p.bg, 0.0);
+            self.no_tabs(ui, content);
+        });
     }
 
-    /// The active tab's view.
-    fn tab_content(&mut self, ui: &mut Ui, content: Rect) {
+    /// Tab `i`'s view in `content`. Only the focused group's tab gets the
+    /// view actions (copy, paste, find, zoom).
+    fn tab_content(&mut self, ui: &mut Ui, i: usize, content: Rect, focused: bool, ctx: &GroupCtx) {
         let p = self.theme.palette;
         ui.painter().rect(content, p.bg, 0.0);
-        let Some(tab) = self.tabs.get_mut(self.active) else {
-            self.no_tabs(ui, content);
-            return;
-        };
-        let line = Rect::new(content.x + ui.px(16), content.y + ui.px(16), content.w - ui.px(32), ui.px(24));
-        let newly_shown = self.shown_tab != Some(tab.id);
-        self.shown_tab = Some(tab.id);
-        let mut show_settings = false;
-        let mut show_forwards = false;
-        let mut dropped = None;
-        match &mut tab.kind {
+        let id = self.tabs[i].id;
+        let newly_shown = !ctx.prev_visible.contains(&id);
+        self.visible_tabs.push(id);
+        let mut none = vec![];
+        let actions = if focused { &mut self.view_actions } else { &mut none };
+        let (mut show_settings, mut show_forwards) = (false, false);
+        match &mut self.tabs[i].kind {
             TabKind::Terminal(t) => {
-                // Settings may have changed since last frame: push them to every pane.
-                // High-contrast themes never dim (it would cost them contrast).
-                t.dim_inactive = self.cfg.gui.dim_inactive_panes && !self.theme.name.starts_with("high-contrast");
-                for p in &mut t.panes {
-                    p.term.announce = self.cfg.gui.announce_output;
-                    p.term.confirm_paste = self.cfg.settings.confirm_multiline_paste;
-                    p.term.blink = self.cfg.gui.cursor_blink && crate::os::animations();
-                }
+                // Settings may have changed since last frame: push them to the terminal.
+                t.announce = self.cfg.gui.announce_output;
+                t.confirm_paste = self.cfg.settings.confirm_multiline_paste;
+                t.blink = self.cfg.gui.cursor_blink && crate::os::animations();
+                t.pane_label = (!ctx.words.is_empty()).then(|| ctx.words.to_lowercase());
                 if newly_shown {
                     t.shown();
-                    // A tab chosen from the strip by keyboard leaves focus there.
-                    if !ui.has_focus(Id::new("tabs")) {
-                        ui.request_focus(crate::term::split::pane_id(tab.id, t.panes[t.focus].key));
-                    }
                 }
                 let wake = self.engine.wake_fn();
-                dropped = crate::term::split::view(ui, tab.id, content, t, &self.theme, &self.keymap, wake, &mut self.view_actions)
-                    .map(|d| (d, tab.id));
+                crate::term::view(ui, term_id(id), content, t, &self.theme, &self.keymap, wake, actions);
             }
             TabKind::Files(f) => {
-                let _ = line;
                 let ctx = crate::files::FilesCtx {
-                    tab_id: tab.id,
+                    tab_id: id,
                     engine: &self.engine,
                     start_dir: &self.start_dir,
                     hosts: &self.hosts,
@@ -1452,17 +1746,11 @@ impl GuiApp {
                 };
                 crate::files::view(ui, content.inset(ui.px(6)), f, &ctx);
             }
-            TabKind::Settings => {
-                let _ = line;
-                show_settings = true;
-            }
+            TabKind::Settings => show_settings = true,
             TabKind::Forwards => show_forwards = true,
         }
-        // Settings, forwards and tab drops need `&mut self`, so they run after
-        // the borrow of the tab ends.
-        if let Some((d, into)) = dropped {
-            self.drop_tab_on_pane(d, into);
-        }
+        // Settings and forwards need `&mut self`, so they run after the
+        // borrow of the tab ends.
         if show_settings {
             crate::settings::view(ui, content, self);
             // Saves and deletes in Settings become toasts.
@@ -1473,6 +1761,51 @@ impl GuiApp {
         if show_forwards {
             crate::forwards::view(ui, content, self);
         }
+    }
+
+    /// Runs a split or close-group a terminal's menu asked for, on that
+    /// terminal's tab (which is focused first, so the action applies to it).
+    fn run_menu_requests(&mut self, ui: &mut Ui) {
+        let req = self.tabs.iter_mut().find_map(|t| match &mut t.kind {
+            TabKind::Terminal(term) => term.pane_request.take().map(|a| (t.id, a)),
+            _ => None,
+        });
+        if let Some((id, a)) = req {
+            self.show_tab(id);
+            self.do_action(a);
+            ui.request_repaint_in(Duration::ZERO);
+        }
+    }
+
+    /// Keeps the focused group and keyboard focus together. A tab focused
+    /// this frame by anything but its own strip (palette, shortcut, drop,
+    /// a closed neighbor) takes keyboard focus: a terminal directly, other
+    /// views through their group's strip when focus was in another group.
+    /// Otherwise a press in a group, or keyboard focus inside one, focuses
+    /// that group.
+    fn follow_focus(&mut self, ui: &mut Ui, rects: &[(u64, Rect)], pressed: Option<u64>) {
+        self.sync_dock();
+        let in_group =
+            |ui: &Ui, g: u64| ui.focus_in_region(Id::new(("region-tabs", g))) || ui.focus_in_region(Id::new(("region-content", g)));
+        let now = self.active_tab_id();
+        let focus_group = rects.iter().map(|(g, _)| *g).find(|g| in_group(ui, *g));
+        if now.map(|t| (t, self.dock.focus)) != self.last_focus {
+            let g = self.dock.focus;
+            let on_strip = ui.focus_in_region(Id::new(("region-tabs", g)));
+            match (now, self.tabs.get(self.active).map(|t| &t.kind)) {
+                _ if on_strip => {}
+                (Some(id), Some(TabKind::Terminal(_))) => ui.request_focus(term_id(id)),
+                _ if focus_group.is_some_and(|f| f != g) => ui.request_focus(crate::dock::strip_id(g)),
+                _ => {}
+            }
+        } else if let Some(g) = pressed.or(focus_group)
+            && g != self.dock.focus
+            && let Some(t) = self.dock.group(g).map(|g| g.active)
+        {
+            self.show_tab(t);
+            self.sync_dock();
+        }
+        self.last_focus = self.active_tab_id().map(|t| (t, self.dock.focus));
     }
 
     /// Reloads `config.toml` after an outside edit: checked once a second
@@ -1567,10 +1900,7 @@ impl GuiApp {
         let (mut sessions, mut transfers) = (0, 0);
         for t in &mut self.tabs {
             match &mut t.kind {
-                TabKind::Terminal(s) => {
-                    sessions +=
-                        s.panes.iter_mut().filter_map(|p| p.term.session.as_mut()).filter_map(|s| s.is_alive().then_some(())).count();
-                }
+                TabKind::Terminal(t) => sessions += usize::from(t.session.as_mut().is_some_and(|s| s.is_alive())),
                 TabKind::Files(f) => transfers += f.transfers.running(),
                 _ => {}
             }
@@ -1596,6 +1926,13 @@ impl GuiApp {
     fn status_bar(&mut self, ui: &mut Ui, rect: Rect) {
         let p = self.theme.palette;
         let bw = ui.px(1).max(1);
+        // Dock changes (moves, new groups, focus) are spoken from here.
+        if !self.dock.announce.is_empty()
+            && let Some(n) = ui.a11y_node(Id::new("dock-announce"), skiff_ui::a11y::Role::Status, &self.dock.announce)
+        {
+            n.live = true;
+            n.bounds = rect;
+        }
         ui.painter().rect(rect, p.surface, 0.0);
         ui.painter().rect(Rect::new(rect.x, rect.y, rect.w, bw), p.border, 0.0);
         let (font, px) = ui.text_style(TextRole::Caption);
@@ -1603,9 +1940,8 @@ impl GuiApp {
         let mut dot = None;
         let left = match self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
             Some(TabKind::Terminal(t)) => {
-                let term = t.focused_mut();
-                dot = Some(term.conn_state());
-                term.status()
+                dot = Some(t.conn_state());
+                t.status()
             }
             Some(TabKind::Files(f)) => format!("{} \u{2194} {}", f.panes[0].loc.label(), f.panes[1].loc.label()),
             Some(TabKind::Settings) => "Settings".into(),

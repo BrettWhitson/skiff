@@ -345,30 +345,6 @@ impl Layout {
         }
     }
 
-    /// Exchanges the places of groups `x` and `y`.
-    pub fn swap(&mut self, x: u64, y: u64) {
-        self.map_keys(&|k| {
-            if k == x {
-                y
-            } else if k == y {
-                x
-            } else {
-                k
-            }
-        });
-    }
-
-    /// Rewrites every group key through `f` (swaps).
-    fn map_keys(&mut self, f: &impl Fn(u64) -> u64) {
-        match self {
-            Layout::Group(k) => *k = f(*k),
-            Layout::Split { a, b, .. } => {
-                a.map_keys(f);
-                b.map_keys(f);
-            }
-        }
-    }
-
     /// How many groups sit in a row along `dir` (splits the other way count
     /// their widest side).
     fn span(&self, dir: Dir) -> u32 {
