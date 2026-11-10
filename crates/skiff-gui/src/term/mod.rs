@@ -547,7 +547,7 @@ fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab) {
         open_context_menu(ui, menu, ui.input().mouse);
     }
     let live = tab.session.is_some();
-    let item = |label, enabled| MenuItem { label, shortcut: None, enabled };
+    let item = |label, enabled| MenuItem { label, shortcut: None, enabled, ..MenuItem::DEFAULT };
     let split = tab.pane_label.is_some();
     let items = [
         item("Copy", live && tab.select.sel.is_some()),

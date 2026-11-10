@@ -232,10 +232,10 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     }
     let hidden_label = if ctx.show_hidden { "\u{2713} Show hidden hosts" } else { "Show hidden hosts" };
     let more_items = [
-        MenuItem { label: "New host\u{2026}", shortcut: None, enabled: true },
-        MenuItem { label: "Check status of all", shortcut: None, enabled: !hosts.is_empty() },
-        MenuItem { label: hidden_label, shortcut: None, enabled: true },
-        MenuItem { label: "Port forwards", shortcut: None, enabled: true },
+        MenuItem { label: "New host\u{2026}", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Check status of all", shortcut: None, enabled: !hosts.is_empty(), ..MenuItem::DEFAULT },
+        MenuItem { label: hidden_label, shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Port forwards", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
     ];
     match context_menu(ui, more, &more_items) {
         Some(0) => action = Some(SidebarAction::NewHost),
@@ -364,15 +364,15 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let ssh = host.is_some_and(|h| h.source == Source::SshConfig);
     let hidden = host.is_some_and(|h| h.hidden);
     let items = [
-        MenuItem { label: "Open terminal", shortcut: Some("Enter"), enabled: true },
-        MenuItem { label: "Open file transfer", shortcut: None, enabled: true },
-        MenuItem { label: "Port forward\u{2026}", shortcut: None, enabled: true },
-        MenuItem { label: "Check status", shortcut: None, enabled: true },
-        MenuItem { label: "Edit", shortcut: None, enabled: true },
-        MenuItem { label: "Duplicate", shortcut: None, enabled: true },
-        MenuItem { label: "Move to file\u{2026}", shortcut: None, enabled: ssh && ctx.files.len() > 1 },
-        MenuItem { label: if hidden { "Unhide" } else { "Hide" }, shortcut: None, enabled: true },
-        MenuItem { label: "Delete", shortcut: None, enabled: true },
+        MenuItem { label: "Open terminal", shortcut: Some("Enter"), enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Open file transfer", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Port forward\u{2026}", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Check status", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Edit", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Duplicate", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Move to file\u{2026}", shortcut: None, enabled: ssh && ctx.files.len() > 1, ..MenuItem::DEFAULT },
+        MenuItem { label: if hidden { "Unhide" } else { "Hide" }, shortcut: None, enabled: true, ..MenuItem::DEFAULT },
+        MenuItem { label: "Delete", shortcut: None, enabled: true, ..MenuItem::DEFAULT },
     ];
     if let (Some(choice), Some(h)) = (context_menu(ui, menu, &items), host.map(|h| h.name.clone())) {
         match choice {
@@ -397,8 +397,11 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     // "Move to file" submenu: every config file except the host's current one.
     let current = host.and_then(|h| h.source_file.clone());
     let names: Vec<String> = ctx.files.iter().map(|f| display_path(f)).collect();
-    let move_items: Vec<MenuItem> =
-        names.iter().zip(ctx.files).map(|(n, f)| MenuItem { label: n, shortcut: None, enabled: current.as_ref() != Some(f) }).collect();
+    let move_items: Vec<MenuItem> = names
+        .iter()
+        .zip(ctx.files)
+        .map(|(n, f)| MenuItem { label: n, shortcut: None, enabled: current.as_ref() != Some(f), ..MenuItem::DEFAULT })
+        .collect();
     if let (Some(doc), Some(h)) = (context_menu(ui, move_menu, &move_items), host.map(|h| h.name.clone())) {
         action = Some(SidebarAction::MoveTo(h, ctx.files[doc].clone()));
     }

@@ -48,9 +48,10 @@ fn every_builtin_maps() {
 }
 
 /// Every text color on every background it is drawn on (rows at rest,
-/// hovered, selected with and without focus; buttons), WCAG 2.1 ratios:
-/// 4.5:1 for text (7:1 in the high-contrast themes) and 3:1 for outlines,
-/// the focus ring and the focused row's bar.
+/// hovered, selected with and without focus; overlays; every button
+/// variant; badge tints), WCAG 2.1 ratios: 4.5:1 for text (7:1 in the
+/// high-contrast themes) and 3:1 for outlines, disabled text, the focus
+/// ring and the focused row's bar.
 #[test]
 fn builtin_palettes_meet_contrast() {
     use skiff_core::theme::contrast;
@@ -63,6 +64,8 @@ fn builtin_palettes_meet_contrast() {
             ("bg", p.bg),
             ("surface", p.surface),
             ("hover", p.surface_alt),
+            ("row-hover", p.hover),
+            ("overlay", p.overlay),
             ("selected", p.selection),
             ("selected-unfocused", p.selection.mix(p.surface, 0.5)),
         ];
@@ -71,13 +74,24 @@ fn builtin_palettes_meet_contrast() {
             checks.push((format!("fg/{on}"), contrast(rgb(p.fg), rgb(bg)), text));
             checks.push((format!("muted/{on}"), contrast(rgb(p.muted), rgb(bg)), text));
         }
-        for (on, bg) in [("bg", p.bg), ("surface", p.surface), ("hover", p.surface_alt)] {
-            for (what, c) in [("danger", p.danger), ("warning", p.warning), ("success", p.success)] {
+        let plain = [("bg", p.bg), ("surface", p.surface), ("hover", p.surface_alt), ("row-hover", p.hover), ("overlay", p.overlay)];
+        for (on, bg) in plain {
+            for (what, c) in [("danger", p.danger), ("warning", p.warning), ("success", p.success), ("info", p.info)] {
                 checks.push((format!("{what}/{on}"), contrast(rgb(c), rgb(bg)), text));
+                checks.push((format!("{what}-badge/{on}"), contrast(rgb(c), rgb(p.tint(c, bg))), text));
             }
+            checks.push((format!("disabled/{on}"), contrast(rgb(p.text_disabled), rgb(bg)), 3.0));
+            checks.push((format!("focus/{on}"), contrast(rgb(p.focus), rgb(bg)), 3.0));
         }
+        checks.push(("focus/selected".into(), contrast(rgb(p.focus), rgb(p.selection)), 3.0));
         for (on, bg) in skiff_ui::widgets::button_backgrounds(&p) {
             checks.push((format!("fg/button-{on}"), contrast(rgb(p.fg), rgb(bg)), text));
+        }
+        use skiff_ui::widgets::{ButtonKind, button_colors};
+        for kind in [ButtonKind::Primary, ButtonKind::Danger] {
+            for (state, bg, label) in button_colors(&p, kind) {
+                checks.push((format!("{kind:?}-{state}"), contrast(rgb(label), rgb(bg)), text));
+            }
         }
         for (on, bg) in [("bg", p.bg), ("surface", p.surface)] {
             checks.push((format!("control/{on}"), contrast(rgb(p.control), rgb(bg)), 3.0));

@@ -20,7 +20,7 @@ fn settings(section: &str) -> Fixture {
 
 /// Replaces the text of the input labelled `label`.
 fn set_field(f: &mut Fixture, label: &str, value: &str) {
-    let l = f.find(label);
+    let l = f.find_last(label);
     f.click(Point::new(l.x + super::LABEL_W + 20, l.y));
     f.frame(vec![Event::KeyDown { key: Key::Char('a'), mods: CTRL, text: None }]);
     f.frame(vec![Event::Text(value.into())]);

@@ -3,9 +3,10 @@
 
 use crate::a11y::Role;
 use crate::geom::{Point, Rect};
+use crate::icons::Icon;
 use crate::ui::{Id, Ui};
 
-use super::button::button;
+use super::button::{ButtonOpts, button_with};
 use super::menu::{MenuItem, context_menu, open_context_menu};
 
 /// A button showing `options[*selected]` that opens a menu of all options.
@@ -19,9 +20,10 @@ pub fn dropdown(ui: &mut Ui, id: Id, rect: Rect, options: &[&str], selected: &mu
 pub fn dropdown_labeled(ui: &mut Ui, id: Id, rect: Rect, label: &str, options: &[&str], selected: &mut usize) -> bool {
     let menu = id.with("menu");
     let current = options.get(*selected).copied().unwrap_or("");
-    // The button shows the current option with a down-pointing triangle.
-    if button(ui, id, rect, &format!("{current}  \u{25BE}")).clicked {
-        open_context_menu(ui, menu, Point::new(rect.x, rect.bottom()));
+    // The button shows the current option with a down chevron.
+    let opts = ButtonOpts { trailing: Some(Icon::ChevronDown), ..Default::default() };
+    if button_with(ui, id, rect, current, opts).clicked {
+        open_context_menu(ui, menu, Point::new(rect.x, rect.bottom() + ui.px(2)));
     }
     if !label.is_empty()
         && let Some(n) = ui.a11y_node(id, Role::ComboBox, label)
@@ -31,7 +33,7 @@ pub fn dropdown_labeled(ui: &mut Ui, id: Id, rect: Rect, label: &str, options: &
         n.name = label.to_string();
         n.value = Some(current.to_string());
     }
-    let items: Vec<MenuItem> = options.iter().map(|o| MenuItem { label: o, shortcut: None, enabled: true }).collect();
+    let items: Vec<MenuItem> = options.iter().map(|o| MenuItem::new(o)).collect();
     match context_menu(ui, menu, &items) {
         Some(i) if i != *selected => {
             *selected = i;

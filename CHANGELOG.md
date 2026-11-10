@@ -38,6 +38,13 @@ First release under the name Skiff (formerly termax).
 
 ### Added
 
+- GUI design system: spacing / radius / height / type-scale tokens, a
+  semibold UI face, vector icons, an overlay shadow, button variants and
+  icon buttons, badges and status dots, sortable table headers, steppers,
+  empty states, modal dialogs with a focus trap, toasts, and menus with
+  icons, separators and danger items (shown in the `skiff-ui` demo). The
+  keyboard focus ring is 2 px with a 2 px gap; Windows' "show animations"
+  setting turns animations off.
 - Split panes in both front-ends: drag panes and tabs to split, swap, join
   and pop out (GUI), divider snapping, keyboard move / resize / equalize.
 - Settings gear at the end of the GUI tab strip; Snippets page in Settings.

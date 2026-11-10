@@ -65,6 +65,16 @@ impl Fixture {
         self.try_find(s).unwrap_or_else(|| panic!("no text {s:?} on screen; have {:?}", self.texts()))
     }
 
+    /// Top-left of the last text prim equal to `s` (a form label drawn after
+    /// a sidebar control with the same text); panics if absent.
+    pub fn find_last(&self, s: &str) -> Point {
+        let hit = self.h.list().prims.iter().rev().find_map(|p| match p {
+            Prim::Text { text, origin, .. } if text == s => Some(*origin),
+            _ => None,
+        });
+        hit.unwrap_or_else(|| panic!("no text {s:?} on screen; have {:?}", self.texts()))
+    }
+
     /// Top-left of the first text prim equal to `s`, if drawn.
     pub fn try_find(&self, s: &str) -> Option<Point> {
         self.h.list().prims.iter().find_map(|p| match p {

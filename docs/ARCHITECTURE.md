@@ -226,6 +226,30 @@ output politely and rate-limited (`term/announce.rs`), skipping the echo of
 typed keys. `skiff-gui/src/theme.rs` nudges theme colors to meet WCAG
 contrast, and `os.rs` follows Windows high contrast, animation and text size.
 
+### Design system
+
+`skiff-ui/src/style.rs` holds the tokens every widget uses: the spacing
+scale (2–48), radii (4 inputs and buttons, 6 rows and tabs, 10 overlays),
+heights (control 30, row 28 / 24, tab 34), the type scale (`TextRole`:
+caption 12, body 13, title 15, heading 18, display 22; titles semibold),
+motion durations and the overlay shadow. They are logical pixels, so the
+interface zoom scales them all. `Palette` names the colour roles (three
+surfaces, text / muted / disabled, accent, focus, border / border-strong,
+selection, hover, success / warning / danger / info, scrim); contrast tests
+in `style.rs` and `skiff-gui/src/theme_tests.rs` cover every role on every
+surface it is drawn on. Semibold text uses the system's semibold face
+(Segoe UI Semibold, DejaVu Sans Bold) when present, else the UI font
+emboldened (`text::Emboldened`). Icons (`icons.rs`) are strokes, arcs and
+dots on a 16-unit grid rasterized with anti-aliasing at the drawn size and
+cached per size; overlays cast one soft shadow (`Prim::Shadow`, a cached
+falloff table). The components (button variants, icon buttons, badges and
+status dots, section and sortable table headers, steppers, empty states,
+modal dialogs with a focus trap, toasts, menus with icons and separators,
+middle / start elision) are showcased in the toolkit demo
+(`cargo run -p skiff-ui --release --example demo`). The focus ring shows
+only after keyboard navigation; `Style::reduce_motion` (from the OS
+animation setting) stops pulses and transitions.
+
 ## Key files
 
 | Area | Files |
@@ -246,4 +270,5 @@ contrast, and `os.rs` follows Windows high contrast, animation and text size.
 | GUI files, settings | `skiff-gui/src/files/`, `skiff-gui/src/settings/` |
 | Toolkit core | `skiff-ui/src/{ui,shell,display,canvas,layout,input}.rs` |
 | Toolkit text, widgets, a11y | `skiff-ui/src/text/`, `skiff-ui/src/widgets/`, `skiff-ui/src/{a11y,a11y_kit}.rs` |
+| Toolkit design system | `skiff-ui/src/{style,icons,demo}.rs` |
 | Test server | `skiff-testserver/src/{server,sftp_fs,fixture}.rs` |
