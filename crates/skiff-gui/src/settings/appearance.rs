@@ -1,5 +1,8 @@
-//! Theme (applies at once), fonts (typed or picked from the installed
-//! ones), font size and interface scale.
+//! Appearance: the theme, the interface and terminal fonts (typed, or
+//! picked from the installed ones), the terminal font size and the
+//! interface scale. Everything applies at once: the dropdown, the steppers
+//! and a picked font immediately, a typed font path on Enter or when focus
+//! leaves it (a font that fails to load is refused with the reason).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -7,22 +10,39 @@ use std::time::Duration;
 
 use skiff_ui::geom::Rect;
 use skiff_ui::input::{Key, Modifiers};
+use skiff_ui::layout::Size as L;
+use skiff_ui::style::tokens;
 use skiff_ui::text::Fonts;
 use skiff_ui::ui::{Id, Ui};
-use skiff_ui::widgets::{TextInputOpts, button, dropdown_labeled, label, list_named, text_input};
+use skiff_ui::widgets::{
+    ButtonKind, ButtonOpts, StepperOpts, TextInputOpts, TextOpts, button_with, dropdown_labeled, label, list_named, stepper, text,
+    text_input,
+};
 
-use super::{LABEL_W, Rows, error_line, field, split_row};
+use super::{LABEL_W, Rows, commit_field, error_line, row_label, split_row};
 use crate::app::{GuiApp, style_for};
 
-/// The Appearance form's state.
+/// Control ids (also the search results' targets).
+pub const ID_THEME: &str = "settings-theme";
+pub const ID_UI_FONT: &str = "settings-look-ui-font";
+pub const ID_TERM_FONT: &str = "settings-look-term-font";
+pub const ID_SIZE: &str = "settings-look-size";
+pub const ID_SCALE: &str = "settings-look-scale";
+
+/// Terminal font size range, in points.
+pub const FONT_SIZE: StepperOpts<'static> = StepperOpts { min: 6, max: 72, step: 1, label: "Terminal font size" };
+/// Interface scale range, in percent.
+pub const SCALE: StepperOpts<'static> = StepperOpts { min: 50, max: 300, step: 10, label: "Interface scale, percent" };
+
+/// The Appearance page's state.
 #[derive(Default)]
 pub struct AppearanceState {
-    /// Interface font, terminal font, terminal font size, interface scale.
-    fields: [String; 4],
-    /// The fields were edited and not yet applied (stop following the config).
-    dirty: bool,
-    /// Why the last Apply failed.
+    /// Unapplied text of the interface (0) and terminal (1) font paths.
+    drafts: [Option<String>; 2],
+    /// Why the last font change failed.
     error: Option<String>,
+    /// The path that failed (not retried until it changes).
+    failed: Option<String>,
     /// Installed fonts, scanned once in the background.
     fonts: Option<FontLists>,
     /// The font scan in progress, if any.
@@ -53,54 +73,37 @@ fn start_scan() -> Receiver<FontLists> {
     rx
 }
 
-/// Labels of the four text fields, in `fields` order.
-const LABELS: [&str; 4] = ["Interface font file", "Terminal font file", "Terminal font size", "Interface scale"];
-
-/// The four text fields as the config currently has them.
-fn from_cfg(app: &GuiApp) -> [String; 4] {
-    let g = &app.cfg.gui;
-    [g.ui_font_path.clone().unwrap_or_default(), g.font_path.clone().unwrap_or_default(), g.font_size.to_string(), g.ui_scale.to_string()]
-}
-
-/// Draws the Appearance form: theme dropdown (applied at once), font and
-/// size fields with Apply, and the font pickers.
-pub fn view(ui: &mut Ui, rect: Rect, st: &mut AppearanceState, app: &mut GuiApp) {
-    // An unedited form follows the config.
-    if !st.dirty {
-        st.fields = from_cfg(app);
-    }
+/// Draws the Appearance page into `rect` (content coordinates); returns
+/// the height used.
+pub fn view(ui: &mut Ui, rect: Rect, st: &mut AppearanceState, app: &mut GuiApp) -> i32 {
     let mut rows = Rows::new(rect);
+    rows.section(ui, "Theme");
     let (l, c) = split_row(ui, rows.next(ui));
-    label(ui, l, "Theme", None);
+    row_label(ui, l, "Theme");
     let names = app.theme_names();
     let opts: Vec<&str> = names.iter().map(String::as_str).collect();
     let mut idx = names.iter().position(|n| *n == app.cfg.settings.theme).unwrap_or(0);
-    if dropdown_labeled(ui, Id::new("settings-theme"), Rect::new(c.x, c.y, c.w.min(ui.px(240)), c.h), "Theme", &opts, &mut idx)
+    if dropdown_labeled(ui, Id::new(ID_THEME), Rect::new(c.x, c.y, c.w.min(ui.px(240)), c.h), "Theme", &opts, &mut idx)
         && let Some(n) = names.get(idx)
     {
         app.apply_theme(n);
     }
-    rows.next_h(ui, 6);
-    for (i, l) in LABELS.iter().enumerate() {
-        if field(ui, Id::new(("settings-look", i)), rows.next(ui), l, &mut st.fields[i]) {
-            st.dirty = true;
+
+    rows.section(ui, "Fonts");
+    // Font file rows: a path field and "Choose…", which toggles the picker
+    // (starting the font scan the first time).
+    for (i, label_, id) in [(0, "Interface font", ID_UI_FONT), (1, "Terminal font", ID_TERM_FONT)] {
+        let (l, c) = split_row(ui, rows.next(ui));
+        row_label(ui, l, label_);
+        let parts = ui.split_h(c, &[L::Fill, L::Px(96)], tokens::SPACE_SM);
+        let g = &app.cfg.gui;
+        let current = if i == 0 { g.ui_font_path.clone() } else { g.font_path.clone() }.unwrap_or_default();
+        if let Some(v) = commit_field(ui, Id::new(id), parts[0], &format!("{label_} file"), &current, &mut st.drafts[i], "System default") {
+            apply_font(st, app, i, v);
         }
-    }
-    let muted = ui.style().palette.muted;
-    let hint = rows.next(ui);
-    label(
-        ui,
-        Rect::new(hint.x + ui.px(LABEL_W), hint.y, hint.w - ui.px(LABEL_W), hint.h),
-        "Leave a font file empty for the system default.",
-        Some(muted),
-    );
-    let r = rows.next(ui);
-    let x = r.x + ui.px(LABEL_W);
-    let mut do_apply = button(ui, Id::new("settings-look-apply"), Rect::new(x, r.y, ui.px(130), r.h), "Apply fonts").clicked;
-    // The two "Choose ... font" buttons toggle the picker for their field and
-    // start the font scan the first time.
-    for (i, off, text) in [(1, 140, "Choose terminal font…"), (0, 330, "Choose interface font…")] {
-        if button(ui, Id::new(("settings-look-choose", i)), Rect::new(x + ui.px(off), r.y, ui.px(180), r.h), text).clicked {
+        let name = format!("Choose {}", label_.to_lowercase());
+        let opts = ButtonOpts { a11y_name: Some(&name), ..Default::default() };
+        if button_with(ui, Id::new(("settings-look-choose", i)), parts[1], "Choose\u{2026}", opts).clicked {
             st.picker = if st.picker == Some(i) { None } else { Some(i) };
             st.filter.clear();
             st.picked = Some(0);
@@ -110,24 +113,83 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut AppearanceState, app: &mut GuiApp)
             ui.request_focus(Id::new("settings-font-filter"));
         }
     }
-    error_line(ui, rows.next(ui), &st.error);
+    let (_, c) = split_row(ui, rows.next_h(ui, 18));
+    let muted = ui.style().palette.muted;
+    let cap = TextOpts { role: Some(skiff_ui::style::TextRole::Caption), color: Some(muted), ..Default::default() };
+    text(ui, c, "Leave a font empty for the system default.", cap);
     if let Some(i) = st.picker
         // A font picked (or System default) fills the field and applies at once.
         && let Some(path) = picker(ui, &mut rows, st, i)
     {
-        st.fields[i] = path.map(|p| p.display().to_string()).unwrap_or_default();
         st.picker = None;
-        do_apply = true;
+        apply_font(st, app, i, path.map(|p| p.display().to_string()).unwrap_or_default());
     }
-    if do_apply {
-        match apply(st, app) {
-            Ok(()) => {
-                st.error = None;
-                st.dirty = false;
-            }
-            Err(e) => st.error = Some(e),
+    if st.error.is_some() {
+        let (_, c) = split_row(ui, rows.next(ui));
+        error_line(ui, c, &st.error);
+    }
+    let (l, c) = split_row(ui, rows.next(ui));
+    row_label(ui, l, "Terminal font size");
+    let sr = Rect::new(c.x, c.y, c.w.min(ui.px(140)), c.h);
+    let mut size = app.cfg.gui.font_size.round() as i64;
+    if stepper(ui, Id::new(ID_SIZE), sr, &mut size, FONT_SIZE) {
+        app.cfg.gui.font_size = size as f32;
+        app.style = style_for(&app.theme, &app.cfg);
+        app.save_config();
+    }
+    let (l, c) = split_row(ui, rows.next(ui));
+    row_label(ui, l, "Interface scale");
+    let sr = Rect::new(c.x, c.y, c.w.min(ui.px(140)), c.h);
+    let mut pct = (app.cfg.gui.ui_scale * 100.0).round() as i64;
+    if stepper(ui, Id::new(ID_SCALE), sr, &mut pct, SCALE) {
+        app.cfg.gui.ui_scale = pct as f32 / 100.0;
+        app.style = style_for(&app.theme, &app.cfg);
+        app.save_config();
+    }
+    let pr = Rect::new(sr.right() + ui.px(tokens::SPACE_SM), c.y, ui.px(24), c.h);
+    label(ui, pr, "%", Some(muted));
+    rows.used()
+}
+
+/// Sets font `i` (0 interface, 1 terminal) to `path` ("" = system
+/// default): loads the fonts first (a bad file is refused with the reason,
+/// keeping the draft to fix), hands them to the app and saves.
+fn apply_font(st: &mut AppearanceState, app: &mut GuiApp, i: usize, path: String) {
+    // The same refused path is not loaded again every frame.
+    if st.error.is_some() && st.failed.as_deref() == Some(path.as_str()) {
+        return;
+    }
+    match set_font(app, i, &path) {
+        Ok(()) => {
+            st.drafts[i] = None;
+            st.error = None;
+            st.failed = None;
+        }
+        Err(e) => {
+            st.drafts[i] = Some(path.clone());
+            st.error = Some(e);
+            st.failed = Some(path);
         }
     }
+}
+
+/// Loads the fonts with font `i` set to `path` and, if that works, stores
+/// the path and saves. Errors are user-facing.
+fn set_font(app: &mut GuiApp, i: usize, path: &str) -> Result<(), String> {
+    let v = Some(path.trim().to_string()).filter(|s| !s.is_empty());
+    let g = &app.cfg.gui;
+    let (ui_font, mono) = if i == 0 { (v, g.font_path.clone()) } else { (g.ui_font_path.clone(), v) };
+    if ui_font == g.ui_font_path && mono == g.font_path {
+        return Ok(());
+    }
+    let fonts = Fonts::load(ui_font.as_deref().map(Path::new), mono.as_deref().map(Path::new))
+        .map_err(|e| format!("could not load font: {e:#}"))?;
+    app.pending_fonts = Some(fonts);
+    let g = &mut app.cfg.gui;
+    g.ui_font_path = ui_font;
+    g.font_path = mono;
+    app.save_config();
+    Ok(())
 }
 
 /// The font list for field `i`: a filter and the matching installed fonts.
@@ -146,21 +208,23 @@ fn picker(ui: &mut Ui, rows: &mut Rows, st: &mut AppearanceState, i: usize) -> O
     }
     let r = rows.next(ui);
     let x = r.x + ui.px(LABEL_W);
-    let w = (r.w - ui.px(LABEL_W)).min(ui.px(420));
-    label(ui, Rect::new(r.x, r.y, ui.px(LABEL_W), r.h), if i == 1 { "Terminal font" } else { "Interface font" }, None);
+    let w = (r.w - ui.px(LABEL_W)).min(ui.px(460));
     let filter = Id::new("settings-font-filter");
     let opts = TextInputOpts { placeholder: "Filter fonts", label: "Filter fonts", ..Default::default() };
-    if text_input(ui, filter, Rect::new(x, r.y, w - ui.px(130), r.h), &mut st.filter, opts).changed {
+    if text_input(ui, filter, Rect::new(x, r.y, w - ui.px(136), r.h), &mut st.filter, opts).changed {
         st.picked = Some(0);
     }
-    if button(ui, Id::new("settings-font-default"), Rect::new(x + w - ui.px(120), r.y, ui.px(120), r.h), "System default").clicked {
+    let ghost = ButtonOpts::kind(ButtonKind::Ghost);
+    if button_with(ui, Id::new("settings-font-default"), Rect::new(x + w - ui.px(128), r.y, ui.px(128), r.h), "System default", ghost)
+        .clicked
+    {
         return Some(None);
     }
     let area = rows.next_h(ui, 8 * 24);
     let list = Rect::new(x, area.y, w, area.h);
     let muted = ui.style().palette.muted;
     let Some(fonts) = &st.fonts else {
-        label(ui, list, "Scanning fonts…", Some(muted));
+        label(ui, list, "Scanning fonts\u{2026}", Some(muted));
         return None;
     };
     // Case-insensitive substring filter; the terminal font picks from monospace fonts only.
@@ -200,31 +264,4 @@ fn picker(ui: &mut Ui, rows: &mut Rows, st: &mut AppearanceState, i: usize) -> O
     // A double-clicked/activated row, or the highlighted one on Enter.
     let pick = out.activated.or(st.picked.filter(|_| submit))?;
     shown.get(pick).map(|(_, p)| Some(p.clone()))
-}
-
-/// Validates the fields, loads changed fonts (handed to the app to swap in),
-/// and saves font paths, size and scale to the config. Errors are user-facing.
-fn apply(st: &AppearanceState, app: &mut GuiApp) -> Result<(), String> {
-    let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
-    let (ui_font, mono) = (opt(&st.fields[0]), opt(&st.fields[1]));
-    // Size and scale must parse and fall in range.
-    let size: f32 =
-        st.fields[2].trim().parse().ok().filter(|v| (6.0..=72.0).contains(v)).ok_or("Font size must be a number from 6 to 72")?;
-    let scale: f32 =
-        st.fields[3].trim().parse().ok().filter(|v| (0.5..=3.0).contains(v)).ok_or("Interface scale must be a number from 0.5 to 3")?;
-    let g = &app.cfg.gui;
-    // Only reload fonts when a path changed; a bad file fails before saving.
-    if ui_font != g.ui_font_path || mono != g.font_path {
-        let fonts = Fonts::load(ui_font.as_deref().map(Path::new), mono.as_deref().map(Path::new))
-            .map_err(|e| format!("could not load font: {e:#}"))?;
-        app.pending_fonts = Some(fonts);
-    }
-    let g = &mut app.cfg.gui;
-    g.ui_font_path = ui_font;
-    g.font_path = mono;
-    g.font_size = size;
-    g.ui_scale = scale;
-    app.style = style_for(&app.theme, &app.cfg);
-    app.save_config();
-    Ok(())
 }

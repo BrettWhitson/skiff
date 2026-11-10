@@ -1,14 +1,24 @@
-//! Saved commands (`[[snippet]]`): list, form, Add / Delete / Save.
-//! Snippets are sent to the focused terminal from the quick switcher.
+//! Saved commands (`[[snippet]]`): the list (with Add in its header) and
+//! the editor (name, command lines, host, run) with a primary Save and
+//! Delete in its header. Delete and discarding unsaved edits ask in a
+//! dialog. Snippets are sent to the focused terminal from the command palette.
 
 use skiff_core::termx::Snippet;
 use skiff_ui::geom::Rect;
+use skiff_ui::icons::Icon;
 use skiff_ui::input::{Key, Modifiers};
 use skiff_ui::layout::Size as L;
+use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::ui::{Id, Ui};
-use skiff_ui::widgets::{TextInputOpts, button, checkbox, label, list_named, text_input};
+use skiff_ui::widgets::{
+    ButtonKind, ButtonOpts, EmptyState, TextInputOpts, TextOpts, ToastKind, Tone, badge, badge_width, button_width, button_with, checkbox,
+    empty_state, icon_button, list_named, text, text_input,
+};
 
-use super::{LABEL_W, PendingDiscard, Rows, discard_prompt, error_line, field, labeled_dropdown, split_row};
+use super::{
+    LIST_W, PendingDiscard, Rows, delete_prompt, discard_prompt, error_line, field_ph, labeled_dropdown, list_header, row_label, scrolled,
+    split_row,
+};
 use crate::app::GuiApp;
 
 /// The form's text, as typed.
@@ -75,8 +85,8 @@ pub struct SnippetsState {
     pub form: Option<SnippetForm>,
     /// Why the last save failed.
     pub error: Option<String>,
-    /// Asking "Delete snippet …?"; the first frame moves focus to Cancel.
-    confirm_delete: Option<bool>,
+    /// Asking "Delete snippet …?".
+    confirm_delete: bool,
     /// Another row (or Add, `None`) was picked while the form had unsaved
     /// edits: asking "Discard …?" before switching.
     confirm_discard: Option<PendingDiscard<Option<usize>>>,
@@ -94,7 +104,7 @@ impl SnippetsState {
     fn select(&mut self, s: &Snippet) {
         self.form = Some(SnippetForm::of(s));
         self.error = None;
-        self.confirm_delete = None;
+        self.confirm_delete = false;
         self.confirm_discard = None;
     }
 
@@ -102,17 +112,17 @@ impl SnippetsState {
     fn new_form(&mut self, ui: &mut Ui) {
         self.form = Some(SnippetForm::new());
         self.error = None;
-        self.confirm_delete = None;
+        self.confirm_delete = false;
         self.confirm_discard = None;
         ui.request_focus(Id::new("settings-snip-name"));
     }
 
-    /// Switches to row `to` (`None`: a new snippet), asking first when the
-    /// form has unsaved edits.
-    fn switch(&mut self, ui: &mut Ui, to: Option<usize>, app: &GuiApp) {
+    /// Opens row `to` (`None`: a new snippet), asking first when the form
+    /// has unsaved edits.
+    pub fn open(&mut self, ui: &mut Ui, to: Option<usize>, app: &GuiApp) {
         if self.form.as_ref().is_some_and(|f| f.dirty) {
             self.confirm_discard = Some(PendingDiscard::new(to));
-            self.confirm_delete = None;
+            self.confirm_delete = false;
             return;
         }
         match to {
@@ -144,9 +154,10 @@ impl SnippetsState {
     }
 }
 
-/// Draws the Snippets page: list with Add / Delete on the left; on the right
-/// a discard or delete question, or the form with Save.
-pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
+/// Draws the Snippets page into `rect`: the list on the left; on the
+/// right the editor or an empty state. Saves and deletes queue a notice in
+/// `notices`. Returns the height used (all of it: the editor scrolls on its own).
+pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp, notices: &mut Vec<(ToastKind, String)>) -> i32 {
     // An untouched form follows the config (outside edits).
     if let Some(f) = &st.form
         && !f.dirty
@@ -161,115 +172,149 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     let editing = st.form.as_ref().and_then(|f| f.editing.clone());
     st.selected = editing.as_ref().and_then(|n| app.cfg.snippets.iter().position(|s| &s.name == n));
 
-    let cols = ui.split_h(rect, &[L::Px(250), L::Fill], 16);
-    let left = ui.split_v(cols[0], &[L::Fill, L::Px(30)], 8);
-    // Host-specific snippets say so to screen readers.
-    let names: Vec<String> = app.cfg.snippets.iter().map(|s| s.name.clone()).collect();
-    let row_name = |i: usize| {
-        let s = &app.cfg.snippets[i];
-        match &s.host {
-            Some(h) => format!("{}, only on {h}", s.name),
-            None => s.name.clone(),
-        }
+    let cols = ui.split_h(rect, &[L::Px(LIST_W), L::Fill], tokens::SPACE_XL);
+    let hh = ui.px(tokens::HEADER_H);
+    let head = Rect::new(cols[0].x, cols[0].y, cols[0].w, hh);
+    if list_header(ui, Id::new("settings-snip-add"), head, "Snippets", app.cfg.snippets.len()) {
+        st.open(ui, None, app);
+    }
+    let list_r = Rect::new(
+        cols[0].x,
+        head.bottom() + ui.px(tokens::SPACE_XS),
+        cols[0].w,
+        cols[0].bottom() - head.bottom() - ui.px(tokens::SPACE_XS),
+    );
+    // Host-specific snippets say so (a badge, and to screen readers).
+    let rows_: Vec<(String, Option<String>)> = app.cfg.snippets.iter().map(|s| (s.name.clone(), s.host.clone())).collect();
+    let row_name = |i: usize| match &rows_[i].1 {
+        Some(h) => format!("{}, only on {h}", rows_[i].0),
+        None => rows_[i].0.clone(),
     };
     let before = st.selected;
     let list_id = Id::new("settings-snip-list");
-    list_named(ui, list_id, left[0], "Snippets", names.len(), 28, &mut st.selected, row_name, |ui, r, i, _| {
-        let r = Rect::new(r.x + ui.px(8), r.y, r.w - ui.px(16), r.h);
-        label(ui, r, &names[i], None);
+    let pad = ui.px(tokens::SPACE_SM);
+    list_named(ui, list_id, list_r, "Snippets", rows_.len(), tokens::ROW_H, &mut st.selected, row_name, |ui, r, i, _| {
+        let host = rows_[i].1.as_deref();
+        let bw = host.map_or(0, |h| badge_width(ui, h).min(r.w / 2));
+        let tr = Rect::new(r.x + pad + ui.px(tokens::SPACE_XS), r.y, r.w - 2 * pad - bw - ui.px(tokens::SPACE_SM), r.h);
+        text(ui, tr, &rows_[i].0, TextOpts::default());
+        if let Some(h) = host {
+            let bh = ui.px(18);
+            badge(ui, Rect::new(r.right() - pad - bw, r.y + (r.h - bh) / 2, bw, bh), h, Tone::Neutral);
+        }
     });
     // Clicking a snippet asks to switch (which may ask about unsaved edits first).
     if st.selected != before
         && let Some(i) = st.selected
     {
         st.selected = before; // until the switch happens
-        st.switch(ui, Some(i), app);
-    }
-    let btns = ui.split_h(left[1], &[L::Frac(0.5), L::Frac(0.5)], 4);
-    if button(ui, Id::new("settings-snip-add"), btns[0], "Add").clicked {
-        st.switch(ui, None, app);
+        st.open(ui, Some(i), app);
     }
     let del_key = ui.has_focus(list_id) && ui.input_mut().take_key(&Key::Delete, Modifiers::NONE);
-    if (button(ui, Id::new("settings-snip-del"), btns[1], "Delete").clicked || del_key) && st.selected.is_some() {
-        st.confirm_delete = Some(true);
+    if del_key && st.selected.is_some() {
+        st.confirm_delete = true;
     }
+    dialogs(ui, st, app, notices);
+    st.sync_line_ids();
+    let right = cols[1];
+    if st.form.is_none() {
+        let e = EmptyState {
+            icon: Some(Icon::Terminal),
+            title: "No snippet selected",
+            body: "Snippets are saved commands you send to a terminal from the command palette (Ctrl+K).",
+            action: Some("Add snippet"),
+            ..Default::default()
+        };
+        if empty_state(ui, Id::new("settings-snip-empty"), Rect::new(right.x, right.y, right.w, right.h.min(ui.px(420))), &e).action {
+            st.open(ui, None, app);
+        }
+        return rect.h;
+    }
+    scrolled(ui, Id::new("settings-snip-editor"), right, |ui, r| editor(ui, r, st, app, notices));
+    rect.h
+}
 
-    // The right side shows, in order of priority: the discard question, the
-    // delete question, or the form.
-    let mut rows = Rows::new(cols[1]);
-    if let Some(p) = &mut st.confirm_discard {
+/// The delete and discard dialogs, while one is open.
+fn dialogs(ui: &mut Ui, st: &mut SnippetsState, app: &mut GuiApp, notices: &mut Vec<(ToastKind, String)>) {
+    let list_id = Id::new("settings-snip-list");
+    if let Some(p) = &st.confirm_discard {
         let what = st.form.as_ref().and_then(|f| f.editing.clone()).unwrap_or_else(|| "the new snippet".to_string());
-        match discard_prompt(ui, &mut rows, "settings-snip", &what, p) {
+        let to = p.to;
+        match discard_prompt(ui, "settings-snip", &what) {
             Some(true) => {
-                let to = p.to;
                 st.form = None;
-                st.switch(ui, to, app);
+                st.confirm_discard = None;
+                st.open(ui, to, app);
                 if to.is_some() {
                     ui.request_focus(list_id);
                 }
             }
-            Some(false) => {
-                st.confirm_discard = None;
-                ui.request_focus(list_id);
-            }
+            Some(false) => st.confirm_discard = None,
             None => {}
         }
         return;
     }
-    if let (Some(first), Some(i)) = (st.confirm_delete, st.selected) {
-        let name = app.cfg.snippets[i].name.clone();
-        label(ui, rows.next(ui), &format!("Delete snippet {name}?"), None);
-        let r = rows.next(ui);
-        let b = ui.split_h(Rect::new(r.x, r.y, ui.px(240), r.h), &[L::Frac(0.5), L::Frac(0.5)], 8);
-        let (yes, no) = (Id::new("settings-snip-del-yes"), Id::new("settings-snip-del-no"));
-        if first {
-            ui.request_focus(no); // a reflexive Enter keeps it
-            st.confirm_delete = Some(false);
-        }
-        let esc = (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE);
-        if button(ui, yes, b[0], "Yes, delete").clicked {
-            app.cfg.snippets.retain(|s| s.name != name);
-            app.save_config();
-            st.form = None;
-            st.selected = None;
-            st.confirm_delete = None;
-            ui.request_focus(list_id);
-        } else if button(ui, no, b[1], "Cancel").clicked || esc {
-            st.confirm_delete = None;
-            ui.request_focus(list_id);
-        }
-        return;
-    }
-    st.confirm_delete = None;
-    st.sync_line_ids();
-    let muted = ui.style().palette.muted;
-    let Some(form) = &mut st.form else {
-        label(ui, rows.next(ui), "Select a snippet, or Add one. Run them from the quick switcher (Ctrl+Shift+K).", Some(muted));
-        error_line(ui, rows.next(ui), &st.error);
+    let (true, Some(i)) = (st.confirm_delete, st.selected) else {
+        st.confirm_delete = false;
         return;
     };
-    label(ui, rows.next(ui), if form.editing.is_some() { "Edit snippet" } else { "New snippet" }, None);
-    form.dirty |= field(ui, Id::new("settings-snip-name"), rows.next(ui), "Name", &mut form.name);
+    let name = app.cfg.snippets[i].name.clone();
+    let title = format!("Delete snippet {name}?");
+    match delete_prompt(ui, Id::new("settings-snip-delete"), &title, "It is removed from config.toml. This cannot be undone.") {
+        Some(true) => {
+            app.cfg.snippets.retain(|s| s.name != name);
+            app.save_config();
+            notices.push((ToastKind::Success, format!("Deleted snippet {name}")));
+            st.form = None;
+            st.selected = None;
+            st.confirm_delete = false;
+            ui.request_focus(list_id);
+        }
+        Some(false) => st.confirm_delete = false,
+        None => {}
+    }
+}
+
+/// The snippet editor in `rect` (content coordinates): title with Delete,
+/// name, command lines, host, run, and Save. Returns the height used.
+fn editor(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp, notices: &mut Vec<(ToastKind, String)>) -> i32 {
+    let mut rows = Rows::new(rect);
+    let Some(form) = &mut st.form else { return 0 };
+    let head = rows.next(ui);
+    let mut x = head.right();
+    if form.editing.is_some() {
+        let w = button_width(ui, "Delete", 1);
+        x -= w;
+        let opts = ButtonOpts { kind: ButtonKind::Danger, icon: Some(Icon::Trash), ..Default::default() };
+        if button_with(ui, Id::new("settings-snip-del"), Rect::new(x, head.y, w, head.h), "Delete", opts).clicked && st.selected.is_some() {
+            st.confirm_delete = true;
+        }
+    }
+    let title = match &form.editing {
+        Some(n) => format!("Edit {n}"),
+        None => "New snippet".to_string(),
+    };
+    let tr = Rect::new(head.x, head.y, (x - head.x - ui.px(tokens::SPACE_SM)).max(0), head.h);
+    text(ui, tr, &title, TextOpts { role: Some(TextRole::Title), ..Default::default() });
+    rows.gap(ui, tokens::SPACE_SM);
+    form.dirty |= field_ph(ui, Id::new("settings-snip-name"), rows.next(ui), "Name", &mut form.name, "e.g. tail logs");
     let mut remove = None;
     let n = form.lines.len();
     // One input per command line, each with a remove button once there are two or more.
     for (i, (line, &key)) in form.lines.iter_mut().zip(&st.line_ids).enumerate() {
         let (l, c) = split_row(ui, rows.next(ui));
         if i == 0 {
-            label(ui, l, "Command", None);
+            row_label(ui, l, "Command");
         }
-        let parts = ui.split_h(c, &[L::Fill, L::Px(30)], 4);
+        let parts = ui.split_h(c, &[L::Fill, L::Px(if n > 1 { tokens::CONTROL_H } else { 0 })], if n > 1 { tokens::SPACE_XS } else { 0 });
         let name = if n == 1 { "Command".to_string() } else { format!("Command line {}", i + 1) };
         let opts =
             TextInputOpts { label: &name, placeholder: if i == 0 { "e.g. tail -f /var/log/syslog" } else { "" }, ..Default::default() };
         form.dirty |= text_input(ui, Id::new(("settings-snip-line", key)), parts[0], line, opts).changed;
-        let del = Id::new(("settings-snip-line-del", key));
         if n > 1 {
-            if button(ui, del, parts[1], "\u{2715}").clicked {
+            let label = format!("Remove line {}", i + 1);
+            if icon_button(ui, Id::new(("settings-snip-line-del", key)), parts[1], Icon::Close, &label, ButtonKind::Ghost).clicked {
                 remove = Some(i);
-            }
-            if let Some(node) = ui.a11y_node(del, skiff_ui::a11y::Role::Button, "") {
-                node.name = format!("Remove line {}", i + 1);
             }
         }
     }
@@ -279,7 +324,9 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
         form.dirty = true;
     }
     let (_, c) = split_row(ui, rows.next(ui));
-    if button(ui, Id::new("settings-snip-line-add"), Rect::new(c.x, c.y, ui.px(130), c.h), "+ Add line").clicked {
+    let w = button_width(ui, "Add line", 1);
+    let opts = ButtonOpts { kind: ButtonKind::Ghost, icon: Some(Icon::Plus), ..Default::default() };
+    if button_with(ui, Id::new("settings-snip-line-add"), Rect::new(c.x, c.y, w, c.h), "Add line", opts).clicked {
         form.lines.push(String::new());
         form.dirty = true;
         st.next_line_id += 1;
@@ -296,14 +343,19 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     let mut opts = vec!["Every host"];
     opts.extend(hosts.iter().map(String::as_str));
     let mut sel = form.host.as_ref().and_then(|h| hosts.iter().position(|x| x == h)).map_or(0, |i| i + 1);
-    if labeled_dropdown(ui, Id::new("settings-snip-host"), rows.next(ui), "Host", &opts, &mut sel) {
+    let row = rows.next(ui);
+    let row = Rect::new(row.x, row.y, row.w.min(ui.px(super::LABEL_W + 280)), row.h);
+    if labeled_dropdown(ui, Id::new("settings-snip-host"), row, "Host", &opts, &mut sel) {
         form.host = sel.checked_sub(1).map(|i| hosts[i].clone());
         form.dirty = true;
     }
     let (_, c) = split_row(ui, rows.next(ui));
     form.dirty |= checkbox(ui, Id::new("settings-snip-run"), c, &mut form.run, "Run it (press Enter after the command)").clicked;
-    let r = rows.next(ui);
-    if button(ui, Id::new("settings-snip-save"), Rect::new(r.x + ui.px(LABEL_W), r.y, ui.px(100), r.h), "Save").clicked {
+    rows.gap(ui, tokens::SPACE_SM);
+    let (_, c) = split_row(ui, rows.next(ui));
+    if button_with(ui, Id::new("settings-snip-save"), Rect::new(c.x, c.y, ui.px(100), c.h), "Save", ButtonOpts::kind(ButtonKind::Primary))
+        .clicked
+    {
         // Replace the snippet being edited (if still there) or add a new one, then
         // reopen it from the saved config.
         match form.validate(&app.cfg.snippets) {
@@ -314,6 +366,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
                     None => app.cfg.snippets.push(s),
                 }
                 app.save_config();
+                notices.push((ToastKind::Success, format!("Saved snippet {name}")));
                 if let Some(s) = app.cfg.snippets.iter().find(|s| s.name == name).cloned() {
                     st.select(&s);
                 }
@@ -321,5 +374,9 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
             Err(e) => st.error = Some(e),
         }
     }
-    error_line(ui, rows.next(ui), &st.error);
+    if st.error.is_some() {
+        let (_, c) = split_row(ui, rows.next(ui));
+        error_line(ui, c, &st.error);
+    }
+    rows.used()
 }

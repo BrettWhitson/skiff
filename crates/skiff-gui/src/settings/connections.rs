@@ -1,16 +1,26 @@
-//! Hosts from both sources (skiff connections and ssh config files): list,
-//! form, Add / Duplicate / Delete / Save. ssh config hosts are edited in
-//! place (with a backup); hosts that can't be edited safely say why.
+//! Hosts from both sources (skiff connections and ssh config files): the
+//! host list (with Add in its header) and the host editor, grouped into
+//! Basic and Advanced, with a primary Save and Duplicate / Delete in its
+//! header. ssh config hosts are edited in place (with a backup); hosts
+//! that can't be edited safely say why. Delete and discarding unsaved
+//! edits ask in a dialog.
 
-use skiff_core::hostform::{self, Dest, Editing, HostForm};
+use skiff_core::hostform::{self, Dest, Editing, Field, HostForm};
 use skiff_core::hosts::Source;
 use skiff_core::sshconfig::edit::{ConfigSet, display_path};
 use skiff_ui::geom::Rect;
+use skiff_ui::icons::Icon;
 use skiff_ui::layout::Size as L;
+use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::ui::{Id, Ui};
-use skiff_ui::widgets::{TextInputOpts, button, checkbox, dropdown_labeled, label, list_named, text_input};
+use skiff_ui::widgets::{
+    ButtonKind, ButtonOpts, EmptyState, TextInputOpts, TextOpts, ToastKind, Tone, badge, badge_width, button_width, button_with, checkbox,
+    dropdown_labeled, empty_state, icon_button, list_named, paragraph, paragraph_height, text, text_input,
+};
 
-use super::{PendingDiscard, Rows, discard_prompt, error_line, field, split_row};
+use super::{
+    LIST_W, PendingDiscard, Rows, card, delete_prompt, discard_prompt, error_line, field_ph, list_header, row_label, scrolled, split_row,
+};
 use crate::app::GuiApp;
 
 /// The host form being edited.
@@ -103,9 +113,22 @@ impl ConnState {
     }
 }
 
-/// Draws the Connections page: host list with Add / Duplicate / Delete on the
-/// left; on the right a discard or delete question, a read-only notice, or the form.
-pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
+/// What a field's input shows while empty.
+fn placeholder(f: Field) -> &'static str {
+    match f {
+        Field::Name => "e.g. web-prod",
+        Field::User => "your login name",
+        Field::Port => "22",
+        Field::Identity => "~/.ssh/id_ed25519",
+        f => f.hint(),
+    }
+}
+
+/// Draws the Connections page into `rect`: the host list on the left; on
+/// the right the editor, a read-only notice, or an empty state. Saves and
+/// deletes queue a notice in `notices`. Returns the height used (all of it:
+/// the editor scrolls on its own).
+pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp, notices: &mut Vec<(ToastKind, String)>) -> i32 {
     // An untouched form follows the host list (outside edits, sidebar
     // changes); an untouched new one is just reloaded.
     if let Some(f) = &st.form
@@ -121,22 +144,43 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
     if let Some(name) = st.form.as_ref().and_then(|f| f.editing.clone()).or_else(|| st.readonly.as_ref().map(|r| r.0.clone())) {
         st.selected = app.hosts.iter().position(|h| h.name == name);
     }
-
-    let cols = ui.split_h(rect, &[L::Px(250), L::Fill], 16);
-    let left = ui.split_v(cols[0], &[L::Fill, L::Px(30)], 8);
+    let p = ui.style().palette;
+    let cols = ui.split_h(rect, &[L::Px(LIST_W), L::Fill], tokens::SPACE_XL);
+    let hh = ui.px(tokens::HEADER_H);
+    let head = Rect::new(cols[0].x, cols[0].y, cols[0].w, hh);
+    if list_header(ui, Id::new("settings-conn-add"), head, "Hosts", app.hosts.len()) {
+        st.switch(None, app);
+    }
+    let list_r = Rect::new(
+        cols[0].x,
+        head.bottom() + ui.px(tokens::SPACE_XS),
+        cols[0].w,
+        cols[0].bottom() - head.bottom() - ui.px(tokens::SPACE_XS),
+    );
     let names: Vec<(String, bool)> = app.hosts.iter().map(|h| (h.name.clone(), h.source == Source::SshConfig)).collect();
     let before = st.selected;
-    let muted = ui.style().palette.muted;
-    // ssh-config hosts carry a muted "ssh" tag (and say so to screen readers).
+    // ssh-config hosts carry an "ssh" badge (and say so to screen readers).
     let row_name = |i: usize| if names[i].1 { format!("{}, ssh config", names[i].0) } else { names[i].0.clone() };
-    list_named(ui, Id::new("settings-conn-list"), left[0], "Connections", names.len(), 28, &mut st.selected, row_name, |ui, r, i, _| {
-        let r = Rect::new(r.x + ui.px(8), r.y, r.w - ui.px(16), r.h);
-        let w = label(ui, r, &names[i].0, None);
-        if names[i].1 && r.w - w > ui.px(70) {
-            let tag = Rect::new(r.right() - ui.px(60), r.y, ui.px(60), r.h);
-            label(ui, tag, "ssh", Some(muted));
-        }
-    });
+    let pad = ui.px(tokens::SPACE_SM);
+    list_named(
+        ui,
+        Id::new("settings-conn-list"),
+        list_r,
+        "Connections",
+        names.len(),
+        tokens::ROW_H,
+        &mut st.selected,
+        row_name,
+        |ui, r, i, _| {
+            let bw = if names[i].1 { badge_width(ui, "ssh") } else { 0 };
+            let tr = Rect::new(r.x + pad + ui.px(tokens::SPACE_XS), r.y, r.w - 2 * pad - bw - ui.px(tokens::SPACE_SM), r.h);
+            text(ui, tr, &names[i].0, TextOpts::default());
+            if bw > 0 {
+                let bh = ui.px(18);
+                badge(ui, Rect::new(r.right() - pad - bw, r.y + (r.h - bh) / 2, bw, bh), "ssh", Tone::Neutral);
+            }
+        },
+    );
     // Clicking a host asks to switch (which may ask about unsaved edits first).
     if st.selected != before
         && let Some(i) = st.selected
@@ -144,82 +188,135 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
         st.selected = before; // until the switch happens
         st.switch(Some(names[i].0.clone()), app);
     }
-    let btns = ui.split_h(left[1], &[L::Frac(0.28), L::Frac(0.44), L::Frac(0.28)], 4);
-    if button(ui, Id::new("settings-conn-add"), btns[0], "Add").clicked {
-        st.switch(None, app);
-    }
-    let current = st.form.as_ref().and_then(|f| f.editing.clone()).and_then(|n| app.hosts.iter().position(|h| h.name == n));
-    if button(ui, Id::new("settings-conn-dup"), btns[1], "Duplicate").clicked
-        && let Some(i) = current
-    {
-        match app.duplicate_host(&app.hosts[i].name.clone()) {
-            Ok(name) => st.switch(Some(name), app),
-            Err(e) => st.error = Some(e),
-        }
-    }
-    if button(ui, Id::new("settings-conn-del"), btns[2], "Delete").clicked && current.is_some() {
-        st.confirm_delete = true;
-    }
 
-    // The right side shows, in order of priority: the discard question, the
-    // delete question, a read-only notice, or the form.
-    let mut rows = Rows::new(cols[1]);
-    if let Some(p) = &mut st.confirm_discard {
+    let right = cols[1];
+    let current = st.form.as_ref().and_then(|f| f.editing.clone()).and_then(|n| app.hosts.iter().position(|h| h.name == n));
+    dialogs(ui, st, app, current, notices);
+    if let Some((name, why)) = &st.readonly {
+        let body = "Skiff leaves this host as it is; edit the file in a text editor.";
+        let w = right.w - 2 * ui.px(tokens::SPACE_LG);
+        let h = ui.px(tokens::SPACE_LG) * 2
+            + ui.px(28)
+            + paragraph_height(ui, why, TextRole::Body, w)
+            + ui.px(tokens::SPACE_SM)
+            + paragraph_height(ui, body, TextRole::Body, w);
+        let c = Rect::new(right.x, right.y, right.w, h);
+        card(ui, c);
+        let inner = c.inset(ui.px(tokens::SPACE_LG));
+        let s = ui.px(tokens::ICON);
+        let iy = inner.y + (ui.px(28) - s) / 2;
+        ui.painter().icon(Rect::new(inner.x, iy, s, s), Icon::Warning, p.warning);
+        let tr = Rect::new(inner.x + s + pad, inner.y, inner.w - s - pad, ui.px(28));
+        text(ui, tr, name, TextOpts { role: Some(TextRole::Title), ..Default::default() });
+        let mut y = inner.y + ui.px(28);
+        y += paragraph(ui, Rect::new(inner.x, y, inner.w, inner.bottom() - y), why, TextRole::Body, p.fg, skiff_ui::widgets::Align::Start);
+        y += ui.px(tokens::SPACE_SM);
+        paragraph(ui, Rect::new(inner.x, y, inner.w, inner.bottom() - y), body, TextRole::Body, p.muted, skiff_ui::widgets::Align::Start);
+        return rect.h;
+    }
+    if st.form.is_none() {
+        let e = EmptyState {
+            icon: Some(Icon::Host),
+            title: "No host selected",
+            body: "Pick a host on the left to edit it, or add a new one.",
+            action: Some("Add host"),
+            ..Default::default()
+        };
+        if empty_state(ui, Id::new("settings-conn-empty"), Rect::new(right.x, right.y, right.w, right.h.min(ui.px(420))), &e).action {
+            st.switch(None, app);
+        }
+        if st.form.is_none() {
+            error_line(ui, Rect::new(right.x, right.y, right.w, ui.px(tokens::CONTROL_H)), &st.error);
+        }
+        return rect.h;
+    }
+    scrolled(ui, Id::new("settings-conn-editor"), right, |ui, r| editor(ui, r, st, app, current, notices));
+    rect.h
+}
+
+/// The delete and discard dialogs, while one is open.
+fn dialogs(ui: &mut Ui, st: &mut ConnState, app: &mut GuiApp, current: Option<usize>, notices: &mut Vec<(ToastKind, String)>) {
+    if let Some(p) = &st.confirm_discard {
         let what = st.form.as_ref().and_then(|f| f.editing.clone()).unwrap_or_else(|| "the new host".to_string());
-        match discard_prompt(ui, &mut rows, "settings-conn", &what, p) {
+        let to = p.to.clone();
+        match discard_prompt(ui, "settings-conn", &what) {
             Some(true) => {
-                let to = p.to.clone();
                 st.form = None;
+                st.confirm_discard = None;
                 st.switch(to, app);
             }
             Some(false) => st.confirm_discard = None,
             None => {}
         }
-        if st.confirm_discard.is_none() {
-            ui.request_focus(Id::new("settings-conn-list"));
-        }
         return;
     }
-    if st.confirm_delete
-        && let Some(i) = current
-    {
-        let h = &app.hosts[i];
-        let what = match &h.source_file {
-            Some(f) => format!("Delete {} from {}? A backup is kept.", h.name, display_path(f)),
-            None => format!("Delete {}?", h.name),
-        };
-        label(ui, rows.next(ui), &what, None);
-        let r = rows.next(ui);
-        let b = ui.split_h(Rect::new(r.x, r.y, ui.px(220), r.h), &[L::Frac(0.5), L::Frac(0.5)], 8);
-        if button(ui, Id::new("settings-conn-del-yes"), b[0], "Delete").clicked {
-            if let Err(e) = app.delete_host(&app.hosts[i].name.clone()) {
-                st.error = Some(e);
+    if !st.confirm_delete {
+        return;
+    }
+    let Some(i) = current else {
+        st.confirm_delete = false;
+        return;
+    };
+    let h = &app.hosts[i];
+    let title = format!("Delete {}?", h.name);
+    let body = match &h.source_file {
+        Some(f) => format!("It is removed from {}. A backup of the file is kept.", display_path(f)),
+        None => "It is removed from Skiff's config, with its saved forwards left as they are.".to_string(),
+    };
+    match delete_prompt(ui, Id::new("settings-conn-delete"), &title, &body) {
+        Some(true) => {
+            let name = app.hosts[i].name.clone();
+            match app.delete_host(&name) {
+                Ok(()) => notices.push((ToastKind::Success, format!("Deleted {name}"))),
+                Err(e) => st.error = Some(e),
             }
             st.form = None;
             st.selected = None;
             st.confirm_delete = false;
-        } else if button(ui, Id::new("settings-conn-del-no"), b[1], "Cancel").clicked {
-            st.confirm_delete = false;
         }
-        return;
+        Some(false) => st.confirm_delete = false,
+        None => {}
     }
-    if let Some((name, why)) = &st.readonly {
-        label(ui, rows.next(ui), name, None);
-        label(ui, rows.next_h(ui, 44), why, Some(ui.style().palette.warning));
-        label(ui, rows.next(ui), "Skiff leaves this host as it is; edit the file in a text editor.", Some(muted));
-        return;
-    }
-    let Some(form) = &mut st.form else {
-        label(ui, rows.next(ui), "Select a host, or Add one.", Some(muted));
-        error_line(ui, rows.next(ui), &st.error);
-        return;
+}
+
+/// The host editor in `rect` (content coordinates): title with Duplicate
+/// and Delete, the Basic and Advanced groups, and Save. Returns the height used.
+fn editor(
+    ui: &mut Ui,
+    rect: Rect,
+    st: &mut ConnState,
+    app: &mut GuiApp,
+    current: Option<usize>,
+    notices: &mut Vec<(ToastKind, String)>,
+) -> i32 {
+    let Some(form) = &mut st.form else { return 0 };
+    let mut rows = Rows::new(rect);
+    let head = rows.next(ui);
+    let title = match &form.editing {
+        Some(n) => format!("Edit {n}"),
+        None => "New host".to_string(),
     };
-    let title = if form.editing.is_some() { "Edit host" } else { "New host" };
-    label(ui, rows.next(ui), title, None);
+    let mut x = head.right();
+    let mut dup = false;
+    let mut del = false;
+    if form.editing.is_some() {
+        let w = button_width(ui, "Delete", 1);
+        x -= w;
+        let opts = ButtonOpts { kind: ButtonKind::Danger, icon: Some(Icon::Trash), ..Default::default() };
+        del = button_with(ui, Id::new("settings-conn-del"), Rect::new(x, head.y, w, head.h), "Delete", opts).clicked;
+        let w = button_width(ui, "Duplicate", 1);
+        x -= w + ui.px(tokens::SPACE_SM);
+        let opts = ButtonOpts { kind: ButtonKind::Ghost, icon: Some(Icon::Copy), ..Default::default() };
+        dup = button_with(ui, Id::new("settings-conn-dup"), Rect::new(x, head.y, w, head.h), "Duplicate", opts).clicked;
+    }
+    let tr = Rect::new(head.x, head.y, (x - head.x - ui.px(tokens::SPACE_SM)).max(0), head.h);
+    text(ui, tr, &title, TextOpts { role: Some(TextRole::Title), ..Default::default() });
+
+    rows.section(ui, "Basic");
     // "Save to": skiff config or one of the ssh config files.
     if form.form.can_change_dest() && !form.set.docs.is_empty() {
         let (l, c) = split_row(ui, rows.next(ui));
-        label(ui, l, "Save to", None);
+        row_label(ui, l, "Save to");
         let mut opts: Vec<String> = vec!["Skiff config".into()];
         opts.extend(form.set.docs.iter().map(|d| display_path(&d.path)));
         let o: Vec<&str> = opts.iter().map(String::as_str).collect();
@@ -232,10 +329,16 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
             form.dirty = true;
         }
     }
-    for fl in form.form.fields() {
-        if field(ui, Id::new(("settings-conn-field", fl as usize)), rows.next(ui), fl.label(), form.form.get_mut(fl)) {
-            form.dirty = true;
-        }
+    let basic = [Field::Name, Field::Host, Field::User, Field::Port];
+    let fields = form.form.fields();
+    for fl in fields.iter().copied().filter(|f| basic.contains(f)) {
+        let id = Id::new(("settings-conn-field", fl as usize));
+        form.dirty |= field_ph(ui, id, rows.next(ui), fl.label(), form.form.get_mut(fl), placeholder(fl));
+    }
+    rows.section(ui, "Advanced");
+    for fl in fields.iter().copied().filter(|f| !basic.contains(f)) {
+        let id = Id::new(("settings-conn-field", fl as usize));
+        form.dirty |= field_ph(ui, id, rows.next(ui), fl.label(), form.form.get_mut(fl), placeholder(fl));
     }
     let (_, c) = split_row(ui, rows.next(ui));
     if checkbox(ui, Id::new("settings-conn-hidden"), c, &mut form.form.hidden, "Hidden (left out of host lists)").clicked {
@@ -247,12 +350,13 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
         for (i, line) in form.other.iter_mut().enumerate() {
             let (l, c) = split_row(ui, rows.next(ui));
             if i == 0 {
-                label(ui, l, "Other options", None);
+                row_label(ui, l, "Other options");
             }
-            let parts = ui.split_h(c, &[L::Fill, L::Px(30)], 4);
-            let opts = TextInputOpts { password: false, placeholder: "e.g. ForwardAgent yes", ..Default::default() };
+            let parts = ui.split_h(c, &[L::Fill, L::Px(tokens::CONTROL_H)], tokens::SPACE_XS);
+            let opts = TextInputOpts { placeholder: "e.g. ForwardAgent yes", label: "Other option", ..Default::default() };
             form.dirty |= text_input(ui, Id::new(("settings-conn-other", i)), parts[0], line, opts).changed;
-            if button(ui, Id::new(("settings-conn-other-del", i)), parts[1], "\u{2715}").clicked {
+            let name = format!("Remove option {}", i + 1);
+            if icon_button(ui, Id::new(("settings-conn-other-del", i)), parts[1], Icon::Close, &name, ButtonKind::Ghost).clicked {
                 remove = Some(i);
             }
         }
@@ -262,26 +366,48 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
         }
         let (l, c) = split_row(ui, rows.next(ui));
         if form.other.is_empty() {
-            label(ui, l, "Other options", None);
+            row_label(ui, l, "Other options");
         }
-        if button(ui, Id::new("settings-conn-other-add"), Rect::new(c.x, c.y, ui.px(130), c.h), "+ Add option").clicked {
+        let w = button_width(ui, "Add option", 1);
+        let opts = ButtonOpts { kind: ButtonKind::Ghost, icon: Some(Icon::Plus), ..Default::default() };
+        if button_with(ui, Id::new("settings-conn-other-add"), Rect::new(c.x, c.y, w, c.h), "Add option", opts).clicked {
             form.other.push(String::new());
             form.dirty = true;
         }
     }
-    let r = rows.next(ui);
-    if button(ui, Id::new("settings-conn-save"), Rect::new(r.x + ui.px(super::LABEL_W), r.y, ui.px(100), r.h), "Save").clicked {
-        match save(form, app) {
-            Ok(name) => st.edit_host(&name, app),
+    rows.gap(ui, tokens::SPACE_SM);
+    let (_, c) = split_row(ui, rows.next(ui));
+    let save =
+        button_with(ui, Id::new("settings-conn-save"), Rect::new(c.x, c.y, ui.px(100), c.h), "Save", ButtonOpts::kind(ButtonKind::Primary))
+            .clicked;
+    if save {
+        match save_form(form, app) {
+            Ok(name) => {
+                notices.push((ToastKind::Success, format!("Saved {name}")));
+                st.edit_host(&name, app);
+            }
             Err(e) => st.error = Some(e),
         }
     }
-    error_line(ui, rows.next(ui), &st.error);
+    if st.error.is_some() {
+        let (_, c) = split_row(ui, rows.next(ui));
+        error_line(ui, c, &st.error);
+    }
+    if dup && let Some(i) = current {
+        match app.duplicate_host(&app.hosts[i].name.clone()) {
+            Ok(name) => st.switch(Some(name), app),
+            Err(e) => st.error = Some(e),
+        }
+    }
+    if del && current.is_some() {
+        st.confirm_delete = true;
+    }
+    rows.used()
 }
 
 /// Saves the form to the skiff config or its ssh config file and applies it;
 /// returns the saved name. On error nothing is lost and it can be saved again.
-fn save(form: &mut Form, app: &mut GuiApp) -> Result<String, String> {
+fn save_form(form: &mut Form, app: &mut GuiApp) -> Result<String, String> {
     form.form.other = form.other.join("\n");
     // Where the edited connection is now; one deleted meanwhile is saved as new.
     if let (Editing::Custom(_), Some(name)) = (&form.form.editing, &form.editing) {

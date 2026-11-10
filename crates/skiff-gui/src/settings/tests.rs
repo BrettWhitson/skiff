@@ -27,6 +27,13 @@ fn set_field(f: &mut Fixture, label: &str, value: &str) {
     f.frame(vec![]);
 }
 
+/// Activates the control named `name` the way a screen reader does.
+fn activate(f: &mut Fixture, name: &str) {
+    let id = f.h.tree().find(name).map(|n| n.id).unwrap_or_else(|| panic!("no control named {name:?}"));
+    f.frame(vec![Event::A11y { target: id, action: skiff_ui::a11y::A11yAction::Click }]);
+    f.frame(vec![]);
+}
+
 /// The config file's current text on disk.
 fn file(f: &Fixture) -> String {
     std::fs::read_to_string(&f.path).unwrap()
@@ -91,8 +98,9 @@ fn port_out_of_range_rejected() {
 #[test]
 fn font_path_invalid_keeps_old_fonts() {
     let mut f = settings("Appearance");
-    set_field(&mut f, "Terminal font file", "C:/skiff-no-such-dir/missing.ttf");
-    f.click_text("Apply fonts");
+    set_field(&mut f, "Terminal font", "C:/skiff-no-such-dir/missing.ttf");
+    f.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
     assert!(f.texts().iter().any(|t| t.contains("could not load")), "{:?}", f.texts());
     assert!(f.app.pending_fonts.is_none());
     assert_eq!(f.app.cfg.gui.font_path, None);
@@ -111,6 +119,24 @@ fn rebind_action_saves_keys_table() {
     assert!(file(&f).contains("close_tab = \"ctrl+shift+q\""), "{}", file(&f));
     assert_eq!(f.app.keymap.match_key(&Key::Char('q'), CTRL_SHIFT, false), Some(Action::CloseTab));
     assert!(f.app.tabs.len() == 1, "the captured chord did not close the tab");
+}
+
+/// A changed binding shows the "changed" dot and Reset restores the
+/// default; the filter narrows the list by action name.
+#[test]
+fn keybindings_reset_and_filter() {
+    let mut f = Fixture::with_config(&format!("{CONFIG}\n[keys]\nclose_tab = \"ctrl+shift+q\"\n"));
+    f.app.do_action(Action::Settings);
+    f.frame(vec![]);
+    f.click_text("Keybindings");
+    assert!(f.h.tree().find("Changed from the default").is_some());
+    activate(&mut f, "Reset Close tab to the default");
+    assert!(!file(&f).contains("close_tab"), "{}", file(&f));
+    assert!(f.h.tree().find("Changed from the default").is_none());
+    f.app.settings.keys.filter = "split".into();
+    f.frame(vec![]);
+    assert!(f.try_find("Split pane right").is_some() && f.try_find("Close tab").is_none(), "{:?}", f.texts());
+    assert_eq!(super::keys::keycaps("Ctrl++"), ["Ctrl", "+"]);
 }
 
 /// Esc while recording saves nothing; Backspace removes the override and restores the default chord.
@@ -172,6 +198,45 @@ fn unsaved_form_survives_reload() {
     f.app.reload_config();
     f.frame(vec![]);
     assert!(f.texts().iter().any(|t| t == "my-ssh"), "{:?}", f.texts());
+    // Enter applies it; an empty program is refused with the reason.
+    f.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert_eq!(f.app.cfg.settings.ssh_binary, "my-ssh");
+    set_field(&mut f, "ssh program", " ");
+    f.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("The ssh program is required").is_some(), "{:?}", f.texts());
+    assert_eq!(f.app.cfg.settings.ssh_binary, "my-ssh");
+}
+
+/// The scrollback stepper applies and saves at once, clamped to its range.
+#[test]
+fn scrollback_stepper_applies_at_once() {
+    let mut f = settings("General");
+    let before = f.app.cfg.settings.scrollback;
+    activate(&mut f, "Increase");
+    assert_eq!(f.app.cfg.settings.scrollback, before + 1000);
+    assert!(file(&f).contains(&format!("scrollback = {}", before + 1000)), "{}", file(&f));
+    assert_eq!(f.h.tree().find("Scrollback lines").map(|n| n.role), Some(skiff_ui::a11y::Role::SpinButton));
+}
+
+/// The search finds settings on every page (and hosts by name); picking a
+/// result opens its page with the control focused.
+#[test]
+fn search_filters_and_opens_settings() {
+    let mut f = settings("Connections");
+    let all = super::index(&f.app);
+    assert_eq!(super::search(&all, "scroll").first().map(|e| e.title.as_str()), Some("Scrollback lines"));
+    assert!(super::search(&all, "beta").iter().any(|e| e.section == super::Section::Connections), "hosts by name");
+    assert!(super::search(&all, "zzz-nothing").is_empty());
+    f.click_text("Search settings");
+    f.frame(vec![Event::Text("scroll".into())]);
+    f.frame(vec![]);
+    assert!(f.try_find("Scrollback lines").is_some(), "{:?}", f.texts());
+    f.click_text("Scrollback lines");
+    assert_eq!(f.app.settings.section, super::Section::General);
+    assert!(f.app.settings.search.is_empty());
+    assert_eq!(f.h.state.focused(), Some(skiff_ui::ui::Id::new(super::general::ID_SCROLL).with("field")));
 }
 
 /// An open connection form saves and duplicates the right host after an earlier one is deleted elsewhere.
@@ -270,13 +335,15 @@ fn delete_snippet_asks_first() {
     f.frame(vec![Event::KeyDown { key: Key::Delete, mods: Modifiers::NONE, text: None }]);
     f.frame(vec![]);
     assert!(f.try_find("Delete snippet greet?").is_some(), "{:?}", f.texts());
-    assert_eq!(f.h.state.focused(), Some(skiff_ui::ui::Id::new("settings-snip-del-no")), "focus on Cancel");
+    let cancel = skiff_ui::ui::Id::new("settings-snip-delete").with(("button", 0usize));
+    assert_eq!(f.h.state.focused(), Some(cancel), "focus on Cancel");
     f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
     f.frame(vec![]);
     assert!(f.try_find("Delete snippet greet?").is_none());
     assert_eq!(f.app.cfg.snippets.len(), 1);
     f.click_text("Delete");
-    f.click_text("Yes, delete");
+    let at = f.find_last("Delete"); // the dialog's button
+    f.click(at);
     assert!(f.app.cfg.snippets.is_empty());
     assert_eq!(file(&f), CONFIG);
 }
@@ -325,7 +392,7 @@ fn switching_snippets_asks_before_discarding_edits() {
     set_field(&mut f, "Name", "greet2");
     f.click_text("other");
     assert!(f.try_find("Discard unsaved changes to greet?").is_some(), "{:?}", f.texts());
-    assert_eq!(f.h.state.focused(), Some(skiff_ui::ui::Id::new("settings-snip-discard-no")), "focus on Keep");
+    assert_eq!(f.h.state.focused(), Some(super::discard_id("settings-snip").with(("button", 0usize))), "focus on Keep");
     f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
     f.frame(vec![]);
     let form = f.app.settings.snippets.form.as_ref().unwrap();
@@ -350,7 +417,7 @@ fn snippet_line_inputs_keep_their_ids() {
     f.click_text("greet");
     let id_of = |f: &Fixture, v: &str| f.h.tree().nodes.iter().find(|n| n.value.as_deref() == Some(v)).map(|n| n.id);
     let before = id_of(&f, "echo two").expect("line 2");
-    f.click_text("\u{2715}"); // removes line 1
+    activate(&mut f, "Remove line 1");
     assert_eq!(f.app.settings.snippets.form.as_ref().unwrap().lines, vec!["echo two"]);
     assert_eq!(id_of(&f, "echo two"), Some(before), "its input (focus, cursor) stays with the line");
 }
@@ -365,7 +432,7 @@ fn connection_form_asks_before_discarding_edits() {
     f.right_click_text("alpha");
     f.click_text("Edit"); // from the sidebar
     assert!(f.try_find("Discard unsaved changes to beta?").is_some(), "{:?}", f.texts());
-    assert_eq!(f.h.state.focused(), Some(skiff_ui::ui::Id::new("settings-conn-discard-no")), "focus on Keep");
+    assert_eq!(f.h.state.focused(), Some(super::discard_id("settings-conn").with(("button", 0usize))), "focus on Keep");
     f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
     f.frame(vec![]);
     assert!(f.texts().iter().any(|t| t == "3333"), "edits kept: {:?}", f.texts());
