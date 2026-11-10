@@ -501,10 +501,10 @@ fn tui_mouse_always_clicks_tabs_scrolls_and_copies() {
     write(&mut t, format!("alpha beta\r{lines}").as_bytes());
     wait_screen(&t, "row39");
     let term = draw(&mut t);
-    let (x, _) = find_text(&term, " 1:Hosts ").unwrap();
+    let (x, _) = find_text(&term, " 1 Hosts ").unwrap();
     mouse(&mut t, K::Down(B::Left), x + 1, 0);
     assert_eq!(t.app.active, 0, "a click on a tab switches to it");
-    let (x, _) = find_text(&term, " 2:fx ").unwrap();
+    let (x, _) = find_text(&term, " 2 ● fx ").unwrap();
     mouse(&mut t, K::Down(B::Left), x + 1, 0);
     assert_eq!(t.app.active, 1);
     mouse(&mut t, K::ScrollUp, 10, 10);
@@ -676,7 +676,7 @@ fn background_questions_wait_for_their_own_tab() {
     let (mut rx, _) = ask(&mut t, &tag, "password: ");
     assert!(t.app.modal.is_none(), "never shown over another tab");
     let term = draw(&mut t);
-    assert!(find_text(&term, "web [sftp] ?").is_some(), "the tab is flagged");
+    assert!(find_text(&term, "? web [sftp]").is_some(), "the tab is flagged");
     assert!(find_text(&term, "waiting for an answer").is_some(), "the status line says where");
     // On its own tab it shows, but ignores keys typed right as it opens.
     t.app.question_delay = std::time::Duration::from_millis(250);
@@ -835,9 +835,9 @@ fn split_panes_size_and_route_input() {
     assert_eq!((left.width + right.width, left.height), (80, 24));
     let size = |s: &TerminalSession| s.parser.lock().unwrap().screen().size();
     let (f, o) = panes(&t);
-    assert_eq!(size(f), (22, right.width - 2), "each pane's pty fits inside its border");
-    assert_eq!(size(o), (22, left.width - 2));
-    assert_eq!(t.app.term_origin, (right.x + 1, 2), "mouse reports are relative to the focused pane");
+    assert_eq!(size(f), (23, right.width), "each pane's pty fits below its title rule");
+    assert_eq!(size(o), (23, left.width - 1), "the left pane gives a column to the divider");
+    assert_eq!(t.app.term_origin, (right.x, 2), "mouse reports are relative to the focused pane");
 
     // Typing goes to the focused pane only.
     t.typed("echo right-pane-mark");
@@ -861,7 +861,7 @@ fn split_panes_size_and_route_input() {
     cmd(&mut t, '-');
     draw(&mut t);
     let (f, o) = panes(&t);
-    assert_eq!((size(f), size(o)), ((10, 78), (10, 78)));
+    assert_eq!((size(f), size(o)), ((11, 80), (11, 80)));
 
     let tabs = t.app.tabs.len();
     cmd(&mut t, 'w');
@@ -893,12 +893,13 @@ fn split_divider_math() {
     let area = Rect::new(0, 1, 80, 24);
     let (a, b) = split_areas(area, SplitDir::Right, 0.25);
     assert_eq!((a.width, b.x), (20, 20));
-    // Each pane keeps 10 columns (plus its border).
-    assert_eq!(split_areas(area, SplitDir::Right, 0.05).0.width, 12);
-    assert_eq!(split_areas(area, SplitDir::Down, 0.95).1.height, 5);
-    // The border columns on both sides of the boundary are the divider.
-    assert!(on_divider(area, SplitDir::Right, 0.25, 19, 5) && on_divider(area, SplitDir::Right, 0.25, 20, 5));
-    assert!(!on_divider(area, SplitDir::Right, 0.25, 21, 5) && !on_divider(area, SplitDir::Right, 0.25, 19, 0));
+    // Each pane keeps 10 columns (plus the divider) or 3 rows (plus its rule).
+    assert_eq!(split_areas(area, SplitDir::Right, 0.05).0.width, 11);
+    assert_eq!(split_areas(area, SplitDir::Down, 0.95).1.height, 4);
+    // The first pane's last column is the divider; stacked, the second pane's rule.
+    assert!(on_divider(area, SplitDir::Right, 0.25, 19, 5) && !on_divider(area, SplitDir::Right, 0.25, 20, 5));
+    assert!(!on_divider(area, SplitDir::Right, 0.25, 18, 5) && !on_divider(area, SplitDir::Right, 0.25, 19, 0));
+    assert!(on_divider(area, SplitDir::Down, 0.5, 5, 13) && !on_divider(area, SplitDir::Down, 0.5, 5, 12));
     // A drag snaps within a cell of a snap point, unless snapping is off.
     assert_eq!(divider_ratio(area, SplitDir::Right, 26, 5, true), 1.0 / 3.0);
     assert_eq!(divider_ratio(area, SplitDir::Right, 26, 5, false), 27.0 / 80.0);
@@ -934,23 +935,23 @@ fn split_panes_swap_resize_equalize_and_drag() {
     cmd(&mut t, '=');
     assert_eq!(split(&t).1, 0.5);
 
-    // Drag the divider (column 39/40 of 80) to near a quarter: it snaps.
+    // Drag the divider (column 39 of 80) to near a quarter: it snaps.
     draw(&mut t);
-    mouse(&mut t, K::Down(B::Left), 40, 10);
+    mouse(&mut t, K::Down(B::Left), 39, 10);
     mouse(&mut t, K::Drag(B::Left), 20, 10);
     mouse(&mut t, K::Up(B::Left), 20, 10);
     assert_eq!(split(&t), (true, 0.25), "focus unchanged by the drag");
     draw(&mut t);
     let size = |s: &TerminalSession| s.parser.lock().unwrap().screen().size();
-    assert_eq!(size(panes(&t).0).1, 18, "the left pane is 20 columns with its border");
+    assert_eq!(size(panes(&t).0).1, 19, "the left pane is 20 columns with the divider");
 
     // A press on the divider whose release was lost doesn't stick: the next
     // press inside a pane, or a tab switch, ends the drag.
-    mouse(&mut t, K::Down(B::Left), 20, 10);
+    mouse(&mut t, K::Down(B::Left), 19, 10);
     mouse(&mut t, K::Down(B::Left), 60, 10);
     mouse(&mut t, K::Drag(B::Left), 70, 10);
     assert_eq!(split(&t).1, 0.25, "a press off the divider ends the lost drag");
-    mouse(&mut t, K::Down(B::Left), 20, 10);
+    mouse(&mut t, K::Down(B::Left), 19, 10);
     let here = t.app.active;
     t.app.active = 0;
     mouse(&mut t, K::Drag(B::Left), 70, 10);
@@ -1004,17 +1005,79 @@ fn prefix_shortcuts_work_in_an_sftp_tab() {
     assert!(t.app.modal.is_some() || t.app.should_quit, "prefix + q quits");
 }
 
-/// The footer names the prefix once and the keys after it, early enough to
-/// fit an 80-column screen; after the prefix it lists what can follow.
+/// The footer puts the tab's own keys first and the keys after the prefix
+/// behind one badge naming it; after the prefix a PREFIX badge lists what
+/// can follow, and the which-key box opens only after `which_key_delay_ms`.
 #[test]
 fn footer_legend_explains_the_prefix() {
-    let mut t = T::new("");
+    let mut t = T::new(
+        "Host a
+    HostName 10.0.0.1
+",
+    );
     let term = draw(&mut t);
-    assert!(find_text(&term, "Alt+O then: 1…9 tab").is_some(), "hosts footer shows the prefix legend");
+    let (badge, _) = find_text(&term, " Alt+O ▸ ").expect("hosts footer shows the prefix badge");
+    let (ssh, _) = find_text(&term, "Enter ssh").expect("and the tab's own keys");
+    assert!(ssh < badge && find_text(&term, "Alt+O ▸  1…9 tab").is_some(), "own keys first, then the prefix group");
     connecting_sftp_tab(&mut t);
     let term = draw(&mut t);
-    assert!(find_text(&term, "Alt+O then: 1…9 tab │ q close").is_some(), "sftp footer shows the legend and q");
+    assert!(find_text(&term, "Enter open").is_some() && find_text(&term, "? help").is_some(), "sftp footer");
     alt(&mut t, 'o');
     let term = draw(&mut t);
-    assert!(find_text(&term, "now press: 1…9 tab · w close").is_some(), "pending prefix lists what can follow");
+    assert!(
+        find_text(&term, " PREFIX ").is_some() && find_text(&term, "1…9 tab  w close").is_some(),
+        "pending prefix lists what can follow"
+    );
+    assert!(find_text(&term, "previous tab").is_none(), "no which-key box before the delay");
+    t.app.prefix_at = t.app.prefix_at.map(|at| at - Duration::from_millis(300));
+    let term = draw(&mut t);
+    assert!(find_text(&term, "previous tab").is_some(), "the which-key box after 300 ms");
+    t.key(KeyCode::Esc);
+    t.app.cfg.settings.which_key_delay_ms = 0;
+    alt(&mut t, 'o');
+    assert!(find_text(&draw(&mut t), "previous tab").is_some(), "0 shows it at once");
+}
+
+/// However narrow the footer, `? help` stays and nothing spills past it.
+#[test]
+fn narrow_footer_keeps_help() {
+    let t = T::new("");
+    let (local, after) = crate::ui::footer_hints(&t.app);
+    for w in [20, 40, 80, 200] {
+        let line = crate::ui::hint_footer(&t.app.theme, Some("Alt+O"), &local, &after, w);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("? help"), "{w}: {text}");
+        assert!(line.width() <= w, "{w}: {text}");
+    }
+}
+
+/// `NO_COLOR` draws without colors and `tui_ascii_borders` without box drawing.
+#[test]
+fn no_color_and_ascii_borders() {
+    let mut t = T::new(
+        "Host a
+    HostName 10.0.0.1
+",
+    );
+    t.app.mono = true;
+    t.app.cfg.settings.tui_ascii_borders = true;
+    let term = draw(&mut t);
+    let buf = term.backend().buffer();
+    assert!(buf.content().iter().all(|c| c.fg == ratatui::style::Color::Reset && c.bg == ratatui::style::Color::Reset), "no colors");
+    assert!(buf.content().iter().all(|c| !"╭╮╰╯│─".contains(c.symbol())), "no box drawing");
+    assert_eq!(buf[(0, 1)].symbol(), "+");
+}
+
+/// The SFTP strip shows the running copy's progress and counts per state.
+#[test]
+fn sftp_strip_shows_progress() {
+    use crate::sftp_tab::{Transfer, TransferState};
+    let mut t = T::new("");
+    connecting_sftp_tab(&mut t);
+    let TabKind::Sftp(s) = &mut t.app.tabs[t.app.active].kind else { panic!() };
+    s.transfers.push(Transfer::fake(1, "↑ a.txt", 10, Some(10), TransferState::Done));
+    s.transfers.push(Transfer::fake(2, "↓ big.iso", 40, Some(100), TransferState::Running));
+    let term = draw(&mut t);
+    assert!(find_text(&term, "↓ big.iso").is_some() && find_text(&term, " 40%").is_some(), "the running copy");
+    assert!(find_text(&term, "1 running · 1 done").is_some(), "the counts");
 }

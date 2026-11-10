@@ -113,6 +113,14 @@ pub struct Transfer {
     cancelling: bool,
 }
 
+#[cfg(test)]
+impl Transfer {
+    /// A transfer row with no job behind it, for rendering tests.
+    pub fn fake(id: u64, label: &str, done: u64, total: Option<u64>, state: TransferState) -> Self {
+        Self { id, label: label.into(), done, total, skipped: 0, state, handle: TransferHandle::default(), cancelling: false }
+    }
+}
+
 /// The tab's SFTP connection state.
 pub enum Status {
     Connecting,

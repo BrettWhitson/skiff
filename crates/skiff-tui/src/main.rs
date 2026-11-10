@@ -22,7 +22,10 @@
 //! - `forms`: the host editor and port-forward dialogs.
 //! - `sftp_tab`: the SFTP browser tab's state and its background work.
 //! - `input`: the single-line text field used by filters, prompts and forms.
-//! - `tui_theme`: config themes resolved to ratatui colors and styles.
+//! - `tui_theme`: config themes resolved to ratatui colors and styles
+//!   (`NO_COLOR` monochrome, ASCII borders).
+//! - `widgets`: text helpers the screens share (elision, wrapping, key hints
+//!   that drop to fit).
 //!
 //! Config, ssh_config parsing and editing, the terminal emulator, SFTP and
 //! transfers, askpass, history and forwards all live in `skiff-core`; this
@@ -36,6 +39,7 @@ mod keys;
 mod sftp_tab;
 mod tui_theme;
 mod ui;
+mod widgets;
 
 use std::time::Duration;
 
@@ -147,6 +151,7 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build()?;
     let mut app = App::new(cfg, cfg_path, rt.handle().clone());
     app.plain |= plain;
+    app.mono = tui_theme::no_color(std::env::var_os("NO_COLOR"));
     if let Ok(exe) = std::env::current_exe() {
         app.enable_askpass(exe);
     }
