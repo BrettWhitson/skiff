@@ -977,7 +977,11 @@ impl GuiApp {
                 t.blink = self.cfg.gui.cursor_blink && crate::os::animations();
                 let id = Id::new(("term", tab.id));
                 if newly_shown {
-                    ui.request_focus(id);
+                    t.shown();
+                    // A tab chosen from the strip by keyboard leaves focus there.
+                    if !ui.has_focus(Id::new("tabs")) {
+                        ui.request_focus(id);
+                    }
                 }
                 crate::term::view(ui, id, content, t, &self.theme, &self.keymap, self.engine.wake_fn(), &mut self.view_actions);
             }
