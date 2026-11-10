@@ -34,7 +34,6 @@ cargo run -p skiff-ssh -- web uptime    # CLI usage
 cargo run -p skiff-gui --release        # the GUI
 cargo run -p skiff-testserver -- --shell --password secret   # a local server to connect to
 cargo run -p skiff-ui --example demo    # toolkit widget showcase
-cargo run -p skiff-gui --example screenshots -- OUT_DIR       # offscreen screenshots
 cargo run -p skiff-gui --release --example flood -- 50        # 50 MB of output: run it in a terminal tab, check typing stays responsive
 cargo doc --workspace --no-deps         # API docs (must build without warnings)
 ```
