@@ -22,12 +22,14 @@ pub struct SnippetForm {
     /// Only for this host; `None` = every host.
     pub host: Option<String>,
     pub run: bool,
+    /// Edited by the user since it was opened or saved (a new, untouched
+    /// form is not: leaving it loses nothing).
     pub dirty: bool,
 }
 
 impl SnippetForm {
     fn new() -> SnippetForm {
-        SnippetForm { lines: vec![String::new()], dirty: true, ..Default::default() }
+        SnippetForm { lines: vec![String::new()], ..Default::default() }
     }
 
     fn of(s: &Snippet) -> SnippetForm {

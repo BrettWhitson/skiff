@@ -313,6 +313,11 @@ fn switching_snippets_asks_before_discarding_edits() {
     f.click_text("other");
     f.click_text("Discard");
     assert_eq!(f.app.settings.snippets.form.as_ref().unwrap().name, "other");
+    // An untouched new form is not an edit.
+    f.click_text("Add");
+    f.click_text("greet");
+    assert!(f.texts().iter().all(|t| !t.starts_with("Discard unsaved")), "{:?}", f.texts());
+    assert_eq!(f.app.settings.snippets.form.as_ref().unwrap().name, "greet");
 }
 
 #[test]
@@ -343,4 +348,9 @@ fn connection_form_asks_before_discarding_edits() {
     assert!(f.try_find("Discard unsaved changes to beta?").is_some(), "{:?}", f.texts());
     f.click_text("Discard");
     assert!(f.try_find("New host").is_some(), "{:?}", f.texts());
+    // An untouched new form is not an edit.
+    f.right_click_text("alpha");
+    f.click_text("Edit");
+    assert!(f.texts().iter().all(|t| !t.starts_with("Discard unsaved")), "{:?}", f.texts());
+    assert_eq!(f.app.settings.conn.form.as_ref().and_then(|f| f.editing.as_deref()), Some("alpha"));
 }

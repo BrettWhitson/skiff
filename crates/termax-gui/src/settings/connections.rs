@@ -21,6 +21,8 @@ pub struct Form {
     pub editing: Option<String>,
     /// "Other options", one per line.
     pub other: Vec<String>,
+    /// Edited by the user since it was opened or saved (a new, untouched
+    /// form is not: leaving it loses nothing).
     pub dirty: bool,
     /// `GuiApp::hosts_gen` the form was loaded at.
     generation: u64,
@@ -86,20 +88,21 @@ impl ConnState {
     pub fn new_form(&mut self, app: &mut GuiApp) {
         let set = app.load_set();
         let dest = if set.docs.is_empty() { Dest::Termax } else { Dest::SshConfig(0) };
-        self.load(HostForm::new_host(dest), set, None, app, true);
+        self.load(HostForm::new_host(dest), set, None, app, false);
         self.selected = None;
     }
 }
 
 pub fn view(ui: &mut Ui, rect: Rect, st: &mut ConnState, app: &mut GuiApp) {
-    // An untouched form follows the host list (outside edits, sidebar changes).
+    // An untouched form follows the host list (outside edits, sidebar
+    // changes); an untouched new one is just reloaded.
     if let Some(f) = &st.form
         && !f.dirty
         && f.generation != app.hosts_gen
     {
         match f.editing.clone() {
             Some(name) => st.edit_host(&name, app),
-            None => st.form = None,
+            None => st.new_form(app),
         }
     }
     if let Some(name) = st.form.as_ref().and_then(|f| f.editing.clone()).or_else(|| st.readonly.as_ref().map(|r| r.0.clone())) {
