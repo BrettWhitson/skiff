@@ -85,9 +85,7 @@ fn main() -> Result<()> {
             // 255 is ssh's own failure (could not connect or log in).
             if code != 255 {
                 let path = History::path_for(&cfg_path);
-                let mut hist = History::load(&path);
-                hist.record(&h.name, ConnKind::Command, history::now());
-                let _ = hist.save(&path);
+                let _ = History::load(&path).update(&path, |hist| hist.record(&h.name, ConnKind::Command, history::now()));
             }
             std::process::exit(code);
         }

@@ -325,9 +325,43 @@ impl App {
     }
 
     fn record(&mut self, name: &str, kind: ConnKind) {
-        self.history.record(name, kind, history::now());
-        if let Err(e) = self.history.save(&self.history_path) {
+        if let Err(e) = self.history.update(&self.history_path, |h| h.record(name, kind, history::now())) {
             self.set_error(format!("saving history: {e:#}"));
+        }
+    }
+
+    /// After host `old` was renamed to `new`: its saved forwards (and the
+    /// tabs running them), history and status follow it.
+    fn after_rename(&mut self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        let titles: Vec<String> = self.cfg.forwards.iter().map(Forward::title).collect();
+        if hostform::rename_forwards(&mut self.cfg, old, new) {
+            self.save_config();
+            for (before, f) in titles.iter().zip(&self.cfg.forwards) {
+                let after = f.title();
+                for t in self.tabs.iter_mut().filter(|t| t.forward.as_ref() == Some(before)) {
+                    t.forward = Some(after.clone());
+                    t.title = after.clone();
+                }
+            }
+        }
+        for t in self.tabs.iter_mut() {
+            if t.host.as_deref() == Some(old) {
+                t.host = Some(new.to_string());
+            }
+            if let Some((name, _, _)) = &mut t.record
+                && name == old
+            {
+                *name = new.to_string();
+            }
+        }
+        if let Err(e) = self.history.update(&self.history_path, |h| h.rename(old, new)) {
+            self.set_error(format!("saving history: {e:#}"));
+        }
+        if let Some(s) = self.statuses.remove(old) {
+            self.statuses.insert(new.to_string(), s);
         }
     }
 
@@ -377,8 +411,9 @@ impl App {
                 self.push_tab(title.clone(), TabKind::Terminal(Box::new(s)));
                 if let Some(t) = self.tabs.last_mut() {
                     t.forward = Some(title);
+                    // Recorded once the forward is up, not when ssh starts.
+                    t.record = Some((host.name.clone(), ConnKind::Forward, Instant::now()));
                 }
-                self.record(&host.name, ConnKind::Forward);
             }
             Err(e) => self.set_error(format!("{e:#}")),
         }
@@ -514,11 +549,19 @@ impl App {
             self.record(&name, ConnKind::Files);
         }
         // A terminal counts as connected once it has shown output and is
-        // still running two seconds in.
+        // still running two seconds in. A forward (`ssh -N`, often silent)
+        // counts once it has kept running as long as the GUI waits for a
+        // quiet forward, and isn't sitting at a prompt.
         let mut done = Vec::new();
         for tab in &mut self.tabs {
-            if let (Some((_, _, at)), TabKind::Terminal(s)) = (&tab.record, &mut tab.kind) {
-                if at.elapsed() >= Duration::from_secs(2) && s.generation() > 0 && s.is_alive() {
+            if let (Some((_, kind, at)), TabKind::Terminal(s)) = (&tab.record, &mut tab.kind) {
+                let up = if *kind == ConnKind::Forward {
+                    let at_prompt = s.parser.lock().map(|p| p.screen().cursor_position().1 > 0).unwrap_or(true);
+                    at.elapsed() >= termax_core::forward::RUNNING_FALLBACK && !at_prompt
+                } else {
+                    at.elapsed() >= Duration::from_secs(2) && s.generation() > 0
+                };
+                if up && s.is_alive() {
                     let (name, kind, _) = tab.record.take().expect("checked");
                     done.push((name, kind));
                 }
@@ -1093,6 +1136,7 @@ impl App {
     /// Returns the modal to keep showing (with an error) or `None` on success.
     fn save_editor(&mut self, mut ed: Editor) -> Option<Modal> {
         let taken = hostform::taken_names(&self.hosts);
+        let old = ed.form.original_name(&self.cfg);
         // Edit a copy: if the write fails, the form can be saved again as is.
         let mut set = ed.set.clone();
         let saved = match ed.form.save(&mut self.cfg, &mut set, &taken) {
@@ -1106,6 +1150,9 @@ impl App {
         if let Err(e) = self.after_host_change(saved, &mut set) {
             ed.error = Some(e);
             return Some(Modal::Editor(ed));
+        }
+        if let Some(old) = old {
+            self.after_rename(&old, &name);
         }
         if let Some(pos) = self.filtered.iter().position(|&i| self.hosts[i].name == name) {
             self.host_selected = pos;

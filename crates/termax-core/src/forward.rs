@@ -161,7 +161,7 @@ impl ForwardState {
 }
 
 /// How long a quiet but alive ssh counts as running when its log shows no marker.
-const RUNNING_FALLBACK: Duration = Duration::from_secs(10);
+pub const RUNNING_FALLBACK: Duration = Duration::from_secs(10);
 
 /// `-v` lines that mean the forward is set up.
 fn is_up_marker(line: &str) -> bool {
