@@ -120,6 +120,9 @@ pub struct GuiApp {
     /// Recent warnings and errors (newest last, at most `WARNINGS_KEPT`),
     /// kept after their toasts are gone.
     pub warnings: Vec<String>,
+    /// The `[keys]` problems last warned about: a save warns only when
+    /// they change, so every settings change doesn't repeat them.
+    keymap_warnings: Vec<String>,
     /// Notifications shown as toasts at the bottom right (see `notify`).
     pub toasts: Toasts,
     /// Background runtime; results come back as `Msg`s.
@@ -220,6 +223,7 @@ impl GuiApp {
         let theme = from_def(&find_theme(&cfg));
         let style = style_for(&theme, &cfg);
         let (keymap, mut warnings) = Keymap::platform(&cfg.keys);
+        let keymap_warnings = warnings.clone();
         warnings.extend(host_warning);
         warnings.extend(theme.warning.clone());
         let geometry_path = state::UiState::path_for(&cfg_path);
@@ -260,6 +264,7 @@ impl GuiApp {
             geometry_path,
             geometry_dirty: None,
             warnings: vec![],
+            keymap_warnings,
             toasts: Toasts::default(),
             engine,
             tabs: vec![],
@@ -471,7 +476,9 @@ impl GuiApp {
         self.watcher.poll(); // our own write is not an outside edit
         let (km, warnings) = Keymap::platform(&self.cfg.keys);
         self.keymap = km;
-        for w in warnings {
+        let new: Vec<String> = warnings.iter().filter(|w| !self.keymap_warnings.contains(w)).cloned().collect();
+        self.keymap_warnings = warnings;
+        for w in new {
             self.warn(w);
         }
         self.rebuild_hosts();
@@ -804,9 +811,10 @@ impl GuiApp {
                 self.pick_theme();
                 let (km, warnings) = Keymap::platform(&self.cfg.keys);
                 self.keymap = km;
-                for w in warnings {
-                    self.warn(w);
+                for w in &warnings {
+                    self.warn(w.clone());
                 }
+                self.keymap_warnings = warnings;
                 self.rebuild_hosts();
             }
             Err(e) => self.error(format!("config not reloaded: {e:#}")),

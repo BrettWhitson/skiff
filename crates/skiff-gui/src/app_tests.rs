@@ -627,6 +627,24 @@ fn notify_shows_toast_and_replaces_repeats() {
     assert_eq!(f.app.warnings, ["disk full", "disk full"]);
 }
 
+/// A bad `[keys]` entry warns once at startup, not again on every save;
+/// a new problem still warns.
+#[test]
+fn keymap_warnings_not_repeated_on_save() {
+    let mut f = Fixture::with_config(&format!("{CONFIG}
+[keys]
+close_tab = \"ctrl+nosuchkey\"
+"));
+    let n = f.app.warnings.len();
+    assert!(n >= 1, "startup warns: {:?}", f.app.warnings);
+    f.app.save_config();
+    f.app.save_config();
+    assert_eq!(f.app.warnings.len(), n, "{:?}", f.app.warnings);
+    f.app.cfg.keys.insert("next_tab".into(), "ctrl+alsobad".into());
+    f.app.save_config();
+    assert!(f.app.warnings.len() > n, "{:?}", f.app.warnings);
+}
+
 /// UI scale grows sidebar rows with the text but leaves terminal text size alone.
 #[test]
 fn ui_scale_scales_layout_with_text() {
