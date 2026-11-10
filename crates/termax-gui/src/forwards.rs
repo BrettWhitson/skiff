@@ -144,8 +144,19 @@ fn save_form(st: &mut ForwardsState, app: &mut GuiApp, start: bool) {
         }
     };
     let old = form.editing.clone();
+    let at = old.as_ref().and_then(|o| app.cfg.forwards.iter().position(|x| x == o));
+    if old.is_some() && at.is_none() {
+        // Deleted (or changed) elsewhere while the form was open.
+        form.editing = None;
+        form.error = Some("This forward was deleted; Save again to add it back".into());
+        return;
+    }
+    if app.cfg.forwards.iter().enumerate().any(|(i, x)| x == &f && Some(i) != at) {
+        form.error = Some("This forward is already saved".into());
+        return;
+    }
     let mut was_live = false;
-    match old.as_ref().and_then(|o| app.cfg.forwards.iter().position(|x| x == o)) {
+    match at {
         Some(i) => {
             let o = app.cfg.forwards[i].clone();
             was_live = st.state_of(&o).is_some_and(|s| s.is_live());
