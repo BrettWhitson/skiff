@@ -16,6 +16,9 @@ pub struct GuiTheme {
     pub ansi: [Color; 16],
     pub term_fg: Color,
     pub term_bg: Color,
+    /// Why the theme can't meet its contrast targets (a custom theme whose
+    /// colours are too close); shown once when it is applied.
+    pub warning: Option<String>,
 }
 
 /// The standard xterm 256-colour palette.
@@ -77,12 +80,18 @@ pub fn from_def(d: &ThemeDef) -> GuiTheme {
     };
     let mut palette = palette;
     palette.control = control_outline(&palette);
-    make_readable(&mut palette, if d.name.starts_with("high-contrast") { 7.0 } else { 4.5 });
-    GuiTheme { name: d.name.clone(), palette, ansi, term_fg: fg, term_bg: bg }
+    let min = if d.name.starts_with("high-contrast") { 7.0 } else { 4.5 };
+    let warning = (!make_readable(&mut palette, min))
+        .then(|| format!("theme {}: its colours are too close for {min}:1 text contrast; some text may be hard to read", d.name));
+    GuiTheme { name: d.name.clone(), palette, ansi, term_fg: fg, term_bg: bg, warning }
 }
 
 /// How much dimmer than `fg` muted text stays (a contrast ratio).
 pub const MUTED_STEP: f32 = 1.3;
+
+/// The least contrast that still tells muted text from `fg`, and the
+/// selection from `bg`, when a theme can't have more.
+pub const MIN_VISIBLE: f32 = 1.15;
 
 /// WCAG contrast of two toolkit colours.
 fn ratio(a: Color, b: Color) -> f32 {
@@ -99,7 +108,10 @@ fn nudge(c: Color, toward: Color, ok: impl Fn(Color) -> bool) -> Color {
 /// selection moves toward `bg` until `fg` and `muted` read on it and the
 /// accent (focus ring, focused row bar) stands out 3:1 from it; `muted` and
 /// the status colours move toward `fg` until they read on every background.
-fn make_readable(p: &mut Palette, min: f32) {
+/// Muted text stays visibly dimmer than `fg` and the selection visibly apart
+/// from `bg` even when that costs contrast; false when the targets can't all
+/// be met.
+fn make_readable(p: &mut Palette, min: f32) -> bool {
     let surface = p.surface;
     let unfocused = |s: Color| s.mix(surface, 0.5);
     let (fg, accent) = (p.fg, p.accent);
@@ -109,11 +121,19 @@ fn make_readable(p: &mut Palette, min: f32) {
     let brightest = (0..=20).map(|i| muted.mix(fg, i as f32 / 20.0)).take_while(|&c| ratio(c, fg) >= MUTED_STEP).last().unwrap_or(muted);
     let reads = |s: Color| [fg, brightest].iter().all(|&t| ratio(t, s) >= min && ratio(t, unfocused(s)) >= min);
     p.selection = nudge(p.selection, p.bg, |s| reads(s) && ratio(accent, s) >= 3.0);
+    if ratio(p.selection, p.bg) < MIN_VISIBLE {
+        p.selection = nudge(p.bg, fg, |s| ratio(s, p.bg) >= MIN_VISIBLE);
+    }
     let rows = [p.bg, p.surface, p.surface_alt, p.selection, unfocused(p.selection)];
     p.muted = nudge(muted, fg, |c| rows.iter().all(|&r| ratio(c, r) >= min));
+    if ratio(p.muted, fg) < MIN_VISIBLE {
+        p.muted = nudge(fg, p.bg, |c| ratio(c, fg) >= MIN_VISIBLE);
+    }
     for c in [&mut p.danger, &mut p.warning, &mut p.success] {
         *c = nudge(*c, fg, |c| rows[..3].iter().all(|&r| ratio(c, r) >= min));
     }
+    let text_reads = [fg, p.muted].iter().all(|&t| rows.iter().all(|&r| ratio(t, r) >= min));
+    text_reads && ratio(p.muted, fg) >= MIN_VISIBLE && ratio(p.selection, p.bg) >= MIN_VISIBLE
 }
 
 /// The theme's border, moved toward `fg` until it stands out 3:1 from the

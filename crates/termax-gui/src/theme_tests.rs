@@ -36,6 +36,7 @@ fn every_builtin_maps() {
     for d in builtin() {
         let t = from_def(&d);
         assert_eq!(t.palette.bg.a, 255, "{}", d.name);
+        assert_eq!(t.warning, None, "{}", d.name);
     }
 }
 
@@ -86,4 +87,15 @@ fn builtin_palettes_meet_contrast() {
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn unreadable_custom_theme_keeps_muted_and_selection_visible() {
+    let mut d = builtin().into_iter().find(|t| t.name == "nord").unwrap();
+    (d.bg, d.fg, d.muted, d.selection_bg) = ("#777777".into(), "#888888".into(), "#808080".into(), "#777777".into());
+    let t = from_def(&d);
+    let p = t.palette;
+    assert!(ratio(p.muted, p.fg) >= MIN_VISIBLE, "muted {:?} vs fg {:?}", p.muted, p.fg);
+    assert!(ratio(p.selection, p.bg) >= MIN_VISIBLE, "selection {:?} vs bg {:?}", p.selection, p.bg);
+    assert!(t.warning.as_deref().is_some_and(|w| w.contains("nord")), "{:?}", t.warning);
 }

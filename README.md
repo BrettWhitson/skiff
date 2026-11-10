@@ -473,7 +473,8 @@ text (WCAG AA), dimmed text included, on plain, hovered and selected rows and on
 buttons; outlines, the focus ring and the focus bar reach 3:1. A test checks
 every theme. Custom themes are adjusted the same way: dimmed and status colors
 move toward the text color, and the selection toward the background, until
-they read. On Windows, `theme = "auto"` (or the default) switches to
+they read, but dimmed text stays visibly dimmer and the selection stays visible;
+a theme whose colors are too close for that gets a warning. On Windows, `theme = "auto"` (or the default) switches to
 `high-contrast` while Windows high contrast is on, also when it is turned on
 or off while termax runs. `cursor_blink = false` (or turning off Windows
 animation effects) stops the cursor blinking.
@@ -481,7 +482,7 @@ animation effects) stops the cursor blinking.
 **Text size.** `Ctrl+Alt+=` / `-` (or `ui_scale`) scales the whole interface,
 rows and spacing with the text; Windows' text size (Settings > Accessibility >
 Text size) is applied on top. Terminal text keeps `font_size` (zoom it with the
-terminal's own zoom keys).
+terminal's own zoom keys), and the mouse wheel scrolls the same lines per notch.
 
 **TUI.** The TUI runs in your terminal, whose screen reader support applies.
 termax keeps the terminal cursor on the selected row of every list, so readers

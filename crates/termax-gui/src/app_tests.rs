@@ -505,3 +505,25 @@ fn saved_window_size_ignores_ui_zoom() {
     // main.rs restores it as a winit LogicalSize (DPI only), so zoom must not shrink it.
     assert_eq!(f.app.geometry.window_size, Some((1280, 800)));
 }
+
+#[test]
+fn unreadable_theme_warns_once() {
+    let theme = "
+[[theme]]
+name = \"grey\"
+bg = \"#777777\"
+fg = \"#888888\"
+accent = \"red\"
+muted = \"#808080\"
+border = \"gray\"
+selection_bg = \"#777777\"
+selection_fg = \"white\"
+success = \"green\"
+warning = \"yellow\"
+error = \"red\"
+";
+    let mut f = Fixture::with_config(&format!("{}{theme}", CONFIG.replace("midnight", "grey")));
+    f.app.apply_theme("grey");
+    let n = f.app.warnings.iter().filter(|w| w.contains("theme grey")).count();
+    assert_eq!(n, 1, "{:?}", f.app.warnings);
+}

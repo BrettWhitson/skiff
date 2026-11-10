@@ -175,6 +175,7 @@ impl GuiApp {
         let style = style_for(&theme, &cfg);
         let (keymap, mut warnings) = Keymap::platform(&cfg.keys);
         warnings.extend(host_warning);
+        warnings.extend(theme.warning.clone());
         let geometry_path = state::UiState::path_for(&cfg_path);
         let cfg_start = cfg.settings.local_start_dir.clone();
         let geometry = state::UiState::load(&geometry_path);
@@ -656,7 +657,12 @@ impl GuiApp {
     /// Re-picks the configured theme (for the OS high-contrast mode now).
     fn pick_theme(&mut self) {
         self.os_prefs = (crate::os::high_contrast(), crate::os::text_scale());
-        self.theme = from_def(&find_theme(&self.cfg));
+        let theme = from_def(&find_theme(&self.cfg));
+        // Once per change, not on every re-pick of the same theme.
+        if let Some(w) = theme.warning.clone().filter(|w| self.theme.warning.as_ref() != Some(w)) {
+            self.warn(w);
+        }
+        self.theme = theme;
         self.style = style_for(&self.theme, &self.cfg);
     }
 
