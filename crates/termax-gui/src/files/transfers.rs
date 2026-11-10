@@ -147,12 +147,9 @@ impl TransferList {
 
     /// Cancels every running transfer (closing the tab).
     pub fn cancel_all(&mut self) {
-        for r in &mut self.rows {
-            if let Some(h) = &r.handle {
-                h.cancel();
-            }
-            if let RowState::Waiting(q) = &mut r.state {
-                q.reply.take();
+        for i in 0..self.rows.len() {
+            if self.rows[i].is_active() {
+                self.cancel(i);
             }
         }
     }

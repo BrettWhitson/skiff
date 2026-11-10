@@ -93,6 +93,18 @@ impl FilesTab {
         format!("\u{21C5} {} \u{2194} {}", self.panes[0].loc.label(), self.panes[1].loc.label())
     }
 
+    /// The tab is closing: cancel its transfers, stop its connections and
+    /// withdraw its ssh questions (`retire` = the broker and this tab's id).
+    pub fn shutdown(&mut self, retire: Option<(&Broker, u64)>) {
+        self.transfers.cancel_all();
+        for side in 0..2 {
+            self.panes[side].cancel_connect();
+            if let Some((b, id)) = retire {
+                b.retire(&tag(id, side));
+            }
+        }
+    }
+
     pub fn on_transfer(&mut self, ev: TransferEvent, ctx: &FilesCtx) {
         if let Some(side) = self.transfers.on_event(ev)
             && let Some(p) = self.panes.get_mut(side)

@@ -3998,6 +3998,7 @@ dependencies = [
  "termax-testserver",
  "termax-ui",
  "tokio",
+ "tokio-util",
  "vt100",
 ]
 

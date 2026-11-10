@@ -188,3 +188,107 @@ fn close_tab_shortcut_and_toggle_sidebar() {
     assert!(f.app.geometry.sidebar_collapsed);
     assert!(f.try_find("alpha").is_none());
 }
+
+// ----- tab lifecycle (Task 12) --------------------------------------------
+
+fn pump(f: &mut Fixture, what: &str, cond: impl Fn(&GuiApp) -> bool) {
+    let start = std::time::Instant::now();
+    while !cond(&f.app) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(20), "timed out: {what}");
+        f.frame(vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn files_tab(app: &mut GuiApp, id: u64) -> &mut crate::files::FilesTab {
+    match &mut app.tabs.iter_mut().find(|t| t.id == id).unwrap().kind {
+        TabKind::Files(f) => f,
+        _ => panic!("not files"),
+    }
+}
+
+/// A files tab (both panes local) with one transfer waiting on an overwrite question.
+fn waiting_transfer(f: &mut Fixture) -> (u64, tempfile::TempDir, tempfile::TempDir) {
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(a.path().join("x.txt"), b"new").unwrap();
+    std::fs::write(b.path().join("x.txt"), b"old").unwrap();
+    f.app.start_dir = a.path().display().to_string();
+    let id = f.app.open_files(Location::Local, Location::Local);
+    pump(f, "panes loaded", |app| {
+        app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if ft.panes.iter().all(|p| p.ep.is_some() && p.state == crate::files::PaneState::Idle)))
+    });
+    let bdir = b.path().display().to_string();
+    {
+        let app = &mut f.app;
+        let ctx = crate::files::FilesCtx { tab_id: id, engine: &app.engine, start_dir: &app.start_dir, hosts: &app.hosts, askpass: None, ssh_binary: "ssh", ssh_version: None };
+        let ft = match &mut app.tabs.iter_mut().find(|t| t.id == id).unwrap().kind { TabKind::Files(ft) => ft, _ => unreachable!() };
+        ft.panes[1].navigate(bdir.clone(), &ctx, 1);
+    }
+    pump(f, "right in b", move |app| app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if ft.panes[1].cwd == bdir && ft.panes[1].state == crate::files::PaneState::Idle)));
+    {
+        let app = &mut f.app;
+        let ctx = crate::files::FilesCtx { tab_id: id, engine: &app.engine, start_dir: &app.start_dir, hosts: &app.hosts, askpass: None, ssh_binary: "ssh", ssh_version: None };
+        let ft = match &mut app.tabs.iter_mut().find(|t| t.id == id).unwrap().kind { TabKind::Files(ft) => ft, _ => unreachable!() };
+        let path = a.path().join("x.txt").display().to_string();
+        ft.copy(0, vec![(path, false, "x.txt".into())], &ctx);
+    }
+    pump(f, "question", move |app| app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if ft.transfers.running() == 1 && ft.transfers.rows.iter().any(|r| matches!(r.state, crate::files::transfers::RowState::Waiting(_))))));
+    (id, a, b)
+}
+
+#[test]
+fn close_with_running_transfer_asks_first() {
+    let mut f = Fixture::new();
+    let (id, _a, b) = waiting_transfer(&mut f);
+    f.app.request_close_tab(id);
+    f.frame(vec![]);
+    assert_eq!(f.app.tabs.len(), 1, "not closed yet");
+    assert!(f.texts().iter().any(|t| t.contains("1 transfer running")), "{:?}", f.texts());
+    f.click_text("Keep");
+    assert_eq!(f.app.tabs.len(), 1);
+    f.app.request_close_tab(id);
+    f.frame(vec![]);
+    f.click_text("Close anyway");
+    assert!(f.app.tabs.is_empty());
+    assert_eq!(std::fs::read(b.path().join("x.txt")).unwrap(), b"old");
+}
+
+#[test]
+fn shutdown_cancels_transfers() {
+    let mut f = Fixture::new();
+    let (id, _a, _b) = waiting_transfer(&mut f);
+    files_tab(&mut f.app, id).shutdown(None);
+    pump(&mut f, "cancelled", move |app| {
+        app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if matches!(ft.transfers.rows[0].state, crate::files::transfers::RowState::Cancelled)))
+    });
+}
+
+#[test]
+fn close_tab_cancels_and_ignores_late_events() {
+    let mut f = Fixture::new();
+    let id = f.app.open_files(Location::Local, Location::Local);
+    f.frame(vec![]);
+    f.app.close_tab(id);
+    let tx = f.app.engine.sender();
+    tx.send(Msg::Files { tab: id, side: 0, ev: crate::files::FilesEvent::Listed { seq: 1, cwd: "x".into(), result: Ok(vec![]) } });
+    tx.send(Msg::Transfer { tab: id, ev: termax_core::fs::transfer::TransferEvent::Progress { id: 1, done: 1, total: None, current: "x".into() } });
+    f.frame(vec![]);
+    f.frame(vec![]);
+    assert!(f.app.tabs.is_empty());
+}
+
+#[test]
+fn late_ask_for_gone_tab_is_refused() {
+    let mut f = Fixture::new();
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    let req = termax_core::askpass::AskRequest {
+        tag: "999:1".into(),
+        prompt: "Password: ".into(),
+        kind: termax_core::askpass::AskKind::Secret,
+        reply,
+        cancelled: tokio_util::sync::CancellationToken::new(),
+    };
+    f.app.engine.sender().send(Msg::Ask(req));
+    f.frame(vec![]);
+    assert_eq!(rx.blocking_recv().unwrap(), None);
+}

@@ -16,7 +16,7 @@ use termax_ui::shell::{App, FrameCtx, Waker};
 use termax_ui::style::Style;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Ui, UiState};
-use termax_ui::widgets::{TabTitle, label, splitter_h, tabs};
+use termax_ui::widgets::{TabTitle, button, label, splitter_h, tabs};
 
 use crate::engine::{Engine, Msg};
 use crate::files::{FilesTab, Location};
@@ -92,6 +92,8 @@ pub struct GuiApp {
     ssh_version: Option<Option<(u32, u32)>>,
     /// The tab shown last frame (focus moves into a newly shown terminal).
     shown_tab: Option<u64>,
+    /// A files tab whose close waits for "Close anyway" (transfers running).
+    closing: Option<u64>,
     ui_state: UiState,
 }
 
@@ -176,6 +178,7 @@ impl GuiApp {
             askpass,
             ssh_version: None,
             shown_tab: None,
+            closing: None,
             ui_state: UiState::default(),
         }
     }
@@ -217,9 +220,34 @@ impl GuiApp {
         }
     }
 
+    /// Closes the tab, asking first when it still has transfers running.
+    pub fn request_close_tab(&mut self, id: u64) {
+        let running = match self.tabs.iter().find(|t| t.id == id).map(|t| &t.kind) {
+            Some(TabKind::Files(f)) => f.transfers.running(),
+            _ => 0,
+        };
+        if running > 0 {
+            self.closing = Some(id);
+            if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                self.active = i;
+            }
+        } else {
+            self.close_tab(id);
+        }
+    }
+
+    /// Closes the tab now: its transfers are cancelled, its connections
+    /// stopped, and anything it still receives is dropped.
     pub fn close_tab(&mut self, id: u64) {
+        if self.closing == Some(id) {
+            self.closing = None;
+        }
         if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
-            self.tabs.remove(i);
+            let mut t = self.tabs.remove(i);
+            if let TabKind::Files(f) = &mut t.kind {
+                f.shutdown(self.askpass.as_ref().map(|b| (b, id)));
+            }
+            drop(t);
             if self.active >= i && self.active > 0 {
                 self.active -= 1;
             }
@@ -424,7 +452,7 @@ impl GuiApp {
             Action::QuickSwitcher | Action::NewTab => self.switcher_open = true,
             Action::CloseTab => {
                 if let Some(id) = self.active_tab_id() {
-                    self.close_tab(id);
+                    self.request_close_tab(id);
                 }
             }
             Action::NextTab if !self.tabs.is_empty() => self.active = (self.active + 1) % self.tabs.len(),
@@ -470,6 +498,9 @@ impl GuiApp {
             if let Some(tab) = m.tab()
                 && !self.tabs.iter().any(|t| t.id == tab)
             {
+                if let Msg::Ask(req) = m {
+                    let _ = req.reply.send(None); // refuse: nobody can answer it
+                }
                 continue; // the tab is gone
             }
             match m {
@@ -598,7 +629,10 @@ impl GuiApp {
         if let Some(i) = r.closed
             && let Some(id) = self.tabs.get(i).map(|t| t.id)
         {
-            self.close_tab(id);
+            self.request_close_tab(id);
+        }
+        if let Some(id) = self.closing {
+            self.close_confirm(ui, strip, id);
         }
         if r.plus_clicked {
             self.switcher_open = true;
@@ -640,6 +674,29 @@ impl GuiApp {
             TabKind::Settings => {
                 label(ui, line, "Settings", None);
             }
+        }
+    }
+
+    /// "N transfers running — Close anyway / Keep", over the tab strip.
+    fn close_confirm(&mut self, ui: &mut Ui, strip: Rect, id: u64) {
+        let n = match self.tabs.iter().find(|t| t.id == id).map(|t| &t.kind) {
+            Some(TabKind::Files(f)) => f.transfers.running(),
+            _ => 0,
+        };
+        if n == 0 {
+            self.closing = None; // finished meanwhile: close as asked
+            self.close_tab(id);
+            return;
+        }
+        let p = self.theme.palette;
+        ui.painter().rect(strip, p.surface, 0.0);
+        let parts = ui.split_h(strip.inset(ui.px(4)), &[L::Fill, L::Px(120), L::Px(72)], 6);
+        let text = format!("{n} transfer{} running \u{2014} close the tab?", if n == 1 { "" } else { "s" });
+        label(ui, parts[0], &text, None);
+        if button(ui, Id::new("close-anyway"), parts[1], "Close anyway").clicked {
+            self.close_tab(id);
+        } else if button(ui, Id::new("close-keep"), parts[2], "Keep").clicked {
+            self.closing = None;
         }
     }
 
