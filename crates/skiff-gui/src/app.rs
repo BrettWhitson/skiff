@@ -51,21 +51,33 @@ const GEOMETRY_SAVE_DELAY: Duration = Duration::from_secs(1);
 /// How often `config.toml` is checked for outside edits (window focused).
 const CONFIG_POLL: Duration = Duration::from_secs(1);
 
+/// What a tab shows. Settings and Forwards are singletons; their state
+/// lives on `GuiApp` so it survives closing the tab.
 pub enum TabKind {
     /// A terminal tab: one or more panes to the same host.
     Terminal(Box<TermSplit>),
+    /// A two-pane file-transfer tab.
     Files(Box<FilesTab>),
+    /// The settings screen.
     Settings,
+    /// The port-forward manager.
     Forwards,
 }
 
+/// One entry in the tab strip.
 pub struct Tab {
+    /// Unique for the app's lifetime (never reused), so it can name a tab
+    /// across frames and engine messages.
     pub id: u64,
+    /// What the tab shows.
     pub kind: TabKind,
 }
 
+/// The whole application state, driven by the toolkit through `App`.
 pub struct GuiApp {
+    /// The live config (edited by settings, saved to `cfg_path`).
     pub cfg: Config,
+    /// Where `config.toml` lives.
     pub cfg_path: PathBuf,
     /// The config as last loaded/saved: `Config::save` diffs against it.
     pub baseline: Config,
@@ -76,30 +88,46 @@ pub struct GuiApp {
     pub ssh_files: Vec<PathBuf>,
     /// Reachability per host name (opt-in checks).
     pub statuses: HashMap<String, Status>,
+    /// When each host was last connected (for sorting and the status bar).
     pub history: History,
+    /// Where `history` is saved.
     history_path: PathBuf,
     /// Terminals (by `TermTab::uid`) to record in history once they prove connected.
     pub(crate) pending_records: Vec<(u64, String, Instant)>,
+    /// Port forwards: the running ones and the manager tab's form.
     pub forwards: ForwardsState,
+    /// The active theme, mapped onto toolkit and terminal colours.
     pub theme: GuiTheme,
+    /// The toolkit style (palette, zoom, font sizes) derived from theme and config.
     pub style: Style,
+    /// Active key bindings (defaults plus `[keys]` overrides).
     pub keymap: Keymap,
     /// Geometry kept outside `config.toml`.
     pub geometry: state::UiState,
+    /// Where `geometry` is saved (`state.toml`).
     pub geometry_path: PathBuf,
+    /// When geometry first changed since the last save; saved after
+    /// `GEOMETRY_SAVE_DELAY`.
     geometry_dirty: Option<Instant>,
     /// Problems and notices for the status bar (newest last).
     pub warnings: Vec<String>,
     /// The status bar's live text for the newest warning (a repeat differs).
     warning_live: String,
+    /// Background runtime; results come back as `Msg`s.
     pub engine: Engine,
+    /// Open tabs, in strip order.
     pub tabs: Vec<Tab>,
+    /// Index into `tabs` of the shown tab.
     pub active: usize,
+    /// The id the next tab gets.
     next_tab_id: u64,
+    /// Host sidebar state.
     pub sidebar: Sidebar,
     /// Opened by Ctrl+Shift+K / "+" (rendered by the quick switcher).
     pub switcher_open: bool,
+    /// The quick switcher's query and selection.
     switcher: SwitcherState,
+    /// The switcher was open last frame (to detect it opening or closing).
     switcher_was_open: bool,
     /// Where focus goes back to when the switcher closes.
     switcher_return_focus: Option<Id>,
@@ -129,10 +157,13 @@ pub struct GuiApp {
     pub pending_fonts: Option<Fonts>,
     /// Notices outside edits of `config.toml`.
     watcher: FileWatcher,
+    /// When `watcher` was last polled.
     last_poll: Instant,
+    /// Whether the window has focus (config polling only runs then).
     window_focused: bool,
     /// The OS high-contrast mode and text size the theme and style are for.
     os_prefs: (bool, f32),
+    /// The toolkit's retained per-widget state (focus, scroll, ...).
     ui_state: UiState,
     /// A drag-and-drop was in progress at the end of the last frame.
     drag_live: bool,
@@ -159,6 +190,8 @@ pub fn local_start_dir(configured: &Option<String>) -> String {
         .unwrap_or_else(|| ".".into())
 }
 
+/// The toolkit style for a theme: its palette, the interface zoom and the
+/// terminal font size from the config.
 pub fn style_for(theme: &GuiTheme, cfg: &Config) -> Style {
     let mut s = Style::dark_default();
     s.palette = theme.palette;
@@ -170,6 +203,9 @@ pub fn style_for(theme: &GuiTheme, cfg: &Config) -> Style {
 }
 
 impl GuiApp {
+    /// Builds the app from a loaded config: hosts, theme, keymap, saved
+    /// geometry and history, the engine and (with a window) the askpass
+    /// broker. `waker` is `None` in tests, which run without a window.
     pub fn new(cfg: Config, cfg_path: PathBuf, waker: Option<Waker>) -> GuiApp {
         let wake = waker.map(|w| Arc::new(move || w.wake()) as crate::engine::WakeFn);
         let (hosts, host_warning) = hosts::collect(&cfg);
@@ -245,12 +281,15 @@ impl GuiApp {
             ui_state: UiState::default(),
             drag_live: false,
         };
+        // Opt-in status checks of every host at startup.
         if on_start {
             app.check_status(None);
         }
         app
     }
 
+    /// Adds a status-bar notice, keeping only the newest 20, and refreshes
+    /// the live text so screen readers announce it even when repeated.
     pub fn warn(&mut self, w: impl Into<String>) {
         let w = w.into();
         self.warning_live = skiff_ui::a11y::fresh_announcement(&self.warning_live, w.clone());
@@ -262,6 +301,7 @@ impl GuiApp {
 
     // ----- tabs -------------------------------------------------------
 
+    /// Appends a tab with a fresh id and makes it active; returns the id.
     pub(crate) fn push_tab(&mut self, kind: TabKind) -> u64 {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
@@ -270,6 +310,8 @@ impl GuiApp {
         id
     }
 
+    /// Opens a terminal tab to `host`; history records it once it proves
+    /// connected (see `pending_records`).
     pub fn open_terminal(&mut self, host: &HostEntry) -> u64 {
         let term = TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback);
         self.pending_records.push((term.uid, host.name.clone(), Instant::now()));
@@ -286,6 +328,8 @@ impl GuiApp {
         }
     }
 
+    /// Opens a file-transfer tab with the given pane locations. The first one
+    /// also reads the local `ssh -V`.
     pub fn open_files(&mut self, left: Location, right: Location) -> u64 {
         if self.ssh_version.is_none() {
             self.ssh_version = Some(skiff_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
@@ -297,7 +341,12 @@ impl GuiApp {
         self.push_tab(TabKind::Files(Box::new(tab)))
     }
 
+    /// Shows the settings tab (opening it if needed). A pending
+    /// `edit_target` or `new_connection` first points the Connections
+    /// section at that host or at a new form.
     pub fn open_settings(&mut self) {
+        // The connection form needs `&mut self`, so the settings state is
+        // taken out while it switches.
         if let Some(name) = self.edit_target.take() {
             let mut st = std::mem::take(&mut self.settings);
             st.section = crate::settings::Section::Connections;
@@ -323,6 +372,7 @@ impl GuiApp {
             Some(TabKind::Files(f)) => f.transfers.running(),
             _ => 0,
         };
+        // Running transfers: show the question on that tab instead of closing.
         if running > 0 {
             self.closing = Some(id);
             self.closing_new = true;
@@ -346,12 +396,14 @@ impl GuiApp {
                 f.shutdown(self.askpass.as_ref().map(|b| (b, id)));
             }
             drop(t);
+            // Keep the active index on a valid tab (the one to the left).
             if self.active >= i && self.active > 0 {
                 self.active -= 1;
             }
         }
     }
 
+    /// The tab strip label for tab `i` (terminals show the host and pane count).
     pub fn tab_title(&self, i: usize) -> String {
         match &self.tabs[i].kind {
             TabKind::Terminal(t) if t.panes.len() > 1 => format!("\u{25CF} {} ({} panes)", t.host().name, t.panes.len()),
@@ -362,6 +414,7 @@ impl GuiApp {
         }
     }
 
+    /// The id of the shown tab, if any tab is open.
     pub fn active_tab_id(&self) -> Option<u64> {
         self.tabs.get(self.active).map(|t| t.id)
     }
@@ -384,6 +437,8 @@ impl GuiApp {
         self.rebuild_hosts();
     }
 
+    /// Re-collects the host list from config and ssh config, bumping
+    /// `hosts_gen` and refreshing the list of ssh config files.
     pub fn rebuild_hosts(&mut self) {
         let (hosts, w) = hosts::collect(&self.cfg);
         self.hosts = hosts;
@@ -437,6 +492,7 @@ impl GuiApp {
         Ok(name)
     }
 
+    /// Removes host `name` from wherever it is defined.
     pub fn delete_host(&mut self, name: &str) -> Result<(), String> {
         let h = self.host_named(name)?;
         let mut set = self.load_set();
@@ -444,6 +500,7 @@ impl GuiApp {
         self.apply_saved(saved, &mut set)
     }
 
+    /// Hides or unhides host `name` and saves the change.
     fn set_host_hidden(&mut self, name: &str, hidden: bool) -> Result<(), String> {
         let h = self.host_named(name)?;
         let mut set = self.load_set();
@@ -451,6 +508,7 @@ impl GuiApp {
         self.apply_saved(saved, &mut set)
     }
 
+    /// Moves an ssh config host into the included config file `file`.
     fn move_host(&mut self, name: &str, file: &std::path::Path) -> Result<(), String> {
         let h = self.host_named(name)?;
         let mut set = self.load_set();
@@ -459,11 +517,13 @@ impl GuiApp {
         self.apply_saved(Saved::Ssh(h.name), &mut set)
     }
 
+    /// Sets whether the sidebar lists hidden hosts (kept in `state.toml`).
     pub fn set_show_hidden(&mut self, show: bool) {
         self.geometry.show_hidden = show;
         self.geometry_changed();
     }
 
+    /// Empties the connection history on disk and in memory.
     pub fn clear_history(&mut self) {
         match self.history.update(&self.history_path, History::clear) {
             Ok(()) => self.warn("History cleared"),
@@ -471,6 +531,7 @@ impl GuiApp {
         }
     }
 
+    /// Records a connection to host `name` now, saving the history file.
     pub fn record(&mut self, name: &str, kind: ConnKind) {
         if let Err(e) = self.history.update(&self.history_path, |h| h.record(name, kind, history::now())) {
             self.warn(format!("could not save history: {e:#}"));
@@ -507,6 +568,7 @@ impl GuiApp {
         };
         let items: Vec<(String, hosts::Probe)> =
             idx.into_iter().filter_map(|i| self.hosts.get(i)).map(|h| (h.name.clone(), h.probe(sets.as_deref()))).collect();
+        // Show "checking" right away; results arrive as `Msg::HostStatus`.
         for (n, _) in &items {
             self.statuses.insert(n.clone(), Status::Checking);
         }
@@ -525,6 +587,7 @@ impl GuiApp {
         self.sidebar.selected_host(&self.sidebar_ctx())
     }
 
+    /// What the sidebar needs to draw, borrowed from the app.
     fn sidebar_ctx(&self) -> SidebarCtx<'_> {
         SidebarCtx {
             hosts: &self.hosts,
@@ -542,11 +605,14 @@ impl GuiApp {
             self.warn(format!("unknown host: {}", f.host));
             return;
         };
+        // Restarting: stop any earlier run of the same forward and drop dead entries.
         st.stop(f);
         st.running.retain(|r| &r.fwd != f || r.handle.state().is_live());
         if self.ssh_version.is_none() {
             self.ssh_version = Some(skiff_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
         }
+        // Prompts need the askpass broker and an ssh new enough to honour it;
+        // otherwise run in BatchMode so ssh fails instead of waiting for input.
         let can_prompt = self.askpass.is_some() && self.ssh_version.flatten().is_none_or(skiff_core::sshver::supports_askpass_require);
         let tag = st.new_tag();
         let mut args = f.background_args(&host);
@@ -576,6 +642,8 @@ impl GuiApp {
             else {
                 return false;
             };
+            // After 2 s with output: record if still alive, stop tracking either
+            // way. Before that, keep waiting unless the terminal has an error.
             match &mut t.session {
                 Some(s) if at.elapsed() >= Duration::from_secs(2) && s.generation() > 0 => {
                     if s.is_alive() {
@@ -586,6 +654,7 @@ impl GuiApp {
                 _ => t.error.is_none(),
             }
         });
+        // Forwards are recorded once, the first time they reach Running.
         for r in &mut self.forwards.running {
             if !r.recorded && r.handle.state() == ForwardState::Running {
                 r.recorded = true;
@@ -598,6 +667,8 @@ impl GuiApp {
         self.forwards.prune(&self.cfg.forwards);
     }
 
+    /// Carries out what the user asked for in the sidebar; failures become
+    /// status-bar warnings.
     fn on_sidebar(&mut self, a: SidebarAction) {
         match a {
             SidebarAction::OpenTerminal(h) => {
@@ -691,6 +762,7 @@ impl GuiApp {
         }
     }
 
+    /// Built-in theme names, then config themes that don't reuse one.
     pub fn theme_names(&self) -> Vec<String> {
         let mut names: Vec<String> = builtin().into_iter().map(|t| t.name).collect();
         for t in &self.cfg.themes {
@@ -701,6 +773,7 @@ impl GuiApp {
         names
     }
 
+    /// Carries out the item chosen in the quick switcher.
     fn on_switch(&mut self, item: Item) {
         match item {
             Item::Host(i) => {
@@ -728,6 +801,7 @@ impl GuiApp {
             Item::Command(Cmd::Forwards) => self.open_forwards(),
             Item::Command(Cmd::CheckStatus) => self.check_status(None),
             Item::Command(Cmd::ReloadConfig) => self.reload_config(),
+            // Snippets go to the focused pane of the active terminal tab.
             Item::Snippet(i) => {
                 let Some(snippet) = self.cfg.snippets.get(i).cloned() else {
                     return;
@@ -739,6 +813,8 @@ impl GuiApp {
         }
     }
 
+    /// Draws the quick switcher while open: resets it and remembers focus
+    /// when it opens, and gives focus back when it closes.
     fn switcher_ui(&mut self, ui: &mut Ui) {
         if self.switcher_open && !self.switcher_was_open {
             self.switcher = SwitcherState { just_opened: true, ..Default::default() };
@@ -748,6 +824,8 @@ impl GuiApp {
         if !self.switcher_open {
             return;
         }
+        // Candidates: hosts, open tabs, themes, commands, and the snippets
+        // that apply to the active terminal's host.
         let tabs: Vec<(u64, String)> = (0..self.tabs.len()).map(|i| (self.tabs[i].id, self.tab_title(i))).collect();
         let ctx = crate::switcher::RankCtx {
             show_hidden: self.geometry.show_hidden,
@@ -780,6 +858,8 @@ impl GuiApp {
 
     // ----- geometry ---------------------------------------------------
 
+    /// Marks `state.toml` as needing a save; the timer starts at the first
+    /// change, so a burst of changes saves once.
     fn geometry_changed(&mut self) {
         self.geometry_dirty.get_or_insert_with(Instant::now);
     }
@@ -795,10 +875,13 @@ impl GuiApp {
 
     // ----- actions ----------------------------------------------------
 
+    /// Whether the active tab is a terminal (shell-owned chords then go to it).
     fn in_terminal(&self) -> bool {
         matches!(self.tabs.get(self.active).map(|t| &t.kind), Some(TabKind::Terminal(_)))
     }
 
+    /// Runs an app action. Copy, paste, find and zoom are queued in
+    /// `view_actions` for the active view to handle.
     pub fn do_action(&mut self, a: Action) {
         match a {
             Action::QuickSwitcher | Action::NewTab => self.switcher_open = true,
@@ -815,6 +898,7 @@ impl GuiApp {
             }
             Action::Settings => self.open_settings(),
             Action::UiScaleUp | Action::UiScaleDown | Action::UiScaleReset => {
+                // Steps of 0.1, rounded to one decimal so repeats don't drift.
                 let cur = self.cfg.gui.ui_scale;
                 let next = match a {
                     Action::UiScaleUp => cur + 0.1,
@@ -853,6 +937,7 @@ impl GuiApp {
             Action::SplitRight => t.split(Dir::Right),
             Action::SplitDown => t.split(Dir::Down),
             Action::FocusNextPane => t.focus_next(true),
+            // Closing the last pane closes the tab.
             Action::ClosePane if !t.close_focused() => self.request_close_tab(id),
             Action::MovePaneLeft => _ = t.move_focused(Zone::Left),
             Action::MovePaneRight => _ = t.move_focused(Zone::Right),
@@ -876,6 +961,7 @@ impl GuiApp {
             self.active = from_i;
             return;
         }
+        // Only a different terminal tab, dropped on a pane that still exists.
         let target_ok =
             matches!(self.tabs.iter().find(|t| t.id == into).map(|t| &t.kind), Some(TabKind::Terminal(t)) if t.layout.contains(d.target));
         if d.from == into || !target_ok || !matches!(self.tabs[from_i].kind, TabKind::Terminal(_)) {
@@ -883,6 +969,7 @@ impl GuiApp {
         }
         let Tab { kind: TabKind::Terminal(src), .. } = self.tabs.remove(from_i) else { return };
         let Some(into_i) = self.tabs.iter().position(|t| t.id == into) else { return };
+        // If the merge is refused, put the source tab back where it was.
         if let TabKind::Terminal(t) = &mut self.tabs[into_i].kind
             && let Err(back) = t.absorb(*src, d.target, d.zone)
         {
@@ -908,6 +995,7 @@ impl GuiApp {
             .events
             .iter()
             .filter_map(|e| match e {
+                // AltGr typing is text, never a shortcut.
                 Event::KeyDown { mods, text, .. } if crate::keys::altgr_text(*mods, text.as_deref()) => None,
                 Event::KeyDown { key, mods, .. } => self.keymap.match_key(key, *mods, in_term).map(|a| (key.clone(), *mods, a)),
                 _ => None,
@@ -919,6 +1007,8 @@ impl GuiApp {
         }
     }
 
+    /// Applies everything the engine sent since last frame; true if there
+    /// was anything (so another frame is needed).
     fn handle_messages(&mut self) -> bool {
         let msgs = self.engine.drain();
         let any = !msgs.is_empty();
@@ -950,6 +1040,9 @@ impl GuiApp {
                         f.on_transfer(ev, &ctx);
                     }
                 }
+                // Password / host-key questions: from a forward still running go
+                // to the Forwards tab; from a file pane go to that pane; others
+                // are refused.
                 Msg::Ask(req) if req.tag.starts_with(crate::forwards::TAG_PREFIX) => {
                     let live = self.forwards.running.iter().any(|r| r.tag == req.tag && r.handle.state().is_live());
                     if live {
@@ -968,6 +1061,7 @@ impl GuiApp {
                     }
                 }
                 Msg::Files { tab, side, ev } => {
+                    // A successful SFTP connect counts as a files connection in history.
                     if let crate::files::FilesEvent::Connected { result: Ok(_), .. } = &ev
                         && let Some(TabKind::Files(f)) = self.tabs.iter().find(|t| t.id == tab).map(|t| &t.kind)
                         && let Some(Location::Host(h)) = f.panes.get(side).map(|p| &p.loc)
@@ -1004,6 +1098,7 @@ impl GuiApp {
             ui.request_repaint_in(Duration::ZERO);
         }
         self.watch_config(ui);
+        // A host named on the command line opens once, on the first frame.
         if let Some((name, files)) = self.open.take() {
             match self.hosts.iter().find(|h| h.name == name).cloned() {
                 Some(h) if files => {
@@ -1019,12 +1114,14 @@ impl GuiApp {
         if std::mem::take(&mut self.drag_live) {
             ui.input_mut().take_key(&skiff_ui::input::Key::Escape, skiff_ui::input::Modifiers::NONE);
         }
+        // Shortcuts are skipped while the settings tab records a new chord.
         if !self.settings.capturing() || !self.tabs.get(self.active).is_some_and(|t| matches!(t.kind, TabKind::Settings)) {
             self.handle_shortcuts(ui);
         }
         self.track_window_size(ui);
         self.record_connections();
 
+        // Layout: body (sidebar + main area) over a status bar.
         let win = ui.window_rect();
         let p = self.theme.palette;
         ui.painter().rect(win, p.bg, 0.0);
@@ -1039,6 +1136,8 @@ impl GuiApp {
             if self.geometry.sidebar_width != before {
                 self.geometry_changed();
             }
+            // The sidebar borrows the app through its ctx, so its own state is
+            // taken out for the call.
             let mut sb = std::mem::take(&mut self.sidebar);
             let ctx = self.sidebar_ctx();
             let a = ui.region(Id::new("region-hosts"), "Hosts", |ui| sidebar(ui, side, &mut sb, &ctx));
@@ -1056,6 +1155,8 @@ impl GuiApp {
         self.drag_live = ui.dragging();
     }
 
+    /// Keeps the window size in `geometry`; the first size seen is only
+    /// recorded, later changes schedule a save.
     fn track_window_size(&mut self, ui: &mut Ui) {
         let win = ui.window_rect();
         if win.w <= 0 || win.h <= 0 {
@@ -1073,6 +1174,8 @@ impl GuiApp {
         }
     }
 
+    /// Saves geometry once it has been dirty for `GEOMETRY_SAVE_DELAY` and no
+    /// mouse button is held (mid-drag); otherwise asks for a frame then.
     fn save_geometry_when_due(&mut self, ui: &mut Ui) {
         if let Some(since) = self.geometry_dirty {
             let age = since.elapsed();
@@ -1084,6 +1187,8 @@ impl GuiApp {
         }
     }
 
+    /// The tab strip (with the Settings gear and any close question) above
+    /// the active tab's content; handles tab drags, reordering and closing.
     fn main_area(&mut self, ui: &mut Ui, rect: Rect) {
         let parts = ui.split_v(rect, &[L::Px(34), L::Fill], 0);
         let (strip, content) = (parts[0], parts[1]);
@@ -1106,6 +1211,7 @@ impl GuiApp {
         if gear {
             self.open_settings();
         }
+        // A terminal tab dragged off the strip can be dropped onto a pane.
         if let Some(i) = r.dragged_out
             && let Some(Tab { id, kind: TabKind::Terminal(_) }) = self.tabs.get(i)
         {
@@ -1139,6 +1245,7 @@ impl GuiApp {
         if r.plus_clicked {
             self.switcher_open = true;
         }
+        // Closing or moving may have left `active` past the end.
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
         ui.region(Id::new("region-content"), "Content", |ui| self.tab_content(ui, content));
     }
@@ -1161,6 +1268,7 @@ impl GuiApp {
         let mut dropped = None;
         match &mut tab.kind {
             TabKind::Terminal(t) => {
+                // Settings may have changed since last frame: push them to every pane.
                 for p in &mut t.panes {
                     p.term.announce = self.cfg.gui.announce_output;
                     p.term.confirm_paste = self.cfg.settings.confirm_multiline_paste;
@@ -1196,6 +1304,8 @@ impl GuiApp {
             }
             TabKind::Forwards => show_forwards = true,
         }
+        // Settings, forwards and tab drops need `&mut self`, so they run after
+        // the borrow of the tab ends.
         if let Some((d, into)) = dropped {
             self.drop_tab_on_pane(d, into);
         }
@@ -1210,6 +1320,7 @@ impl GuiApp {
     /// Reloads `config.toml` after an outside edit: checked once a second
     /// while the window has focus, and at once when it regains focus.
     fn watch_config(&mut self, ui: &mut Ui) {
+        // Track window focus; regaining it polls at once.
         let mut poll_now = false;
         for e in &ui.input().events {
             match e {
@@ -1268,6 +1379,8 @@ impl GuiApp {
         }
     }
 
+    /// The bottom bar: the active view's status on the left; the hovered host,
+    /// else the newest warning, in the middle; tab count and theme on the right.
     fn status_bar(&mut self, ui: &mut Ui, rect: Rect) {
         let p = self.theme.palette;
         ui.painter().rect(rect, p.surface, 0.0);
@@ -1301,6 +1414,8 @@ impl GuiApp {
         if let Some(h) = hovered {
             label(ui, parts[1], &h, Some(p.fg));
         } else if let Some(w) = self.warnings.last().cloned() {
+            // Use the live text (with its repeat mark) only if it is still for
+            // this warning, so a repeated warning is announced again.
             let live = self.warning_live.trim_end_matches(skiff_ui::a11y::REPEAT_MARK);
             let name = if live == w { self.warning_live.as_str() } else { w.as_str() };
             if let Some(n) = ui.a11y_node(Id::new("status-warning"), skiff_ui::a11y::Role::Status, name) {
@@ -1313,6 +1428,8 @@ impl GuiApp {
 }
 
 impl App for GuiApp {
+    /// Runs one frame with the retained UI state and hands over any fonts
+    /// the settings screen picked.
     fn frame(&mut self, ctx: &mut FrameCtx) {
         let mut st = std::mem::take(&mut self.ui_state);
         let style = self.style.clone();
@@ -1323,6 +1440,7 @@ impl App for GuiApp {
         }
     }
 
+    /// On quit: stops running forwards and saves pending geometry.
     fn exit(&mut self) {
         self.forwards.stop_all();
         self.flush_geometry();

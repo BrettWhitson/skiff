@@ -6,6 +6,9 @@ use skiff_ui::input::{Event, Key, Modifiers};
 
 use crate::keys::Keymap;
 
+/// The crossterm key event for a toolkit key, for `encode_key`; `None` for
+/// keys the terminal has no encoding for. Shift is folded into BackTab and
+/// characters (which carry their own case).
 pub fn to_key_event(key: &Key, mods: Modifiers) -> Option<KeyEvent> {
     let code = match key {
         Key::Char(c) => KeyCode::Char(*c),
@@ -46,6 +49,7 @@ pub fn to_key_event(key: &Key, mods: Modifiers) -> Option<KeyEvent> {
 /// (sent as ESC + key, its `Text` dropped). AltGr (Ctrl+Alt) text passes.
 pub fn route(events: &[Event], keymap: &Keymap, app_cursor: bool) -> Vec<u8> {
     let mut out = vec![];
+    // Set when a KeyDown already sent (or swallowed) the text its `Text` event repeats.
     let mut skip_text = false;
     for e in events {
         match e {
@@ -58,11 +62,13 @@ pub fn route(events: &[Event], keymap: &Keymap, app_cursor: bool) -> Vec<u8> {
                     _ => {}
                 }
             }
+            // An app shortcut: not sent (nor its text), unless the keys produce AltGr text.
             Event::KeyDown { key, mods, text } => {
                 if !crate::keys::altgr_text(*mods, text.as_deref()) && keymap.match_key(key, *mods, true).is_some() {
                     skip_text = text.is_some();
                     continue;
                 }
+                // Plain printable keys are sent by their `Text` event; others are encoded here.
                 let altgr = mods.ctrl && mods.alt;
                 let printable = text.is_some() && (!mods.ctrl || mods.alt) && !mods.logo;
                 if printable && !(mods.alt && !altgr) {

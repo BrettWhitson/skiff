@@ -1,5 +1,6 @@
-//! Split pane tests: layout math, focus routing, accessible names and pty
-//! sizes (only the local test server is ever connected to).
+//! Split pane tests: layout math, focus routing, accessible names, pty
+//! sizes, drag and drop, snapping and minimum sizes (only the local test
+//! server is ever connected to).
 
 use skiff_ui::a11y::{A11yAction, Role};
 use skiff_ui::geom::{Point, Rect};
@@ -10,6 +11,7 @@ use crate::app::TabKind;
 use crate::app::tests::Fixture;
 
 #[test]
+/// Splits, nesting, ratio bounds, `ratio_at` and removal lay panes out as expected.
 fn layout_math() {
     let one = Layout::Pane(0);
     assert_eq!(one.arrange(Rect::new(0, 0, 100, 50), 5), (vec![(0, Rect::new(0, 0, 100, 50))], vec![]));
@@ -45,6 +47,7 @@ fn layout_math() {
 }
 
 #[test]
+/// Divider keys stay unique and stable when a removal moves a split up the tree.
 fn divider_keys_survive_restructure() {
     let mut l = Layout::Pane(0);
     l.split(0, Dir::Right, 1);
@@ -56,10 +59,12 @@ fn divider_keys_survive_restructure() {
     assert_eq!(keys(&l), vec![2, 3]);
 }
 
+/// A KeyDown event with no text.
 fn key(key: Key, mods: Modifiers) -> Event {
     Event::KeyDown { key, mods, text: None }
 }
 
+/// The active tab's panes (panics if it is not a terminal tab).
 fn split_of(f: &Fixture) -> &TermSplit {
     match &f.app.tabs[f.app.active].kind {
         TabKind::Terminal(t) => t,
@@ -77,6 +82,7 @@ fn alpha() -> (Fixture, u64) {
 }
 
 #[test]
+/// Split, click, F6, the focus shortcut and close pane move focus to the right pane.
 fn focus_moves_between_panes() {
     let (mut f, tab) = alpha();
     let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
@@ -112,6 +118,7 @@ fn focus_moves_between_panes() {
 }
 
 #[test]
+/// Panes and the divider get accessible names; arrows and Increment step snap points.
 fn panes_and_divider_are_named_and_keyboard_resizable() {
     let (mut f, _) = alpha();
     f.app.do_action(Action::SplitDown);
@@ -136,6 +143,7 @@ fn panes_and_divider_are_named_and_keyboard_resizable() {
 }
 
 #[test]
+/// After a split each pane's pty is sized to its half (same rows, columns shared).
 fn each_pane_gets_its_own_pty_size() {
     let fx = skiff_testserver::TestFixture::with_shell(skiff_testserver::FixtureAuth::Key).unwrap();
     let mut args = fx.ssh_options();
@@ -158,6 +166,7 @@ fn each_pane_gets_its_own_pty_size() {
 }
 
 #[test]
+/// The terminal menu's Split down and Close pane act on the pane it was opened on.
 fn terminal_menu_splits_and_closes_panes() {
     let (mut f, _) = alpha();
     let menu_pick = |f: &mut Fixture, name: &str, item: &str| {
@@ -174,6 +183,7 @@ fn terminal_menu_splits_and_closes_panes() {
 }
 
 #[test]
+/// `insert` on each side, `swap`, `axis_split` and `equalize` reshape the tree correctly.
 fn tree_moves_swaps_and_equalizes() {
     // 0 | 1, then 2 dropped on the bottom of 1, then 3 on the left of 0.
     let mut l = Layout::Pane(0);
@@ -197,6 +207,7 @@ fn tree_moves_swaps_and_equalizes() {
 }
 
 #[test]
+/// `enforce_min` keeps panes at the minimum, or shares by need when there's no room.
 fn panes_keep_a_minimum_size() {
     let mut l = Layout::Pane(0);
     l.split(0, Dir::Right, 1);
@@ -213,6 +224,7 @@ fn panes_keep_a_minimum_size() {
 }
 
 #[test]
+/// Drop zones, their previews and fit checks; snapping and keyboard steps.
 fn drop_zones_and_snapping() {
     let r = Rect::new(100, 100, 300, 300);
     let at = |x, y| Zone::at(r, Point::new(100 + x, 100 + y));
@@ -247,11 +259,13 @@ fn three() -> (Fixture, u64) {
     (f, tab)
 }
 
+/// Pane keys of the active tab in reading order.
 fn keys_of(f: &Fixture) -> Vec<u64> {
     split_of(f).panes.iter().map(|p| p.key).collect()
 }
 
 #[test]
+/// Keyboard pane moves (swaps), divider resizes and equalize, with focus following.
 fn keyboard_moves_resizes_and_equalizes_panes() {
     let (mut f, tab) = three();
     assert_eq!((keys_of(&f), split_of(&f).focused_key()), (vec![0, 1, 2], 2));
@@ -287,6 +301,7 @@ fn keyboard_moves_resizes_and_equalizes_panes() {
 }
 
 #[test]
+/// A tab joins another and a pane pops out to its own tab, keeping the same terminal.
 fn tabs_join_and_panes_pop_out_keeping_sessions() {
     let (mut f, a) = alpha();
     let beta = f.app.hosts[1].clone();
@@ -333,6 +348,7 @@ fn drag(f: &mut Fixture, from: Point, path: &[Point]) {
 }
 
 #[test]
+/// Dragging a tab onto a pane edge joins it (Esc cancels); a grip drag to the strip pops it out.
 fn dragging_a_tab_onto_a_pane_edge_splits_and_esc_cancels() {
     let (mut f, a) = alpha();
     let beta = f.app.hosts[1].clone();
@@ -374,6 +390,7 @@ fn dragging_a_tab_onto_a_pane_edge_splits_and_esc_cancels() {
 }
 
 #[test]
+/// A divider drag snaps near a snap point, Alt drags freely, a double-click equalizes.
 fn divider_drag_snaps_alt_frees_double_click_equalizes() {
     let (mut f, _) = alpha();
     f.app.do_action(Action::SplitRight);
@@ -406,6 +423,7 @@ fn divider_drag_snaps_alt_frees_double_click_equalizes() {
 }
 
 #[test]
+/// Alt+drag of a pane onto another's centre swaps them without selecting text.
 fn alt_drag_moves_a_pane_onto_another() {
     let (mut f, _) = three();
     let first = f.h.tree().find("Terminal: alpha, pane 1 of 3").unwrap().bounds.center();
@@ -417,6 +435,7 @@ fn alt_drag_moves_a_pane_onto_another() {
 }
 
 #[test]
+/// The minimum pane size clamps only the drawn layout; the stored ratio returns when wide.
 fn minimum_size_does_not_change_stored_shares() {
     let (mut f, _) = alpha();
     f.app.do_action(Action::SplitRight);
@@ -441,6 +460,7 @@ fn minimum_size_does_not_change_stored_shares() {
 }
 
 #[test]
+/// A tab merged before its connection is recorded still lands in the history.
 fn a_tab_merged_early_is_still_recorded_in_history() {
     let fx = skiff_testserver::TestFixture::with_shell(skiff_testserver::FixtureAuth::Key).unwrap();
     let mut args = fx.ssh_options();

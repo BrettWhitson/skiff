@@ -19,11 +19,15 @@ use skiff_ui::widgets::{
     MenuItem, TextInputOpts, button, context_menu, dropdown_labeled, elide, label, list_named, open_context_menu, text_input,
 };
 
+/// Height of one list row (group header or host).
 const ROW_H: i32 = 26;
 
+/// One row of the flattened host list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Row {
+    /// A group header carrying the group's name (`Custom` or a config path).
     Header(String),
+    /// A host, as an index into `SidebarCtx::hosts`.
     Host(usize),
 }
 
@@ -32,44 +36,67 @@ enum Row {
 /// or while a menu or confirmation is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarAction {
+    /// Open a terminal tab to the host.
     OpenTerminal(String),
+    /// Open a file-transfer tab to the host.
     OpenFiles(String),
+    /// Open the Forwards tab with a new forward form for the host.
     Forward(String),
+    /// Probe the host's status.
     Check(String),
+    /// Probe every host's status.
     CheckAll,
+    /// Open the host in the settings' connection editor.
     Edit(String),
+    /// Add a copy of the host next to it.
     Duplicate(String),
     /// Move a host into ssh config file `.1`.
     MoveTo(String, PathBuf),
+    /// Hide (`true`) or unhide (`false`) the host.
     SetHidden(String, bool),
+    /// Delete the host (already confirmed in the sidebar).
     Delete(String),
+    /// Change the host-list sort order.
     SetSort(SortMode),
+    /// Flip whether hidden hosts are listed.
     ToggleShowHidden,
+    /// Open the port-forward manager tab.
     OpenForwards,
+    /// Start creating a new host.
     NewHost,
 }
 
 /// What the sidebar shows, borrowed from the app.
 pub struct SidebarCtx<'a> {
+    /// Every known host, custom and from ssh config.
     pub hosts: &'a [HostEntry],
+    /// Last status probe result per host name.
     pub statuses: &'a HashMap<String, Status>,
+    /// Connection history, for "Recent" sorting and "last connected".
     pub history: &'a History,
+    /// Current sort order (used when no filter is typed).
     pub sort: SortMode,
+    /// Whether hidden hosts are listed.
     pub show_hidden: bool,
     /// The ssh config files (for "Move to file…").
     pub files: &'a [PathBuf],
 }
 
+/// The sidebar's own state, kept across frames.
 #[derive(Debug, Default)]
 pub struct Sidebar {
+    /// Text in the filter box; non-empty switches to fuzzy-ranked results.
     pub filter: String,
     /// Selected row in the flattened list.
     selected: Option<usize>,
     /// The selected host's name, so the selection follows it when the
     /// rows change.
     selected_name: Option<String>,
+    /// Names of collapsed groups (ignored while filtering).
     collapsed: HashSet<String>,
+    /// The host the open context menu (and its "Move to file" submenu) acts on.
     menu_host: Option<String>,
+    /// Host awaiting the inline delete confirmation.
     confirm_delete: Option<String>,
     /// The delete question just appeared: focus goes to Cancel.
     confirm_new: bool,
@@ -77,6 +104,8 @@ pub struct Sidebar {
     pub hovered: Option<String>,
 }
 
+/// The group a host is listed under: "Custom", or the ssh config file it
+/// came from.
 fn group_of(h: &HostEntry) -> String {
     match (&h.source, &h.source_file) {
         (Source::Custom(_), _) => "Custom".into(),
@@ -97,9 +126,12 @@ impl Sidebar {
         self.selected_name.clone().filter(|n| ctx.hosts.iter().any(|h| &h.name == n))
     }
 
+    /// The flattened list: a header per non-empty group followed by its
+    /// hosts (unless collapsed), sorted by the sort mode or by fuzzy score.
     fn rows(&self, ctx: &SidebarCtx) -> Vec<Row> {
         let q = self.filter.trim();
         let mut shown = visible(ctx.hosts, ctx.show_hidden);
+        // No filter: the chosen sort. Filter: only matches, best score first.
         if q.is_empty() {
             history::order(ctx.hosts, &mut shown, ctx.sort, ctx.history);
         } else {
@@ -121,6 +153,7 @@ impl Sidebar {
             if members.is_empty() {
                 continue;
             }
+            // Filtering always expands groups so no match is hidden.
             let collapsed = q.is_empty() && self.collapsed.contains(&g);
             out.push(Row::Header(g));
             if !collapsed {
@@ -131,6 +164,8 @@ impl Sidebar {
     }
 }
 
+/// Draws a host's status marker: a solid dot when probed directly (green
+/// online, red offline, amber not-ssh), a ring otherwise.
 fn status_dot(ui: &mut Ui, r: Rect, s: Option<&Status>) {
     let p = ui.style().palette;
     let d = ui.px(8);
@@ -157,6 +192,8 @@ fn status_dot(ui: &mut Ui, r: Rect, s: Option<&Status>) {
     }
 }
 
+/// Draws the sidebar into `rect` and handles its input; returns what the
+/// user asked for this frame, if anything.
 pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> Option<SidebarAction> {
     let hosts = ctx.hosts;
     let p = ui.style().palette;
@@ -167,6 +204,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let (head_r, list_r, confirm_r, button_r) = (parts[0], parts[1], parts[2], parts[3]);
     let mut action = None;
 
+    // Header: filter box, sort dropdown and the "⋯" menu button.
     let head = ui.split_h(head_r, &[L::Fill, L::Px(84), L::Px(30)], 4);
     let fr = text_input(
         ui,
@@ -175,6 +213,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
         &mut sb.filter,
         TextInputOpts { password: false, placeholder: "Filter hosts", ..Default::default() },
     );
+    // A new filter changes the rows, so drop the selection.
     if fr.changed {
         sb.selected = None;
         sb.selected_name = None;
@@ -219,6 +258,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let mut hovered = None;
     let collapsed = &sb.collapsed;
     let filtering = !sb.filter.trim().is_empty();
+    // Accessible name per row; the list widget draws each row with the closure below.
     let row_name = |i: usize| match &rows[i] {
         Row::Header(g) => format!("{g}, {}", if collapsed.contains(g) && !filtering { "collapsed" } else { "expanded" }),
         Row::Host(hi) => {
@@ -248,6 +288,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
                     let name_w = ui.measure(&h.name, FontKind::Ui, px).ceil() as i32;
                     let color = if h.hidden { p.muted } else { p.fg };
                     ui.painter().text(Point::new(x, y), &h.name, FontKind::Ui, px, color);
+                    // First tag as a chip at the right edge, only if it leaves the name room.
                     let mut right = r.right() - ui.px(6);
                     if let Some(tag) = h.tags.first() {
                         let tw = ui.measure(tag, FontKind::Ui, small).ceil() as i32 + ui.px(10);
@@ -261,6 +302,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
                             right = chip.x - ui.px(6);
                         }
                     }
+                    // The hostname, elided, in whatever space is left (skipped when it equals the name).
                     let dx = x + name_w + ui.px(10);
                     let room = right - dx;
                     if room > ui.px(30) && h.hostname != h.name {
@@ -284,16 +326,19 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
         }
         sb.selected = before.filter(|&b| b < rows.len() && matches!(rows[b], Row::Host(_)));
     }
+    // Remember the selected host by name; a header selection has none.
     sb.selected_name = match sb.selected.and_then(|i| rows.get(i)) {
         Some(Row::Host(h)) => Some(hosts[*h].name.clone()),
         _ => None,
     };
+    // Enter on a header toggles its group.
     if let Some(i) = lr.activated
         && let Some(Row::Header(g)) = rows.get(i)
         && !sb.collapsed.remove(g)
     {
         sb.collapsed.insert(g.clone());
     }
+    // Delete on a focused host row asks for confirmation.
     if lr.response.focused
         && let Some(Row::Host(h)) = sb.selected.and_then(|i| rows.get(i))
         && ui.input_mut().take_key(&Key::Delete, Modifiers::NONE)
@@ -306,6 +351,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     {
         action = Some(SidebarAction::OpenTerminal(hosts[*h].name.clone()));
     }
+    // Right-click on a host opens its context menu; the host is remembered by name.
     let menu = Id::new("sidebar-menu");
     let move_menu = Id::new("sidebar-move-menu");
     if let Some((i, at)) = lr.context
@@ -348,6 +394,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
             _ => {}
         }
     }
+    // "Move to file" submenu: every config file except the host's current one.
     let current = host.and_then(|h| h.source_file.clone());
     let names: Vec<String> = ctx.files.iter().map(|f| display_path(f)).collect();
     let move_items: Vec<MenuItem> =
@@ -356,6 +403,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
         action = Some(SidebarAction::MoveTo(h, ctx.files[doc].clone()));
     }
 
+    // Inline delete confirmation; dropped if the host disappeared meanwhile.
     if let Some(h) = sb.confirm_delete.clone() {
         match hosts.iter().find(|x| x.name == h) {
             None => sb.confirm_delete = None,

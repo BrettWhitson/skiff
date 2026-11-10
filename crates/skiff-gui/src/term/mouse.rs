@@ -8,10 +8,15 @@ use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 /// Where and how the terminal's mouse is being reported.
 #[derive(Clone, Copy)]
 pub struct MouseView {
+    /// The cell area (inside the padding).
     pub inner: Rect,
+    /// Cell size, physical px.
     pub cell: Size,
+    /// Which events the program asked for.
     pub mode: MouseProtocolMode,
+    /// How reports are encoded (X10, UTF-8 or SGR).
     pub enc: MouseProtocolEncoding,
+    /// Modifiers held this frame (reported with each event).
     pub mods: Modifiers,
     /// The terminal is the topmost widget under the pointer.
     pub on_top: bool,
@@ -20,7 +25,9 @@ pub struct MouseView {
 /// The button held down and the last cell reported (motion is sent once per cell).
 #[derive(Debug, Default)]
 pub struct MouseState {
+    /// The reported button still held (0 left, 1 middle, 2 right).
     held: Option<u8>,
+    /// The cell of the last report.
     last: Option<(u16, u16)>,
 }
 
@@ -40,6 +47,7 @@ impl MouseState {
     }
 }
 
+/// The protocol's button number; `None` for buttons it has no code for.
 fn button(b: &MouseButton) -> Option<u8> {
     match b {
         MouseButton::Left => Some(0),
@@ -84,6 +92,7 @@ pub fn reports(events: &[Event], view: &MouseView, st: &mut MouseState) -> Vec<V
                 send(MouseEv::Release(st.held.take().unwrap_or(0)), at);
                 st.last = Some(at);
             }
+            // Motion: once per cell; without a held button, only over the terminal.
             Event::MouseMove(p) => {
                 let at = cell_of(*p, inner, cell);
                 if st.last == Some(at) || (st.held.is_none() && (!on_top || !inner.contains(*p))) {
@@ -106,6 +115,7 @@ mod tests {
     use vt100::{MouseProtocolEncoding as E, MouseProtocolMode as M};
 
     #[test]
+    /// Press, drag and release are encoded at the right cells; a press outside is ignored.
     fn mouse_reports_cells() {
         let inner = Rect::new(10, 10, 800, 400);
         let cell = Size::new(8, 16);
@@ -130,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    /// A held button keeps reporting despite Shift / scrollback; mode off forgets it.
     fn reporting_follows_a_held_button_and_forgets_it_when_mode_ends() {
         let inner = Rect::new(0, 0, 800, 400);
         let cell = Size::new(8, 16);
@@ -149,6 +160,7 @@ mod tests {
     }
 
     #[test]
+    /// Presses where an overlay covers the terminal are not sent to the program.
     fn presses_under_an_overlay_are_not_reported() {
         let inner = Rect::new(0, 0, 800, 400);
         let cell = Size::new(8, 16);

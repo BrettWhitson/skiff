@@ -1,4 +1,5 @@
-//! The find bar of a terminal tab.
+//! The find bar of a terminal tab: query state over `skiff_core::termx::TermSearch`,
+//! the F3 / Enter stepping keys, and the bar widget drawn over the terminal.
 
 use skiff_core::terminal::TerminalSession;
 use skiff_core::termx::TermSearch;
@@ -12,7 +13,9 @@ use skiff_ui::widgets::{TextInputOpts, label, text_input};
 /// An open search: the query being typed and what it found.
 #[derive(Debug, Default)]
 pub struct SearchState {
+    /// The text in the find box.
     pub query: String,
+    /// Matches over scrollback and screen, and which one is current.
     pub found: TermSearch,
     /// Scroll to the current match on the next frame.
     pub scroll_due: bool,
@@ -21,9 +24,11 @@ pub struct SearchState {
 /// What the bar asked for this frame.
 #[derive(Debug, Default)]
 pub struct BarOut {
+    /// Esc in the box: close the bar.
     pub close: bool,
 }
 
+/// Shift alone (Shift+F3, Shift+Enter: the newer match).
 const SHIFT: Modifiers = Modifiers { ctrl: false, shift: true, alt: false, logo: false };
 
 impl SearchState {
@@ -78,6 +83,7 @@ pub fn bar(ui: &mut Ui, id: Id, rect: Rect, s: &mut SearchState) -> (bool, BarOu
     ui.painter().border(rect, p.control, bw, radius);
     let parts = ui.split_h(rect.inset(ui.px(4)), &[L::Fill, L::Px(96)], 6);
     let input = id.with("input");
+    // Esc closes; Shift+Enter steps newer (plain Enter is the input's submit: older).
     if ui.has_focus(input) {
         if ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
             out.close = true;

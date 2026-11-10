@@ -1,4 +1,5 @@
-//! vt100 screen → toolkit cell rows.
+//! vt100 screen → toolkit cell rows: colour mapping, selection and
+//! search highlights, and the cursor, painted as `CellRow` primitives.
 
 use skiff_ui::color::Color;
 use skiff_ui::display::{Cell, CellAttrs, Prim};
@@ -9,6 +10,8 @@ use crate::theme::{GuiTheme, xterm_256};
 
 use super::select::TermSelection;
 
+/// A vt100 colour in the theme's palette (16 ANSI from the theme, the rest
+/// xterm-256 or RGB); `None` for the default colour.
 fn color(c: vt100::Color, theme: &GuiTheme, bold: bool) -> Option<Color> {
     match c {
         vt100::Color::Default => None,
@@ -29,6 +32,8 @@ pub fn convert(cell: Option<&vt100::Cell>, theme: &GuiTheme) -> Cell {
     let ch = if c.is_wide_continuation() { '\0' } else { c.contents().chars().next().unwrap_or(' ') };
     let mut fg = color(c.fgcolor(), theme, c.bold()).unwrap_or(theme.term_fg);
     let mut bg = color(c.bgcolor(), theme, false);
+    // Inverse swaps fg and bg (a default bg becomes the terminal background);
+    // dim mixes the fg 40% towards the bg.
     if c.inverse() {
         let new_bg = fg;
         fg = bg.unwrap_or(theme.term_bg);
@@ -45,12 +50,14 @@ pub fn convert(cell: Option<&vt100::Cell>, theme: &GuiTheme) -> Cell {
     }
 }
 
+/// The visible screen as rows of toolkit cells.
 pub fn screen_rows(screen: &vt100::Screen, theme: &GuiTheme) -> Vec<Vec<Cell>> {
     let (rows, cols) = screen.size();
     (0..rows).map(|r| (0..cols).map(|c| convert(screen.cell(r, c), theme)).collect()).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// How the cursor is drawn this frame.
 pub enum CursorDraw {
     /// Focused and in the visible blink phase.
     Block,
@@ -78,6 +85,8 @@ pub fn draw_screen(
     painter.rect(rect, theme.term_bg, 0.0);
     painter.push_clip(rect);
     let mut rows = screen_rows(screen, theme);
+    // Selection: cells inside it get the selection background (rows are
+    // shifted by the scrollback offset into selection coordinates).
     if let Some(sel) = sel {
         for (r, cells) in rows.iter_mut().enumerate() {
             for (c, cell) in cells.iter_mut().enumerate() {
@@ -99,6 +108,7 @@ pub fn draw_screen(
             }
         }
     }
+    // One `CellRow` primitive per line, stopping at the rect's bottom.
     for (r, cells) in rows.iter().enumerate() {
         let origin = Point::new(rect.x, rect.y + r as i32 * cell.h);
         if origin.y >= rect.bottom() {
@@ -106,6 +116,8 @@ pub fn draw_screen(
         }
         painter.prim(Prim::CellRow { origin, cell, px, cells: cells.clone() });
     }
+    // The cursor only on the live screen (not scrolled back) and when shown;
+    // a wide character's cursor covers both cells.
     if let Some(kind) = cursor
         && !screen.hide_cursor()
         && screen.scrollback() == 0

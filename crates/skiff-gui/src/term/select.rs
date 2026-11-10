@@ -8,12 +8,15 @@ use skiff_ui::geom::{Point, Rect, Size};
 use skiff_ui::input::{Event, MouseButton};
 use skiff_ui::ui::{Id, Ui};
 
+/// Presses on the same cell within this long count as a double / triple click.
 const MULTI_CLICK: Duration = Duration::from_millis(450);
 
 /// (absolute row, column)
 pub type Pos = (i64, u16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a selection snaps to: single cells (drag), whole words (double
+/// click) or whole lines (triple click).
 pub enum SelMode {
     Char,
     Word,
@@ -21,6 +24,7 @@ pub enum SelMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A selection between two absolute cells (either order), with its mode.
 pub struct TermSelection {
     pub start: Pos,
     pub end: Pos,
@@ -33,6 +37,7 @@ impl TermSelection {
         if self.start <= self.end { (self.start, self.end) } else { (self.end, self.start) }
     }
 
+    /// Whether the absolute cell (`row`, `col`) is selected (reading-order range).
     pub fn contains(&self, row: i64, col: u16) -> bool {
         let (a, b) = self.ordered();
         (row, col) >= a && (row, col) <= b
@@ -40,17 +45,25 @@ impl TermSelection {
 }
 
 #[derive(Debug, Default)]
+/// Per-terminal selection state across frames.
 pub struct SelectState {
+    /// The current selection, if any.
     pub sel: Option<TermSelection>,
     /// Raw press and current pointer cells; word/line modes expand these.
     raw: Option<(Pos, Pos)>,
+    /// Mode chosen by the click count of the last press.
     mode: Option<SelMode>,
+    /// The left button is down (a selection is being made).
     pub dragging: bool,
+    /// The pointer left the press cell during this drag.
     moved: bool,
+    /// Time and cell of the last press (for multi-click detection).
     last_click: Option<(Instant, Pos)>,
+    /// Clicks in the current run: 1, 2 or 3.
     clicks: u8,
 }
 
+/// The absolute cell under `p`, clamped to the grid (`offset`: rows scrolled back).
 fn cell_at(p: Point, inner: Rect, cell: Size, offset: usize) -> Pos {
     let col = ((p.x - inner.x).max(0) / cell.w.max(1)) as u16;
     let row = ((p.y - inner.y).max(0) / cell.h.max(1)) as i64;
@@ -66,6 +79,7 @@ pub fn handle_mouse(ui: &mut Ui, _id: Id, inner: Rect, cell: Size, st: &mut Sele
     let events = ui.input().events.clone();
     for e in &events {
         match e {
+            // Press: count clicks (same cell, quick) to pick char / word / line mode.
             Event::MouseDown(MouseButton::Left, p) if inner.contains(*p) => {
                 let pos = cell_at(*p, inner, cell, offset);
                 let now = Instant::now();
@@ -86,6 +100,7 @@ pub fn handle_mouse(ui: &mut Ui, _id: Id, inner: Rect, cell: Size, st: &mut Sele
                     changed = true;
                 }
             }
+            // Drag: extend from the press cell; a char selection back on its start cell is none.
             Event::MouseMove(p) if st.dragging => {
                 let pos = cell_at(*p, inner, cell, offset);
                 if let Some((a, b)) = st.raw
@@ -98,6 +113,7 @@ pub fn handle_mouse(ui: &mut Ui, _id: Id, inner: Rect, cell: Size, st: &mut Sele
                     changed = true;
                 }
             }
+            // A single click without movement clears the selection.
             Event::MouseUp(MouseButton::Left, _) if st.dragging => {
                 st.dragging = false;
                 if !st.moved && st.clicks == 1 {
@@ -110,10 +126,12 @@ pub fn handle_mouse(ui: &mut Ui, _id: Id, inner: Rect, cell: Size, st: &mut Sele
     changed
 }
 
+/// Characters a double-click word includes (paths, hosts and emails stay whole).
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || "_-./~:@".contains(c)
 }
 
+/// The character at an absolute cell; a space if it is off screen or empty.
 fn char_at(screen: &vt100::Screen, row: i64, col: u16, offset: usize) -> char {
     let vis = row + offset as i64;
     if vis < 0 {
@@ -131,8 +149,10 @@ impl SelectState {
         }
         let cols = screen.size().1;
         let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        // Line: whole rows; word: grown to word boundaries on the visible screen.
         let (start, end) = match mode {
             SelMode::Line => ((a.0, 0), (b.0, cols.saturating_sub(1))),
+            // Word: widen the start left and the end right over word characters.
             _ => {
                 let mut s = a.1;
                 if is_word(char_at(screen, a.0, s, offset)) {
@@ -163,6 +183,7 @@ pub fn selection_text(screen: &vt100::Screen, sel: &TermSelection, offset: usize
         if vis < 0 || vis >= rows as i64 {
             continue;
         }
+        // First and last rows are partial; middle rows are whole.
         let c0 = if row == a.0 { a.1 } else { 0 };
         let c1 = if row == b.0 { b.1 } else { cols.saturating_sub(1) };
         let mut line = String::new();

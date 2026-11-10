@@ -1,3 +1,7 @@
+//! Tests for selection, clipboard, wheel scrollback, zoom, announcements,
+//! find and paste prompts; the `Live` ones drive a real session on the local
+//! SSH test fixture.
+
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -11,8 +15,10 @@ use super::*;
 use crate::keys::{Action, Keymap};
 use crate::theme::from_def;
 
+/// Cell size used by the selection-only tests.
 const CELL: Size = Size::new(8, 16);
 
+/// A 5 x 30 screen with `text` written to it.
 fn parser(text: &str) -> vt100::Parser {
     let mut p = vt100::Parser::new(5, 30, 0);
     p.process(text.as_bytes());
@@ -24,21 +30,25 @@ fn at(row: i32, col: i32) -> Point {
     Point::new(col * CELL.w + 4, row * CELL.h + 8)
 }
 
+/// One frame of `events` through the selection handler (view at the origin, no scrollback).
 fn mouse(h: &mut Harness, st: &mut SelectState, events: Vec<Event>) {
     h.frame(events, &mut |ui| {
         handle_mouse(ui, Id::new("t"), Rect::new(0, 0, 240, 80), CELL, st, 0);
     });
 }
 
+/// Move to `p` and press the left button.
 fn press(p: Point) -> Vec<Event> {
     vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p)]
 }
 
+/// Release the left button at `p`.
 fn release(p: Point) -> Vec<Event> {
     vec![Event::MouseUp(MouseButton::Left, p)]
 }
 
 #[test]
+/// A drag across two lines selects and extracts the text between.
 fn drag_selects_and_copies_text() {
     let p = parser("hello world\r\nsecond line");
     let mut h = Harness::new(300, 100, 1.0);
@@ -52,6 +62,7 @@ fn drag_selects_and_copies_text() {
 }
 
 #[test]
+/// A plain click (not part of a multi-click) clears an existing selection.
 fn click_without_drag_clears_selection() {
     let mut h = Harness::new(300, 100, 1.0);
     let mut st = SelectState::default();
@@ -67,6 +78,7 @@ fn click_without_drag_clears_selection() {
 }
 
 #[test]
+/// A double-click selects the whole path-like word under it.
 fn double_click_selects_word() {
     let p = parser("cd /var/log/nginx now");
     let mut h = Harness::new(300, 100, 1.0);
@@ -81,6 +93,7 @@ fn double_click_selects_word() {
 }
 
 #[test]
+/// A triple-click selects the whole line (trailing spaces trimmed).
 fn triple_click_selects_line() {
     let p = parser("first\r\n  the whole line  \r\nlast");
     let mut h = Harness::new(300, 100, 1.0);
@@ -96,6 +109,7 @@ fn triple_click_selects_line() {
 
 // ----- with a live session on the local test server ----------------------
 
+/// A terminal tab that runs ssh against the local test fixture.
 fn fixture_tab(fx: &skiff_testserver::TestFixture) -> TermTab {
     let mut args = fx.ssh_options();
     args.push("-tt".into());
@@ -106,6 +120,7 @@ fn fixture_tab(fx: &skiff_testserver::TestFixture) -> TermTab {
     TermTab::with_command(host, "ssh".into(), args, 500)
 }
 
+/// A focused terminal view on a live fixture session, driven frame by frame.
 struct Live {
     _fx: skiff_testserver::TestFixture,
     tab: TermTab,
@@ -115,10 +130,12 @@ struct Live {
 }
 
 impl Live {
+    /// A live view in an 800 x 400 harness.
     fn new() -> Live {
         Self::with_harness(Harness::new(800, 400, 1.0))
     }
 
+    /// A live view in `h`: starts the fixture, focuses the view, waits for the shell banner.
     fn with_harness(h: Harness) -> Live {
         let fx = skiff_testserver::TestFixture::with_shell(skiff_testserver::FixtureAuth::Key).unwrap();
         let tab = fixture_tab(&fx);
@@ -138,15 +155,18 @@ impl Live {
         l
     }
 
+    /// Draws one frame with `events` and app `actions`.
     fn frame(&mut self, events: Vec<Event>, mut actions: Vec<Action>) {
         let (tab, km, theme) = (&mut self.tab, &self.km, &self.theme);
         self.h.frame(events, &mut |ui| view(ui, Id::new("t"), ui.window_rect(), tab, theme, km, None, &mut actions));
     }
 
+    /// The session's current screen text.
     fn screen_text(&self) -> String {
         self.tab.session.as_ref().unwrap().parser.lock().unwrap().screen().contents()
     }
 
+    /// Waits (up to 15 s) until `s` is on screen, then draws a frame.
     fn wait_for(&mut self, s: &str) {
         let start = Instant::now();
         while !self.screen_text().contains(s) {
@@ -158,6 +178,7 @@ impl Live {
 }
 
 #[test]
+/// Paste sends clipboard text; selecting part of its echo and Copy puts that back.
 fn copy_and_paste_through_clipboard() {
     let mut l = Live::new();
     l.h.clipboard.text = Some("pasted-text".into());
@@ -175,6 +196,7 @@ fn copy_and_paste_through_clipboard() {
 }
 
 #[test]
+/// One wheel notch scrolls 3 lines at any interface zoom; typing returns to live output.
 fn wheel_scrolls_and_key_snaps_back() {
     let mut l = Live::new();
     l.tab.confirm_paste = false; // the multi-line paste is just test setup
@@ -194,6 +216,7 @@ fn wheel_scrolls_and_key_snaps_back() {
 }
 
 #[test]
+/// Zooming in shrinks the grid; ZoomReset restores it.
 fn zoom_changes_grid_size() {
     let fonts = skiff_ui::text::Fonts::load(None, None).expect("system fonts");
     let mut l = Live::with_harness(Harness::with_fonts(800, 400, 1.0, fonts));
@@ -208,6 +231,7 @@ fn zoom_changes_grid_size() {
 }
 
 #[test]
+/// Output from while the tab was hidden is not announced when it is shown.
 fn shown_again_does_not_reannounce_screen() {
     let mut l = Live::new();
     let start = Instant::now();
@@ -228,11 +252,13 @@ fn shown_again_does_not_reannounce_screen() {
     assert!(!l.tab.announcer.has_pending(), "switching to a tab reads nothing old");
 }
 
+/// Whether a text primitive equal to `s` was drawn last frame.
 fn on_screen(l: &Live, s: &str) -> bool {
     l.h.list().prims.iter().any(|p| matches!(p, skiff_ui::display::Prim::Text { text, .. } if text == s))
 }
 
 #[test]
+/// Find counts matches, F3 steps older, the current match is highlighted, Esc closes.
 fn gui_search_highlights_and_counts() {
     let mut l = Live::new();
     l.tab.session.as_mut().unwrap().write(b"needle one\rneedle two\rneedle three\r");
@@ -264,6 +290,7 @@ fn gui_search_highlights_and_counts() {
 }
 
 #[test]
+/// F3 steps the search only while the terminal or its find bar has focus.
 fn f3_is_only_taken_with_focus_in_the_terminal() {
     let mut l = Live::new();
     l.tab.session.as_mut().unwrap().write(b"needle one\rneedle two\r");
@@ -286,6 +313,7 @@ fn f3_is_only_taken_with_focus_in_the_terminal() {
     assert_ne!(current(&l), last, "the find bar has focus: F3 steps");
 }
 
+/// The centre of the drawn text `s`, if drawn last frame.
 fn text_at(l: &Live, s: &str) -> Option<Point> {
     l.h.list().prims.iter().find_map(|p| match p {
         skiff_ui::display::Prim::Text { text, bounds, .. } if text == s => {
@@ -296,6 +324,7 @@ fn text_at(l: &Live, s: &str) -> Option<Point> {
 }
 
 #[test]
+/// A multi-line paste waits for confirmation; Enter cancels, the Paste button sends.
 fn gui_multiline_paste_prompts() {
     let mut l = Live::new();
     l.h.clipboard.text = Some("echo a\necho b".into());
@@ -319,6 +348,7 @@ fn gui_multiline_paste_prompts() {
 }
 
 #[test]
+/// With mouse mode on, drags go to the program; Shift+drag selects instead.
 fn shift_bypasses_mouse_reporting() {
     let mut l = Live::new();
     // The echo shell sends this back, so the "program" turns on SGR mouse.
@@ -345,6 +375,7 @@ fn shift_bypasses_mouse_reporting() {
 }
 
 #[test]
+/// New output with an open search schedules an immediate repaint for its marks.
 fn search_repaints_after_new_output() {
     let mut l = Live::new();
     l.frame(vec![], vec![Action::Find]);
@@ -356,6 +387,7 @@ fn search_repaints_after_new_output() {
 }
 
 #[test]
+/// Double-clicking in the find box doesn't start a terminal selection.
 fn clicks_on_the_find_bar_stay_out_of_the_terminal() {
     let mut l = Live::new();
     l.frame(vec![], vec![Action::Find]);

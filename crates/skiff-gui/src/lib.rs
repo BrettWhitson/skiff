@@ -16,6 +16,7 @@
 //! - [`forwards`]: the port-forward manager tab.
 //! - [`settings`]: the settings tab (connections, appearance, keys, snippets).
 //! - [`switcher`]: the quick switcher overlay.
+//! - [`gear`]: the Settings gear button at the end of the tab strip.
 //! - [`keys`]: app actions, default chords and `[keys]` overrides.
 //! - [`engine`]: the background tokio runtime and the UI wake-up hook.
 //! - [`theme`]: maps a core theme onto toolkit and terminal colours.

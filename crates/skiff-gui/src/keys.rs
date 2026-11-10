@@ -8,8 +8,13 @@ use std::fmt;
 
 pub use skiff_ui::input::{Event, Key, Modifiers};
 
+/// An app command that can be bound to key chords. Each has a `[keys]`
+/// config name, a human label and per-platform default chords; tab, zoom
+/// and UI-scale actions mirror their labels, and the `*Pane*` actions act on
+/// the split panes of the focused terminal tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
+    /// Open the quick switcher overlay.
     QuickSwitcher,
     NewTab,
     CloseTab,
@@ -20,7 +25,9 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    /// Show or hide the host sidebar.
     ToggleSidebar,
+    /// Open the settings tab.
     Settings,
     /// Find in the terminal's output.
     Find,
@@ -31,7 +38,9 @@ pub enum Action {
     SplitRight,
     /// Split the terminal: a new pane below.
     SplitDown,
+    /// Move focus to the next pane of the split.
     FocusNextPane,
+    /// Close the focused pane.
     ClosePane,
     /// Swap the focused pane with its neighbor on that side.
     MovePaneLeft,
@@ -48,6 +57,7 @@ pub enum Action {
 }
 
 impl Action {
+    /// Every action, in declaration order.
     pub const ALL: [Action; 29] = [
         Action::QuickSwitcher,
         Action::NewTab,
@@ -115,6 +125,7 @@ impl Action {
         }
     }
 
+    /// The human-readable name shown in menus and the settings keys list.
     pub fn label(self) -> &'static str {
         match self {
             Action::QuickSwitcher => "Quick switcher",
@@ -149,6 +160,7 @@ impl Action {
         }
     }
 
+    /// Looks up an action by its `[keys]` name; `None` when unknown.
     pub fn from_config_name(s: &str) -> Option<Action> {
         Action::ALL.into_iter().find(|a| a.config_name() == s)
     }
@@ -237,6 +249,8 @@ fn base_char(c: char) -> char {
     SHIFTED.chars().position(|s| s == c).and_then(|i| BASE.chars().nth(i)).unwrap_or(c)
 }
 
+/// Canonical form of a key for comparison: characters lowercased and
+/// mapped from shifted symbols to their base key; other keys unchanged.
 fn normalize(k: &Key) -> Key {
     match k {
         Key::Char(c) => Key::Char(base_char(c.to_lowercase().next().unwrap_or(*c))),
@@ -244,13 +258,18 @@ fn normalize(k: &Key) -> Key {
     }
 }
 
+/// One key plus the exact modifiers that must be held, e.g. `ctrl+shift+t`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Chord {
+    /// The key, stored normalized (lowercase, unshifted symbol).
     pub key: Key,
+    /// Modifiers that must match exactly (no extra ones allowed).
     pub mods: Modifiers,
 }
 
 impl Chord {
+    /// Parses config text such as `ctrl+shift+t`, `cmd+,` or `ctrl++`;
+    /// the last `+`-separated part is the key, the rest are modifiers.
     pub fn parse(s: &str) -> Result<Chord, String> {
         let s = s.trim();
         let mut parts: Vec<String> = s.split('+').map(|p| p.trim().to_ascii_lowercase()).collect();
@@ -262,6 +281,7 @@ impl Chord {
         let Some(key_name) = parts.pop().filter(|k| !k.is_empty()) else {
             return Err(format!("`{s}` has no key"));
         };
+        // Every remaining part must be a known modifier name or alias.
         let mut mods = Modifiers::NONE;
         for m in &parts {
             match m.as_str() {
@@ -272,6 +292,7 @@ impl Chord {
                 other => return Err(format!("unknown modifier `{other}` in `{s}`")),
             }
         }
+        // Named keys first, then a single character, then F1..F24.
         let key = match key_name.as_str() {
             "tab" => Key::Tab,
             "enter" | "return" => Key::Enter,
@@ -321,6 +342,7 @@ impl Chord {
             Key::ContextMenu => "menu".into(),
             Key::Other(_) => return None,
         };
+        // Modifiers in a fixed order so the same press always yields the same text.
         let mut s = String::new();
         for (on, name) in [(mods.ctrl, "ctrl+"), (mods.alt, "alt+"), (mods.shift, "shift+"), (mods.logo, "cmd+")] {
             if on {
@@ -330,6 +352,7 @@ impl Chord {
         Some(s + &k)
     }
 
+    /// True when `key` with exactly `mods` is this chord.
     fn matches(&self, key: &Key, mods: Modifiers) -> bool {
         self.mods == mods && self.key == normalize(key)
     }
@@ -343,7 +366,9 @@ impl Chord {
     }
 }
 
+/// Display form for menus and tooltips, e.g. `Ctrl+Shift+T`, `Cmd+PgUp`.
 impl fmt::Display for Chord {
+    /// Writes the modifiers in a fixed order, then the key name.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let m = self.mods;
         for (on, name) in [(m.ctrl, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift"), (m.logo, "Cmd")] {
@@ -362,8 +387,10 @@ impl fmt::Display for Chord {
     }
 }
 
+/// The active bindings: each action mapped to the chords that trigger it.
 #[derive(Debug, Clone, Default)]
 pub struct Keymap {
+    /// Chords per action; an empty list means the action is unbound.
     binds: BTreeMap<Action, Vec<Chord>>,
 }
 
@@ -372,11 +399,14 @@ impl Keymap {
     /// chords separated by commas). Problems become warnings; the default
     /// stays for an action whose override is invalid.
     pub fn new(overrides: &BTreeMap<String, String>, mac: bool) -> (Keymap, Vec<String>) {
+        // Start from the platform defaults for every action.
         let mut binds = BTreeMap::new();
         for a in Action::ALL {
             let chords = a.defaults(mac).iter().map(|s| Chord::parse(s).expect("valid default")).collect();
             binds.insert(a, chords);
         }
+        // Each valid override replaces that action's chords wholesale; an
+        // empty value therefore unbinds it.
         let mut warnings = vec![];
         for (name, value) in overrides {
             let Some(action) = Action::from_config_name(name) else {
@@ -394,20 +424,25 @@ impl Keymap {
         (Keymap { binds }, warnings)
     }
 
+    /// `new` with the platform's defaults (macOS or Windows/Linux).
     pub fn platform(overrides: &BTreeMap<String, String>) -> (Keymap, Vec<String>) {
         Self::new(overrides, cfg!(target_os = "macos"))
     }
 
+    /// The chords bound to `a` (empty when unbound).
     pub fn chords(&self, a: Action) -> &[Chord] {
         self.binds.get(&a).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// The action bound to this key press, if any. With `in_terminal`,
+    /// shell-owned chords (plain Ctrl / plain Alt + character) never match.
     pub fn match_key(&self, key: &Key, mods: Modifiers, in_terminal: bool) -> Option<Action> {
         self.binds
             .iter()
             .find_map(|(a, chords)| chords.iter().any(|c| c.matches(key, mods) && !(in_terminal && c.shell_owned())).then_some(*a))
     }
 
+    /// `match_key` for a key-down event; other events never match.
     pub fn match_event(&self, ev: &Event, in_terminal: bool) -> Option<Action> {
         match ev {
             Event::KeyDown { key, mods, .. } => self.match_key(key, *mods, in_terminal),

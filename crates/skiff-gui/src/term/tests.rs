@@ -1,3 +1,7 @@
+//! Tests for the terminal view: cell conversion, key routing, grid sizing,
+//! pty resizes, damage tracking, the context menu and zoom (some run against
+//! the local SSH test fixture).
+
 use std::collections::BTreeMap;
 
 use skiff_ui::color::Color;
@@ -14,20 +18,24 @@ use super::*;
 use crate::keys::{Action, Keymap};
 use crate::theme::{from_def, xterm_256};
 
+/// The built-in "midnight" theme, as the GUI would load it.
 fn theme() -> GuiTheme {
     from_def(&skiff_core::theme::builtin().into_iter().find(|t| t.name == "midnight").unwrap())
 }
 
+// Modifier sets used by the key tests.
 const CTRL: Modifiers = Modifiers { ctrl: true, shift: false, alt: false, logo: false };
 const CTRL_SHIFT: Modifiers = Modifiers { ctrl: true, shift: true, alt: false, logo: false };
 const ALT: Modifiers = Modifiers { ctrl: false, shift: false, alt: true, logo: false };
 const ALTGR: Modifiers = Modifiers { ctrl: true, shift: false, alt: true, logo: false };
 
+/// A KeyDown event.
 fn kd(key: Key, mods: Modifiers, text: Option<&str>) -> Event {
     Event::KeyDown { key, mods, text: text.map(String::from) }
 }
 
 #[test]
+/// ANSI / 256 colours, bold, inverse and wide characters convert to the right cells.
 fn screen_rows_colors_and_attrs() {
     let t = theme();
     let mut p = vt100::Parser::new(4, 10, 0);
@@ -49,6 +57,7 @@ fn screen_rows_colors_and_attrs() {
 }
 
 #[test]
+/// Bold on a basic colour uses its bright variant.
 fn bold_brightens_basic_colors() {
     let t = theme();
     let mut p = vt100::Parser::new(2, 10, 0);
@@ -57,6 +66,7 @@ fn bold_brightens_basic_colors() {
 }
 
 #[test]
+/// Key events encode to the expected pty bytes (Ctrl, Alt, AltGr, F-keys, app cursor, shortcuts).
 fn keys_encode_to_pty() {
     let (km, _) = Keymap::new(&BTreeMap::new(), false);
     let r = |evs: Vec<Event>, app: bool| route(&evs, &km, app);
@@ -90,12 +100,14 @@ fn keys_encode_to_pty() {
 }
 
 #[test]
+/// The grid never goes below 2 x 10 and otherwise fits the rect.
 fn grid_clamps_tiny_areas() {
     assert_eq!(grid_for(Rect::new(0, 0, 0, 0), Size::new(8, 16)), (2, 10));
     assert_eq!(grid_for(Rect::new(0, 0, 30, 20), Size::new(8, 16)), (2, 10));
     assert_eq!(grid_for(Rect::new(0, 0, 800, 480), Size::new(8, 16)), (30, 100));
 }
 
+/// A terminal tab that runs ssh against the local test fixture.
 fn fixture_tab(fx: &skiff_testserver::TestFixture) -> TermTab {
     let mut args = fx.ssh_options();
     args.push("-tt".into());
@@ -108,6 +120,7 @@ fn fixture_tab(fx: &skiff_testserver::TestFixture) -> TermTab {
 }
 
 #[test]
+/// Tiny and zero-size views don't panic and still spawn a session at the minimum grid.
 fn terminal_view_tiny_area_no_panic() {
     let fx = skiff_testserver::TestFixture::with_shell(skiff_testserver::FixtureAuth::Key).unwrap();
     let mut tab = fixture_tab(&fx);
@@ -123,6 +136,7 @@ fn terminal_view_tiny_area_no_panic() {
 }
 
 #[test]
+/// The pty is resized only when the grid changes by at least a whole cell.
 fn resize_only_on_cell_change() {
     let fx = skiff_testserver::TestFixture::with_shell(skiff_testserver::FixtureAuth::Key).unwrap();
     let mut tab = fixture_tab(&fx);
@@ -144,6 +158,7 @@ fn resize_only_on_cell_change() {
 }
 
 #[test]
+/// Redrawing after one row changes damages only that row's tiles.
 fn only_changed_row_damaged() {
     let t = theme();
     let mut p = vt100::Parser::new(24, 80, 0);
@@ -168,6 +183,7 @@ fn only_changed_row_damaged() {
 }
 
 #[test]
+/// A minimized (zero-size) window leaves the pty size alone.
 fn minimize_keeps_the_grid() {
     let fx = skiff_testserver::TestFixture::with_shell(skiff_testserver::FixtureAuth::Key).unwrap();
     let mut tab = fixture_tab(&fx);
@@ -185,6 +201,7 @@ fn minimize_keeps_the_grid() {
 }
 
 #[test]
+/// The right-click menu's Paste goes through the multi-line paste prompt.
 fn context_menu_paste_reaches_the_terminal() {
     use skiff_ui::clipboard::Clipboard;
     use skiff_ui::geom::Point;
@@ -222,6 +239,7 @@ fn context_menu_paste_reaches_the_terminal() {
 }
 
 #[test]
+/// Terminal zoom steps from the configured font size regardless of the interface zoom.
 fn interface_zoom_keeps_terminal_font() {
     let (km, _) = Keymap::new(&BTreeMap::new(), false);
     let t = theme();

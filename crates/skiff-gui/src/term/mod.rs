@@ -1,4 +1,9 @@
 //! Terminal tabs: system ssh in a pty, rendered on our cell grid.
+//!
+//! `TermTab` owns one terminal session plus its view state; `view` draws it
+//! each frame and routes keys, mouse, wheel, paste and search. The submodules
+//! split out rendering, input encoding, selection, find, announcements and
+//! the split-pane layout (`split`).
 
 use std::time::{Duration, Instant};
 
@@ -27,24 +32,36 @@ pub mod search;
 pub mod select;
 pub mod split;
 
+/// Half-period of the cursor blink (on for this long, then off).
 const BLINK: Duration = Duration::from_millis(530);
 /// Logical pixels of wheel movement per scrolled line (a notch = 48 → 3 lines).
 const WHEEL_PX_PER_LINE: f32 = 16.0;
+/// Smallest terminal font size zoom-out reaches, logical px.
 const MIN_FONT: f32 = 8.0;
+/// Largest terminal font size zoom-in reaches, logical px.
 const MAX_FONT: f32 = 40.0;
 /// Space between a terminal pane's edge and its cells, logical px.
 pub const PAD: i32 = 6;
 
+/// Source of `TermTab::uid` values.
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// One terminal: the host it connects to, the command that runs it, its
+/// pty session (once started) and all per-terminal view state.
 pub struct TermTab {
+    /// The host this terminal talks to (its name labels the tab).
     pub host: HostEntry,
+    /// Program spawned in the pty (the ssh binary, or a test fixture).
     program: String,
+    /// Arguments for `program`.
     args: Vec<String>,
+    /// Scrollback lines kept by the session.
     scrollback: usize,
     /// Unique per terminal for the app's lifetime (follows it between tabs).
     pub uid: u64,
+    /// The running pty session; `None` until the first frame sizes it, or on error.
     pub session: Option<TerminalSession>,
+    /// Why the session could not start (or reconnect); shown instead of the screen.
     pub error: Option<String>,
     /// (rows, cols) last sent to the pty.
     pub grid: (u16, u16),
@@ -54,13 +71,17 @@ pub struct TermTab {
     pub font_px: f32,
     /// Cell size (physical px) of the last frame.
     cell: Size,
+    /// Mouse selection state.
     pub select: SelectState,
+    /// When the blink cycle restarted (typing keeps the cursor solid).
     blink_from: Instant,
+    /// Fraction of a wheel line not yet scrolled (carried to the next event).
     wheel_rest: f32,
     /// The cursor blinks (`gui.cursor_blink` and the OS animation setting); set by the app.
     pub blink: bool,
     /// Which output screen readers hear (`gui.announce_output`); set by the app.
     pub announce: skiff_core::config::Announce,
+    /// Batches output and typed-echo text into screen-reader announcements.
     announcer: announce::Announcer,
     /// The screen text the tree last showed.
     last_screen: String,
@@ -78,6 +99,7 @@ pub struct TermTab {
     pub pending_paste: Option<(String, usize, bool)>,
     /// The paste prompt was drawn (its first frame moves focus to Cancel).
     paste_shown: bool,
+    /// Mouse-reporting state (held buttons, last reported cell).
     mouse: mouse::MouseState,
     /// Actions chosen from this terminal's own menu, run next frame (the
     /// app's action list is only for the frame it was filled in).
@@ -96,6 +118,7 @@ pub fn grid_for(rect: Rect, cell: Size) -> (u16, u16) {
 }
 
 impl TermTab {
+    /// A tab that runs the system ssh (`ssh_binary`) with the host's shell arguments.
     pub fn new(host: HostEntry, ssh_binary: &str, scrollback: usize) -> Self {
         let args = host.shell_args();
         Self::with_command(host, ssh_binary.to_string(), args, scrollback)
@@ -135,7 +158,6 @@ impl TermTab {
         }
     }
 
-    /// Cell width and height of the last frame, in physical pixels.
     /// Types a snippet. A multi-line one is a paste (and may ask first);
     /// a one-line one is typed, with its Enter if it has one.
     pub fn send_snippet(&mut self, snippet: &skiff_core::termx::Snippet) {
@@ -186,6 +208,7 @@ impl TermTab {
         t
     }
 
+    /// Cell width and height of the last frame, in physical pixels.
     pub fn cell_size(&self) -> (i32, i32) {
         (self.cell.w, self.cell.h)
     }
@@ -206,6 +229,8 @@ impl TermTab {
         format!("{}: {state}", self.host.name)
     }
 
+    /// Spawns the pty session at `grid` the first time (no-op once started or
+    /// failed); `wake` lets output repaint the window.
     fn ensure_session(&mut self, grid: (u16, u16), wake: Option<&WakeFn>) {
         if self.session.is_some() || self.error.is_some() {
             return;
@@ -222,10 +247,12 @@ impl TermTab {
         }
     }
 
+    /// Restarts the blink cycle so the cursor shows right away.
     fn reset_blink(&mut self) {
         self.blink_from = Instant::now();
     }
 
+    /// The selected text, or `None` if nothing (or only empty cells) is selected.
     fn selected_text(&self) -> Option<String> {
         let sel = self.select.sel.as_ref()?;
         let p = self.session.as_ref()?.parser.lock().ok()?;
@@ -233,6 +260,8 @@ impl TermTab {
         (!t.is_empty()).then_some(t)
     }
 
+    /// Applies ZoomIn / ZoomOut (one px, clamped) or ZoomReset (back to the
+    /// style's size, stored as 0) to the terminal font.
     fn zoom(&mut self, a: Action, default_px: f32) {
         let cur = if self.font_px > 0.0 { self.font_px } else { default_px };
         self.font_px = match a {
@@ -268,6 +297,7 @@ pub fn view(
     // wheel lines alone.
     let scale = ui.dpi_scale();
     let default_px = ui.mono_px() / scale;
+    // Run this terminal's queued menu actions and the app's shortcuts for it.
     let mut todo = std::mem::take(&mut tab.queued);
     todo.append(actions);
     for a in todo {
@@ -308,6 +338,7 @@ pub fn view(
             ui.cycle_region(forward);
         }
     }
+    // Cell size from the font, then the grid that fits inside the padding.
     let px = if tab.font_px > 0.0 { tab.font_px * scale } else { ui.mono_px() };
     let (cw, ch) = ui.fonts().cell_size(px);
     let cell = Size::new((cw.round() as i32).max(1), (ch.ceil() as i32).max(1));
@@ -350,6 +381,7 @@ pub fn view(
     // Wheel: scrollback (or arrow keys in full-screen apps like less/vim).
     let (_, dy) = ui.input().wheel();
     if dy != 0.0 && r.hovered && inner.contains(ui.input().mouse) {
+        // Whole lines are used now; the fraction carries over to the next event.
         tab.wheel_rest += dy / (WHEEL_PX_PER_LINE * scale);
         let lines = tab.wheel_rest.trunc() as i32;
         tab.wheel_rest -= lines as f32;
@@ -383,6 +415,7 @@ pub fn view(
     }
     if focused && ui.keys_for(id) {
         let events = ui.input().events.clone();
+        // A dead session only listens for Enter (reconnect); otherwise keys go to the pty.
         if !alive {
             if ui.input_mut().take_key(&Key::Enter, Modifiers::NONE) {
                 if let Err(e) = session.respawn() {
@@ -410,6 +443,8 @@ pub fn view(
         return;
     };
     let parser = session.parser.clone();
+    // Accessibility: expose the screen text and announce new output (per
+    // `announce`); with no screen reader, the next connect starts quiet.
     if !ui.a11y_on() {
         tab.resync = true;
     } else {
@@ -444,6 +479,7 @@ pub fn view(
         ui.request_repaint_in(Duration::ZERO);
     }
     let offset = parser.lock().map(|p| p.screen().scrollback()).unwrap_or(0);
+    // Mouse goes to the remote app when it asked for reports, else to selection.
     if report_mouse {
         let events = ui.input().events.clone();
         let mods = ui.input().mods;
@@ -465,6 +501,8 @@ pub fn view(
 
     terminal_menu(ui, id, r.right_clicked && !report_mouse, tab);
 
+    // Cursor: hollow when unfocused, solid without blink, else on/off by half-period
+    // (with a repaint scheduled for the next flip).
     let cursor = if !focused {
         Some(CursorDraw::Hollow)
     } else if !tab.blink {
@@ -478,6 +516,7 @@ pub fn view(
     ui.painter().rect(rect, theme.term_bg, 0.0);
     if let Ok(mut p) = parser.lock() {
         let rows = p.screen().size().0 as usize;
+        // Absolute line of the top visible row, to place the find marks.
         let scrolled = tab.session.as_ref().map_or(0, |s| s.scrolled());
         let top = scrolled.saturating_sub(p.screen().scrollback() as u64);
         let marks = tab.search.as_ref().map(|s| s.found.marks(top, rows)).unwrap_or_default();
@@ -486,6 +525,7 @@ pub fn view(
             draw_scrollbar(ui, rect, &mut p, offset, theme);
         }
     }
+    // Dead session: a "press Enter to reconnect" bar along the bottom.
     if !alive {
         let msg = "[session ended \u{2014} press Enter to reconnect]";
         let lh = ui.line_height(FontKind::Mono, px);
@@ -585,6 +625,7 @@ fn find_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab, parser: &std::s
     };
     let w = ui.px(360).min(inner.w);
     let h = ui.px(32);
+    // Closing the bar returns to live output and focuses the terminal.
     let rect = Rect::new(inner.right() - w, inner.y, w, h);
     let (changed, out) = search::bar(ui, id.with("find"), rect, s);
     if out.close {
@@ -599,6 +640,7 @@ fn find_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab, parser: &std::s
         // The marks for the new matches are drawn next frame.
         ui.request_repaint_in(Duration::ZERO);
     }
+    // A new current match: scroll the view so it is on screen.
     if std::mem::take(&mut s.scroll_due) {
         if let Ok(mut p) = parser.lock() {
             let rows = p.screen().size().0 as usize;
@@ -618,6 +660,7 @@ fn draw_scrollbar(ui: &mut Ui, rect: Rect, p: &mut vt100::Parser, offset: usize,
     p.screen_mut().set_scrollback(offset);
     let rows = p.screen().size().0 as usize;
     let total = (history + rows).max(1);
+    // Thumb size is the visible share of all lines; its position follows the offset.
     let w = ui.px(4).max(2);
     let track = Rect::new(rect.right() - w - ui.px(2), rect.y + ui.px(2), w, rect.h - ui.px(4));
     let h = ((track.h as usize * rows / total) as i32).max(ui.px(20)).min(track.h);

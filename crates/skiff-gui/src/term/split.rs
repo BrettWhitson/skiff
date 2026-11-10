@@ -10,6 +10,13 @@
 //! Focus moves between panes by click, F6 and the `focus_next_pane`
 //! shortcut; each pane is its own focus region and its terminal is named
 //! "Terminal: host, pane n of m" for screen readers.
+//!
+//! Structure: `TermSplit` owns the `Pane`s (each a `TermTab` with a stable
+//! `u64` key) and a `Layout` binary tree whose leaves are pane keys and whose
+//! inner nodes are `Split { dir, ratio, a, b }`. A node is addressed by its
+//! path (`false` = into `a`, `true` = into `b`); `Layout::arrange` turns the
+//! tree into pane rects and `Divider`s each frame. The snap points, key step
+//! and minimum sizes are shared with the TUI through `skiff_core::panes`.
 
 use skiff_core::hosts::HostEntry;
 use skiff_ui::a11y::{A11yAction, Role};
@@ -32,18 +39,24 @@ pub enum Dir {
     Down,
 }
 
+// Shared with the TUI: snap points (25/33/50/67/75%), the 10% minimum share,
+// the 5% key step past the last snap point, and the snapping functions.
 pub use skiff_core::panes::{KEY_STEP, MIN_RATIO, SNAPS, snap, step_ratio};
 
 /// Divider thickness, logical px.
 pub const GAP: i32 = 5;
 /// How close (logical px) a dragged divider must come to snap.
 pub const SNAP_PX: i32 = 8;
-/// The smallest pane, in terminal cells.
+/// The smallest pane width, in terminal cells.
 pub const MIN_COLS: i32 = skiff_core::panes::MIN_COLS as i32;
+/// The smallest pane height, in terminal cells.
 pub const MIN_ROWS: i32 = skiff_core::panes::MIN_ROWS as i32;
 
 /// A side of a pane (where a dropped pane goes, which way a pane moves),
 /// or its centre (a drop there swaps, or just shows a dragged tab).
+///
+/// `Left` / `Right` split side by side and `Top` / `Bottom` stack; the
+/// dropped content lands on the named side of the target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zone {
     Left,
@@ -60,6 +73,8 @@ impl Zone {
         if rect.w <= 0 || rect.h <= 0 {
             return Zone::Center;
         }
+        // Position as fractions of the rect; outside the centre box, the
+        // edge with the smallest distance wins.
         let fx = (at.x - rect.x) as f32 / rect.w as f32;
         let fy = (at.y - rect.y) as f32 / rect.h as f32;
         let mid = 1.0 / 3.0..=2.0 / 3.0;
@@ -97,7 +112,8 @@ impl Zone {
         }
     }
 
-    /// Room for a new half here, each at least `min` px (w, h).
+    /// Room for a new half here, each at least `min` px (w, h); the centre
+    /// always fits (it splits nothing).
     pub fn fits(self, rect: Rect, gap: i32, min: (i32, i32)) -> bool {
         match self.dir() {
             None => true,
@@ -109,6 +125,9 @@ impl Zone {
 
 /// What is being dragged onto panes: a whole terminal tab (by id), or
 /// one pane of a tab.
+///
+/// `Tab(id)` carries the terminal tab's id; `Pane { tab, key }` names the
+/// tab the pane is in and its pane key there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneDrag {
     Tab(u64),
@@ -119,12 +138,16 @@ pub enum PaneDrag {
 /// moves tab `from`'s panes in (or, on the centre, just shows it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TabDrop {
+    /// Id of the dragged terminal tab.
     pub from: u64,
+    /// Key of the pane it was dropped on.
     pub target: u64,
+    /// Which part of that pane: a side (join beside it) or the centre.
     pub zone: Zone,
 }
 
-/// The arrangement of a tab's panes (by pane key).
+/// The arrangement of a tab's panes (by pane key): a binary tree whose
+/// leaves are panes (`Pane(key)`) and whose inner nodes split their area in two.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Layout {
     Pane(u64),
@@ -146,7 +169,9 @@ pub struct Divider {
     /// after the divider, the first one of the split's second side. Each
     /// pane starts at most one split's second side, so it is unique.
     pub key: u64,
+    /// The split's direction (`Right`: a vertical divider between columns).
     pub dir: Dir,
+    /// The split's stored share for its first side.
     pub ratio: f32,
     /// The draggable strip between the two sides.
     pub handle: Rect,
@@ -155,6 +180,8 @@ pub struct Divider {
 }
 
 /// `rect` split at `ratio`: the first side, the divider and the second side.
+/// The gap comes off first; `ratio` of what is left (rounded) is the first
+/// side, and the second side takes the rest, so the three always tile `rect`.
 pub fn split_rect(rect: Rect, dir: Dir, ratio: f32, gap: i32) -> (Rect, Rect, Rect) {
     let total = match dir {
         Dir::Right => rect.w,
@@ -177,7 +204,9 @@ pub fn split_rect(rect: Rect, dir: Dir, ratio: f32, gap: i32) -> (Rect, Rect, Re
     }
 }
 
-/// The ratio that puts a divider of `area` under the mouse at `at`.
+/// The ratio that puts a divider of `area` under the mouse at `at`: the
+/// inverse of `split_rect` with the divider's middle on the pointer, kept
+/// within `MIN_RATIO` (0.5 when there is no room at all).
 pub fn ratio_at(area: Rect, dir: Dir, gap: i32, at: Point) -> f32 {
     let (pos, start, total) = match dir {
         Dir::Right => (at.x, area.x, area.w),
@@ -198,6 +227,8 @@ impl Layout {
         (panes, dividers)
     }
 
+    /// Recursive half of `arrange`: lays this node out in `rect`, with `path`
+    /// the turns to it; a split's divider is pushed before its children's.
     fn arrange_into(&self, rect: Rect, gap: i32, path: &mut Vec<bool>, panes: &mut Vec<(u64, Rect)>, dividers: &mut Vec<Divider>) {
         match self {
             Layout::Pane(k) => panes.push((*k, rect)),
@@ -219,6 +250,7 @@ impl Layout {
         self.arrange(Rect::default(), 0).0.into_iter().map(|(k, _)| k).collect()
     }
 
+    /// The first pane in reading order (leftmost / topmost leaf).
     fn first_key(&self) -> u64 {
         match self {
             Layout::Pane(k) => *k,
@@ -226,6 +258,7 @@ impl Layout {
         }
     }
 
+    /// The last pane in reading order (rightmost / bottommost leaf).
     fn last_key(&self) -> u64 {
         match self {
             Layout::Pane(k) => *k,
@@ -251,6 +284,8 @@ impl Layout {
         let Layout::Split { a, b, .. } = self else {
             return None;
         };
+        // A direct child: the split collapses into the other side (the
+        // `Pane(0)` placeholder is dropped with the old node).
         if **a == Layout::Pane(key) {
             let rest = std::mem::replace(&mut **b, Layout::Pane(0));
             let next = rest.first_key();
@@ -276,6 +311,7 @@ impl Layout {
         }
     }
 
+    /// The node at `path`, mutably.
     fn node_mut(&mut self, path: &[bool]) -> Option<&mut Layout> {
         match (self, path.split_first()) {
             (n, None) => Some(n),
@@ -300,6 +336,7 @@ impl Layout {
         }
     }
 
+    /// Whether pane `key` is somewhere in this tree.
     pub fn contains(&self, key: u64) -> bool {
         match self {
             Layout::Pane(k) => *k == key,
@@ -323,6 +360,7 @@ impl Layout {
     /// The innermost split along `dir` that pane `key` is in (its path).
     pub fn axis_split(&self, key: u64, dir: Dir) -> Option<Vec<bool>> {
         let path = self.path_to(key)?;
+        // Walk the pane's ancestors from the nearest up; first match wins.
         (0..path.len())
             .rev()
             .map(|i| &path[..i])
@@ -335,6 +373,7 @@ impl Layout {
     pub fn insert(&mut self, target: u64, zone: Zone, sub: Layout) -> bool {
         let Some(dir) = zone.dir() else { return false };
         match self {
+            // The target leaf becomes a split; Right / Bottom put `sub` second.
             Layout::Pane(k) if *k == target => {
                 let (old, new) = (Box::new(Layout::Pane(target)), Box::new(sub));
                 let (a, b) = if zone.forward() { (old, new) } else { (new, old) };
@@ -365,6 +404,7 @@ impl Layout {
         });
     }
 
+    /// Rewrites every pane key through `f` (swaps, and renumbering an absorbed tab).
     fn map_keys(&mut self, f: &impl Fn(u64) -> u64) {
         match self {
             Layout::Pane(k) => *k = f(*k),
@@ -375,7 +415,8 @@ impl Layout {
         }
     }
 
-    /// How many panes sit in a row along `dir`.
+    /// How many panes sit in a row along `dir` (splits the other way count
+    /// their widest side).
     fn span(&self, dir: Dir) -> u32 {
         match self {
             Layout::Pane(_) => 1,
@@ -384,7 +425,8 @@ impl Layout {
         }
     }
 
-    /// Shares so that panes in a row get the same size.
+    /// Shares so that panes in a row get the same size: each split's ratio is
+    /// its first side's span over the total (e.g. 1 vs 2 panes gives 1/3).
     pub fn equalize(&mut self) {
         if let Layout::Split { dir, ratio, a, b } = self {
             a.equalize();
@@ -401,7 +443,8 @@ impl Layout {
         }
     }
 
-    /// The least px this needs along `dir`, each pane at least `min` (w, h).
+    /// The least px this needs along `dir`, each pane at least `min` (w, h):
+    /// splits along `dir` add their sides plus the gap, others take the larger.
     fn min_extent(&self, dir: Dir, min: (i32, i32), gap: i32) -> i32 {
         match self {
             Layout::Pane(_) if dir == Dir::Right => min.0,
@@ -419,6 +462,8 @@ impl Layout {
         let total = if *dir == Dir::Right { rect.w } else { rect.h };
         let room = (total - gap) as f32;
         let (ma, mb) = (a.min_extent(*dir, min, gap) as f32, b.min_extent(*dir, min, gap) as f32);
+        // Clamp the ratio so side `a` gets at least `ma` px and side `b` at
+        // least `mb`; if both can't fit, split the room in proportion ma : mb.
         if room > 0.0 {
             // Half a px of slack each way: `split_rect` rounds.
             let (lo, hi) = ((ma + 0.5) / room, (room - mb - 0.5) / room);
@@ -430,8 +475,11 @@ impl Layout {
     }
 }
 
+/// One pane of a terminal tab.
 pub struct Pane {
+    /// Stable within its tab (the leaf in `Layout`, and part of the widget id).
     pub key: u64,
+    /// The terminal shown in this pane.
     pub term: TermTab,
 }
 
@@ -439,9 +487,11 @@ pub struct Pane {
 pub struct TermSplit {
     /// In reading order (left to right, top to bottom).
     pub panes: Vec<Pane>,
+    /// The split tree over the panes' keys.
     pub layout: Layout,
     /// Index of the focused pane (the one shortcuts and snippets go to).
     pub focus: usize,
+    /// The key the next new pane gets (keys are never reused in a tab).
     next_key: u64,
     /// Keyboard focus moves to the focused pane next frame.
     focus_due: bool,
@@ -453,23 +503,28 @@ pub fn pane_id(tab: u64, key: u64) -> Id {
 }
 
 impl TermSplit {
+    /// A tab with `term` as its only pane (key 0).
     pub fn new(term: TermTab) -> TermSplit {
         TermSplit { panes: vec![Pane { key: 0, term }], layout: Layout::Pane(0), focus: 0, next_key: 1, focus_due: false }
     }
 
+    /// The focused pane's host (what the tab is labelled with).
     pub fn host(&self) -> &HostEntry {
         &self.focused().host
     }
 
+    /// The focused pane's terminal (focus clamped into range).
     pub fn focused(&self) -> &TermTab {
         &self.panes[self.focus.min(self.panes.len() - 1)].term
     }
 
+    /// The focused pane's terminal, mutably.
     pub fn focused_mut(&mut self) -> &mut TermTab {
         let i = self.focus.min(self.panes.len() - 1);
         &mut self.panes[i].term
     }
 
+    /// The focused pane's key.
     pub fn focused_key(&self) -> u64 {
         self.panes[self.focus.min(self.panes.len() - 1)].key
     }
@@ -520,6 +575,7 @@ impl TermSplit {
         if zone == Zone::Center || !self.layout.contains(target) {
             return Err(Box::new(other));
         }
+        // Shift the incoming keys past ours so none collide.
         let base = self.next_key;
         let focus_key = other.focused_key() + base;
         let TermSplit { panes, mut layout, next_key, .. } = other;
@@ -550,6 +606,7 @@ impl TermSplit {
     /// The pane next to `key` on side `zone`: the one sharing the most of
     /// that edge (the first of equals).
     pub fn neighbor(&self, key: u64, zone: Zone) -> Option<u64> {
+        // Lay out on a large gapless square so touching edges compare exactly.
         const BIG: i32 = 1 << 20;
         let (rects, _) = self.layout.arrange(Rect::new(0, 0, BIG, BIG), 0);
         let r = rects.iter().find(|(k, _)| *k == key)?.1;
@@ -625,6 +682,7 @@ pub fn view(
     split.focus = split.focus.min(n - 1);
     let gap = ui.px(GAP).max(1);
     let pad = ui.px(super::PAD);
+    // Minimum pane size in px: MIN_COLS x MIN_ROWS cells plus the padding.
     let (cw, ch) = split.panes[0].term.cell_size();
     let min = (cw * MIN_COLS + 2 * pad, ch * MIN_ROWS + 2 * pad);
     // Clamped for this frame only: the stored shares come back when the
@@ -638,6 +696,8 @@ pub fn view(
     if n > 1 {
         alt_drag(ui, tab, split, &rects);
     }
+    // Each pane: the focused one gets the shortcuts; with several panes, each
+    // is its own focus region with a grip.
     let mut focused = None;
     for (i, p) in split.panes.iter_mut().enumerate() {
         let r = rects.iter().find(|(k, _)| *k == p.key).map_or(Rect::default(), |(_, r)| *r);
@@ -662,6 +722,8 @@ pub fn view(
     }
     run_requests(ui, split);
     if n > 1 {
+        // Dividers are keyed by `Divider::key` (not path), so a focused
+        // divider keeps focus when the tree around it changes.
         ui.region(Id::new(("pane-dividers", tab)), "Pane dividers", |ui| {
             for d in &dividers {
                 divider(ui, Id::new(("pane-divider", tab)).with(d.key), d, gap, &mut split.layout);
@@ -677,7 +739,8 @@ pub fn view(
     drops(ui, tab, split, &rects, gap, min, theme)
 }
 
-/// Alt+press on a pane starts dragging it (instead of selecting text).
+/// Alt+press on a pane starts dragging it (instead of selecting text); the
+/// press event is removed so the terminal underneath never sees it.
 fn alt_drag(ui: &mut Ui, tab: u64, split: &TermSplit, rects: &[(u64, Rect)]) {
     if !ui.input().mods.alt || ui.dragging() {
         return;
@@ -688,13 +751,15 @@ fn alt_drag(ui: &mut Ui, tab: u64, split: &TermSplit, rects: &[(u64, Rect)]) {
     }) else {
         return;
     };
+    // Only a press over a pane counts (not over a divider).
     let Some(&(key, _)) = rects.iter().find(|(_, r)| r.contains(at)) else { return };
     ui.input_mut().events.remove(i);
     let label = split.panes.iter().find(|p| p.key == key).map_or_else(String::new, |p| p.term.host.name.clone());
     ui.start_drag(Box::new(PaneDrag::Pane { tab, key }), label);
 }
 
-/// The handle in a pane's top-right corner that drags the pane.
+/// The handle at the top centre of a pane that drags the pane (drawn as
+/// two rows of five dots).
 fn grip(ui: &mut Ui, tab: u64, key: u64, n: usize, pane: Rect, host: &str) {
     // In the padding above the cells, centred (the find bar sits top right).
     let (w, h) = (ui.px(32), ui.px(super::PAD + 2));
@@ -726,6 +791,11 @@ fn grip(ui: &mut Ui, tab: u64, key: u64, n: usize, pane: Rect, host: &str) {
 
 /// Drop previews over the panes while a pane or terminal tab is dragged,
 /// and the drop itself: a pane moves here; a tab is handed to the app.
+///
+/// Drop mapping: a pane of this tab on another pane's side moves there
+/// (`move_pane`, a split), on its centre swaps; another terminal tab on a
+/// side or centre returns a `TabDrop` (the app absorbs it, or shows it).
+/// Sides too small for two `min` halves get no target.
 fn drops(
     ui: &mut Ui,
     tab: u64,
@@ -745,6 +815,7 @@ fn drops(
     let mut out = None;
     for &(key, r) in rects {
         let zone = Zone::at(r, mouse);
+        // Not onto itself; a side only where both halves would keep `min`.
         let useful = match (moving, zone) {
             (Some(k), _) if k == key => false,
             (_, Zone::Center) => true,
@@ -777,7 +848,8 @@ fn drops(
     out
 }
 
-/// Runs a split or close a pane's menu asked for, on that pane.
+/// Runs a split or close a pane's menu asked for, on that pane (which
+/// takes focus first, so the split / close applies to it).
 fn run_requests(ui: &mut Ui, split: &mut TermSplit) {
     let Some((i, a)) = split.panes.iter_mut().enumerate().find_map(|(i, p)| p.term.pane_request.take().map(|a| (i, a))) else {
         return;
@@ -801,6 +873,9 @@ fn divider(ui: &mut Ui, id: Id, d: &Divider, gap: i32, layout: &mut Layout) {
     let r = ui.interact(id, d.handle, Sense { click: true, drag: true, focus: true });
     let mut ratio = d.ratio;
     let mut snapped = None;
+    // Dragging (not on the press frame itself, so a click doesn't jump the
+    // divider): follow the pointer, then snap when within SNAP_PX of a snap
+    // point, measured in px of the split's room.
     let down_now = ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(MouseButton::Left, _)));
     if r.pressed && !down_now && r.dragged.is_some() {
         ratio = ratio_at(d.area, d.dir, gap, ui.input().mouse);
@@ -812,6 +887,7 @@ fn divider(ui: &mut Ui, id: Id, d: &Divider, gap: i32, layout: &mut Layout) {
             snapped = Some(s);
         }
     }
+    // Keyboard and screen-reader steps: to the next snap point, else KEY_STEP.
     if r.focused {
         let (less, more) = match d.dir {
             Dir::Right => (Key::Left, Key::Right),
@@ -830,6 +906,7 @@ fn divider(ui: &mut Ui, id: Id, d: &Divider, gap: i32, layout: &mut Layout) {
     if ui.take_a11y_action(id, |a| matches!(a, A11yAction::Decrement)).is_some() {
         ratio = step_ratio(ratio, false);
     }
+    // Write back to the stored layout (the drawn one may be min-clamped).
     if r.double_clicked {
         layout.equalize_at(&d.path);
         ratio = layout.ratio(&d.path).unwrap_or(ratio);

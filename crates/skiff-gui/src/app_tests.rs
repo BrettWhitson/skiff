@@ -1,6 +1,7 @@
 //! App-level tests driven through the toolkit Harness. No network: the
-//! config disables `~/.ssh/config`; the only terminal spawned goes to the
-//! local test server (`switcher_runs_snippet`).
+//! config disables `~/.ssh/config` and names a non-existent ssh binary; the
+//! only real ssh session goes to the local test server
+//! (`switcher_runs_snippet`). `Fixture` is shared with other test modules.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,20 +15,29 @@ use super::*;
 use crate::engine::{Engine, Msg};
 use crate::files::Location;
 
+/// A `GuiApp` on a temporary config, rendered by a headless 1280x800 harness.
 pub(crate) struct Fixture {
+    /// Keeps the temporary directory (and the config in it) alive.
     pub _dir: tempfile::TempDir,
+    /// The `config.toml` path.
     pub path: std::path::PathBuf,
+    /// The app under test.
     pub app: GuiApp,
+    /// The toolkit test harness that runs frames and records output.
     pub h: Harness,
 }
 
+/// Base config: ssh config off, a missing ssh binary, and two custom hosts
+/// (`alpha`, `beta`) on unreachable loopback ports.
 pub(crate) const CONFIG: &str = "# my hand-written comment\n[settings]\nload_ssh_config = false\ntheme = \"midnight\"\nssh_binary = \"skiff-test-no-such-ssh\"\n\n[[connection]]\nname = \"alpha\"\nhost = \"127.0.0.1\"\nport = 1\n\n[[connection]]\nname = \"beta\"\nhost = \"127.0.0.2\"\nport = 1\n";
 
 impl Fixture {
+    /// A fixture on the base `CONFIG`.
     pub fn new() -> Fixture {
         Self::with_config(CONFIG)
     }
 
+    /// A fixture on config `text`, in a fresh temp directory.
     pub fn with_config(text: &str) -> Fixture {
         Self::with_config_in(tempfile::tempdir().unwrap(), text)
     }
@@ -43,6 +53,7 @@ impl Fixture {
         f
     }
 
+    /// Runs one app frame with these input events.
     pub fn frame(&mut self, events: Vec<Event>) {
         let app = &mut self.app;
         self.h.style = app.style.clone(); // as `GuiApp::frame` does
@@ -54,6 +65,7 @@ impl Fixture {
         self.try_find(s).unwrap_or_else(|| panic!("no text {s:?} on screen; have {:?}", self.texts()))
     }
 
+    /// Top-left of the first text prim equal to `s`, if drawn.
     pub fn try_find(&self, s: &str) -> Option<Point> {
         self.h.list().prims.iter().find_map(|p| match p {
             Prim::Text { text, origin, .. } if text == s => Some(*origin),
@@ -61,21 +73,25 @@ impl Fixture {
         })
     }
 
+    /// Every text drawn last frame (for assertion messages and searches).
     pub fn texts(&self) -> Vec<String> {
         self.h.list().prims.iter().filter_map(|p| if let Prim::Text { text, .. } = p { Some(text.clone()) } else { None }).collect()
     }
 
+    /// A left click just inside `p`, then one more frame to settle.
     pub fn click(&mut self, p: Point) {
         let p = Point::new(p.x + 4, p.y + 6);
         self.frame(vec![Event::MouseMove(p), Event::MouseDown(MouseButton::Left, p), Event::MouseUp(MouseButton::Left, p)]);
         self.frame(vec![]);
     }
 
+    /// Left-clicks the text `s`.
     pub fn click_text(&mut self, s: &str) {
         let p = self.find(s);
         self.click(p);
     }
 
+    /// Right-clicks the text `s` (opens context menus).
     pub fn right_click_text(&mut self, s: &str) {
         let p = self.find(s);
         let p = Point::new(p.x + 4, p.y + 6);
@@ -83,6 +99,7 @@ impl Fixture {
         self.frame(vec![]);
     }
 
+    /// Double-clicks the text `s` (two clicks in consecutive frames).
     pub fn double_click_text(&mut self, s: &str) {
         let p = self.find(s);
         let p = Point::new(p.x + 4, p.y + 6);
@@ -93,6 +110,7 @@ impl Fixture {
     }
 }
 
+/// Typing in the filter box hides hosts that don't match.
 #[test]
 fn filter_narrows_sidebar() {
     let mut f = Fixture::new();
@@ -104,6 +122,7 @@ fn filter_narrows_sidebar() {
     assert!(f.try_find("beta").is_some());
 }
 
+/// Double-clicking a host opens a terminal tab titled with its name.
 #[test]
 fn double_click_host_opens_tab() {
     let mut f = Fixture::new();
@@ -114,6 +133,7 @@ fn double_click_host_opens_tab() {
     assert!(f.texts().iter().any(|t| t.contains("alpha") && t.contains('\u{25CF}')), "tab strip shows it");
 }
 
+/// "Open file transfer" in the host menu opens a Local / host files tab.
 #[test]
 fn context_menu_open_file_transfer() {
     let mut f = Fixture::new();
@@ -125,6 +145,7 @@ fn context_menu_open_file_transfer() {
     assert!(matches!(&ft.panes[1].loc, Location::Host(h) if h.name == "beta"));
 }
 
+/// Dragging the sidebar splitter saves the width to `state.toml`, not `config.toml`.
 #[test]
 fn sidebar_width_persists_to_state_file() {
     let mut f = Fixture::new();
@@ -140,6 +161,7 @@ fn sidebar_width_persists_to_state_file() {
     assert_eq!(std::fs::read_to_string(&f.path).unwrap(), CONFIG);
 }
 
+/// Deleting a custom host after confirming removes it from the config, keeping comments.
 #[test]
 fn delete_custom_connection_saves_config() {
     let mut f = Fixture::new();
@@ -154,6 +176,7 @@ fn delete_custom_connection_saves_config() {
     assert_eq!(f.app.hosts.len(), 1);
 }
 
+/// Duplicate adds `<name>-copy` and saves it.
 #[test]
 fn duplicate_connection_gets_unique_name() {
     let mut f = Fixture::new();
@@ -163,6 +186,7 @@ fn duplicate_connection_gets_unique_name() {
     assert!(std::fs::read_to_string(&f.path).unwrap().contains("alpha-copy"));
 }
 
+/// An engine message wakes the UI once, drains once, and a notice reaches the status bar.
 #[test]
 fn engine_message_wakes_and_is_drained() {
     let n = Arc::new(AtomicUsize::new(0));
@@ -182,6 +206,7 @@ fn engine_message_wakes_and_is_drained() {
     assert!(f.texts().iter().any(|t| t.contains("background notice")), "{:?}", f.texts());
 }
 
+/// Ctrl+Shift+W closes the tab and Ctrl+Shift+B hides the sidebar.
 #[test]
 fn close_tab_shortcut_and_toggle_sidebar() {
     let mut f = Fixture::new();
@@ -197,6 +222,7 @@ fn close_tab_shortcut_and_toggle_sidebar() {
 
 // ----- tab lifecycle (Task 12) --------------------------------------------
 
+/// Runs frames until `cond` holds, failing after 20 s with `what`.
 fn pump(f: &mut Fixture, what: &str, cond: impl Fn(&GuiApp) -> bool) {
     let start = std::time::Instant::now();
     while !cond(&f.app) {
@@ -206,6 +232,7 @@ fn pump(f: &mut Fixture, what: &str, cond: impl Fn(&GuiApp) -> bool) {
     }
 }
 
+/// The files tab with id `id` (panics if it is something else).
 fn files_tab(app: &mut GuiApp, id: u64) -> &mut crate::files::FilesTab {
     match &mut app.tabs.iter_mut().find(|t| t.id == id).unwrap().kind {
         TabKind::Files(f) => f,
@@ -223,6 +250,8 @@ fn waiting_transfer(f: &mut Fixture) -> (u64, tempfile::TempDir, tempfile::TempD
     pump(f, "panes loaded", |app| {
         app.tabs.iter().any(|t| matches!(&t.kind, TabKind::Files(ft) if ft.panes.iter().all(|p| p.ep.is_some() && p.state == crate::files::PaneState::Idle)))
     });
+    // Point the right pane at `b`, then copy `x.txt` across so it hits the
+    // existing file and waits on the overwrite question.
     let bdir = b.path().display().to_string();
     {
         let app = &mut f.app;
@@ -270,6 +299,7 @@ fn waiting_transfer(f: &mut Fixture) -> (u64, tempfile::TempDir, tempfile::TempD
     (id, a, b)
 }
 
+/// Closing a tab with a running transfer asks first (focus on Keep); Close anyway cancels it.
 #[test]
 fn close_with_running_transfer_asks_first() {
     let mut f = Fixture::new();
@@ -288,6 +318,7 @@ fn close_with_running_transfer_asks_first() {
     assert_eq!(std::fs::read(b.path().join("x.txt")).unwrap(), b"old");
 }
 
+/// Shutting a files tab down cancels its waiting transfer.
 #[test]
 fn shutdown_cancels_transfers() {
     let mut f = Fixture::new();
@@ -300,6 +331,7 @@ fn shutdown_cancels_transfers() {
     });
 }
 
+/// Engine events for a closed tab are dropped without panicking.
 #[test]
 fn close_tab_cancels_and_ignores_late_events() {
     let mut f = Fixture::new();
@@ -317,6 +349,7 @@ fn close_tab_cancels_and_ignores_late_events() {
     assert!(f.app.tabs.is_empty());
 }
 
+/// An askpass question for a tab that no longer exists is answered with `None`.
 #[test]
 fn late_ask_for_gone_tab_is_refused() {
     let mut f = Fixture::new();
@@ -333,6 +366,7 @@ fn late_ask_for_gone_tab_is_refused() {
     assert_eq!(rx.blocking_recv().unwrap(), None);
 }
 
+/// `show_hidden_files` starts new file panes with hidden files shown.
 #[test]
 fn show_hidden_setting_seeds_file_panes() {
     let mut f = Fixture::with_config(&CONFIG.replace("load_ssh_config = false", "load_ssh_config = false\nshow_hidden_files = true"));
@@ -341,6 +375,7 @@ fn show_hidden_setting_seeds_file_panes() {
     assert!(ft.panes.iter().all(|p| p.show_hidden));
 }
 
+/// F6 moves focus out of the terminal and Shift+F6 brings it back.
 #[test]
 fn f6_cycles_regions_from_terminal() {
     let mut f = Fixture::new();
@@ -357,6 +392,7 @@ fn f6_cycles_regions_from_terminal() {
     assert_eq!(f.h.state.focused(), Some(term), "Shift+F6 comes back");
 }
 
+/// Arrow keys on the focused tab strip switch tabs without moving focus to the terminal.
 #[test]
 fn tab_strip_arrows_keep_focus_on_strip() {
     let mut f = Fixture::new();
@@ -375,6 +411,7 @@ fn tab_strip_arrows_keep_focus_on_strip() {
     assert_eq!(f.h.state.focused(), Some(Id::new("tabs")), "arrows stay on the strip, not the shell");
 }
 
+/// Shift+F10 on a selected host opens its context menu.
 #[test]
 fn shift_f10_opens_host_menu() {
     let mut f = Fixture::new();
@@ -384,6 +421,7 @@ fn shift_f10_opens_host_menu() {
     assert!(f.try_find("Open terminal").is_some(), "{:?}", f.texts());
 }
 
+/// Host rows are list items named with host, status and target, inside a Hosts region.
 #[test]
 fn sidebar_tree_names_hosts() {
     let f = Fixture::new();
@@ -394,6 +432,7 @@ fn sidebar_tree_names_hosts() {
     assert_eq!(t.find("Hosts").map(|n| n.role), Some(skiff_ui::a11y::Role::Region));
 }
 
+/// A screen reader click on an unselected host opens its terminal.
 #[test]
 fn a11y_click_opens_host() {
     use skiff_ui::a11y::A11yAction;
@@ -407,6 +446,7 @@ fn a11y_click_opens_host() {
     assert_eq!(f.h.tree().find("Terminal: alpha").map(|n| n.role), Some(skiff_ui::a11y::Role::Terminal));
 }
 
+/// The new-connection form's Name field has an accessible label.
 #[test]
 fn settings_inputs_have_labels() {
     let mut f = Fixture::new();
@@ -418,6 +458,7 @@ fn settings_inputs_have_labels() {
     assert_eq!(t.find("Name").map(|n| n.role), Some(skiff_ui::a11y::Role::TextInput));
 }
 
+/// Ctrl+Alt+= / 0 change and save `ui_scale`; AltGr typing does not.
 #[test]
 fn ui_scale_shortcuts_persist() {
     let mut f = Fixture::new();
@@ -434,6 +475,7 @@ fn ui_scale_shortcuts_persist() {
     assert_eq!(f.app.cfg.gui.ui_scale, 1.0);
 }
 
+/// Choosing a snippet in the quick switcher types it into the active terminal.
 #[test]
 fn switcher_runs_snippet() {
     let cfg = CONFIG.replace("[[connection]]", "[[snippet]]\nname = \"greet\"\ncommand = \"echo snippet-ran\"\n\n[[connection]]");
@@ -469,6 +511,7 @@ fn switcher_runs_snippet() {
     wait(&mut f, "echo snippet-ran");
 }
 
+/// The same warning twice changes the live status text so it is announced again.
 #[test]
 fn repeated_warning_is_announced_again() {
     let mut f = Fixture::new();
@@ -483,6 +526,7 @@ fn repeated_warning_is_announced_again() {
     assert_eq!(second.trim_end_matches(skiff_ui::a11y::REPEAT_MARK), "disk full");
 }
 
+/// UI scale grows sidebar rows with the text but leaves terminal text size alone.
 #[test]
 fn ui_scale_scales_layout_with_text() {
     let mut f = Fixture::new();
@@ -496,6 +540,7 @@ fn ui_scale_scales_layout_with_text() {
     assert!((mono - f.app.cfg.gui.font_size.clamp(6.0, 72.0)).abs() < 1e-3, "terminal text keeps its size: {mono}");
 }
 
+/// The saved window size is in DPI-only logical pixels, unaffected by UI zoom.
 #[test]
 fn saved_window_size_ignores_ui_zoom() {
     let mut f = Fixture::new();
@@ -506,6 +551,7 @@ fn saved_window_size_ignores_ui_zoom() {
     assert_eq!(f.app.geometry.window_size, Some((1280, 800)));
 }
 
+/// A theme failing contrast checks warns once, not on every re-pick.
 #[test]
 fn unreadable_theme_warns_once() {
     let theme = "
@@ -528,6 +574,7 @@ error = \"red\"
     assert_eq!(n, 1, "{:?}", f.app.warnings);
 }
 
+/// The gear button (tooltip with shortcut) opens Settings by mouse and by keyboard, reusing the open tab.
 #[test]
 fn settings_gear_opens_settings_even_with_sidebar_collapsed() {
     let mut f = Fixture::new();

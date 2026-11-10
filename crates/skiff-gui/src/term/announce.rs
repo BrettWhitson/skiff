@@ -5,13 +5,17 @@ use std::time::{Duration, Instant};
 
 /// At most one announcement per this long.
 pub const EVERY: Duration = Duration::from_millis(500);
+/// Most lines one announcement says (the newest ones).
 const MAX_LINES: usize = 20;
+/// Most characters one announcement says (the newest ones).
 const MAX_CHARS: usize = 2000;
 
 /// Collects output between announcements.
 #[derive(Debug)]
 pub struct Announcer {
+    /// When the last announcement was made.
     last: Instant,
+    /// Output not yet announced (trimmed to its tail when it floods).
     pending: String,
     /// What the user typed since the last announcement (its echo is skipped).
     recent_keys: String,
@@ -23,6 +27,7 @@ impl Announcer {
         Announcer { last: now, pending: String::new(), recent_keys: String::new() }
     }
 
+    /// Adds new output to the next announcement.
     pub fn push_output(&mut self, text: &str) {
         self.pending.push_str(text);
         // Only the tail is ever said; don't let a flood grow without bound.
@@ -33,10 +38,12 @@ impl Announcer {
         }
     }
 
+    /// Whether output is waiting (the view schedules a repaint to say it).
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
+    /// Records typed text, so its echo is left out of the next announcement.
     pub fn typed(&mut self, s: &str) {
         self.recent_keys.push_str(s);
     }
@@ -48,6 +55,7 @@ impl Announcer {
             return None;
         }
         self.last = now;
+        // Normalize line ends, then drop the echo of what was typed if output starts with it.
         let mut text = std::mem::take(&mut self.pending).replace("\r\n", "\n").replace('\r', "\n");
         let keys = std::mem::take(&mut self.recent_keys);
         let keys = keys.trim();
@@ -56,6 +64,7 @@ impl Announcer {
         {
             text = rest.to_string();
         }
+        // Skip blank lines, keep the last MAX_LINES, then the last MAX_CHARS of those.
         let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
         let tail = lines[lines.len().saturating_sub(MAX_LINES)..].join("\n");
         let n = tail.chars().count();
@@ -71,11 +80,14 @@ pub fn new_output(old: &str, new: &str) -> String {
     let old: Vec<&str> = old.lines().collect();
     let new: Vec<&str> = new.lines().collect();
     let Some((last, above)) = old.split_last() else { return new.join("\n") };
+    // The fewest lines `k` the screen scrolled by so that the old lines above
+    // the cursor (minus the top `k`) still begin the new screen.
     let shift = (0..=above.len()).find(|&k| {
         let kept = &above[k..];
         new.len() >= kept.len() && new[..kept.len()] == *kept
     });
     let Some(k) = shift else { return new.join("\n") };
+    // Everything from where the old cursor line now sits is new.
     let start = above.len() - k;
     let mut out: Vec<String> = new.get(start..).unwrap_or(&[]).iter().map(|s| s.to_string()).collect();
     if let Some(first) = out.first_mut()
@@ -91,6 +103,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Announcements are rate-limited, capped to the newest output, and skip the typed echo.
     fn live_region_batches() {
         let t0 = Instant::now();
         let mut a = Announcer::new(t0);
@@ -110,6 +123,7 @@ mod tests {
     }
 
     #[test]
+    /// New output is the text from the old cursor line on, allowing for a scroll.
     fn new_output_is_the_changed_tail() {
         assert_eq!(new_output("a\nb\n$ l", "a\nb\n$ ls\nfile1\n$ "), "s\nfile1\n$ ");
         assert_eq!(new_output("1\n2\n3", "2\n3\n4"), "\n4", "the screen scrolled by one line");
