@@ -191,9 +191,12 @@ General → Clear history forgets it.
 
 ### TUI
 
-Shortcuts are `Alt+O` followed by a key (Alt may stay held): bash's
-readline binds nearly every other Alt key, so they stay the shell's.
-`Alt+O` twice sends `Alt+O` itself; `Esc` cancels.
+Shortcuts are two presses: `Alt+O`, then a key (written `Alt+O, w`; Alt
+may stay held). Bash's readline binds nearly every other Alt key, so they
+stay the shell's. The footer always shows the keys (`Alt+O then: 1…9 tab ·
+w close …`), and after `Alt+O` it lists what can follow. `Alt+O` twice sends
+`Alt+O` itself; `Esc` cancels. On the host list and in file tabs, `?` shows
+all keys and `q` quits / closes the tab.
 
 | Where | Key | Action |
 |---|---|---|

@@ -284,7 +284,7 @@ impl fmt::Display for Chord {
         }
         match self.code {
             KeyCode::Char(' ') => write!(f, "Space"),
-            // After the prefix a letter is shown as typed (`Alt+O w`, not Shift+W).
+            // After the prefix a letter is shown as typed (`Alt+O, w`, not Shift+W).
             KeyCode::Char(c) if self.after_prefix => write!(f, "{c}"),
             KeyCode::Char(c) => write!(f, "{}", c.to_ascii_uppercase()),
             KeyCode::Left => write!(f, "←"),
@@ -379,13 +379,34 @@ impl Keymap {
         if c.is_empty() { "unbound".into() } else { c.join(" / ") }
     }
 
-    /// One chord as text, with the prefix in front of a key after it;
-    /// `None` for such a key when no prefix is bound.
+    /// One chord as text, with the prefix in front of a key after it
+    /// (`Alt+O, w`: the comma marks two presses in a row); `None` for such a
+    /// key when no prefix is bound.
     fn show_chord(&self, c: &Chord) -> Option<String> {
         if !c.after_prefix {
             return Some(c.to_string());
         }
-        self.chords(Action::Prefix).first().map(|p| format!("{p} {c}"))
+        self.chords(Action::Prefix).first().map(|p| format!("{p}, {c}"))
+    }
+
+    /// The prefix chord as text, if one is bound (`Alt+O`).
+    pub fn prefix(&self) -> Option<String> {
+        self.chords(Action::Prefix).first().map(|p| p.to_string())
+    }
+
+    /// The key pressed after the prefix for `a` (`w`), for legends that name
+    /// the prefix once; `None` when `a` has no such key or no prefix is bound.
+    pub fn after_prefix(&self, a: Action) -> Option<String> {
+        self.prefix()?;
+        self.chords(a).iter().find(|c| c.after_prefix).map(|c| c.to_string())
+    }
+
+    /// The bare tab keys after the prefix (`1…9`) when they follow the
+    /// digit pattern; `None` otherwise.
+    pub fn tabs_after_prefix(&self) -> Option<String> {
+        let tabs = self.show_tabs();
+        let p = self.prefix()?;
+        tabs.strip_prefix(&format!("{p}, ")).map(str::to_string)
     }
 
     /// The tab-switching keys, compact when they follow one pattern (`Alt+1…9`).
@@ -441,9 +462,9 @@ mod tests {
         assert_eq!(k.match_after_prefix(&key(KeyCode::Char('W'), KeyModifiers::ALT)), Some(Action::CloseTab));
         assert_eq!(k.match_after_prefix(&key(KeyCode::Char('3'), KeyModifiers::NONE)), Some(Action::Tab(3)));
         assert_eq!(k.match_after_prefix(&key(KeyCode::Left, KeyModifiers::NONE)), Some(Action::ResizePaneLeft));
-        assert_eq!(k.show_tabs(), "Alt+O 1…9");
-        assert_eq!(k.show(Action::NextTab), "Alt+] / Alt+O n");
-        assert_eq!(k.show(Action::Help), "Alt+O ? / Alt+O h");
+        assert_eq!(k.show_tabs(), "Alt+O, 1…9");
+        assert_eq!(k.show(Action::NextTab), "Alt+] / Alt+O, n");
+        assert_eq!(k.show(Action::Help), "Alt+O, ? / Alt+O, h");
     }
 
     /// Overrides replace defaults; bad names, chords and clashes are reported
@@ -471,8 +492,8 @@ mod tests {
         assert_eq!(k.match_key(&key(KeyCode::Char('X'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)), Some(Action::CloseTab));
         assert_eq!(k.match_key(&key(KeyCode::F(4), KeyModifiers::NONE)), Some(Action::CloseTab));
         assert_eq!(k.match_key(&key(KeyCode::Char('w'), KeyModifiers::ALT)), None, "the default is replaced");
-        assert_eq!(k.show(Action::Help), "Alt+O ? / Alt+O h", "a bad entry keeps the default");
-        assert_eq!(k.show(Action::Quit), "Alt+O q", "a clashing entry keeps the default");
+        assert_eq!(k.show(Action::Help), "Alt+O, ? / Alt+O, h", "a bad entry keeps the default");
+        assert_eq!(k.show(Action::Quit), "Alt+O, q", "a clashing entry keeps the default");
         // Swapping two actions is fine.
         let (k, errors) = Keymap::new(&map(&[("find", "alt+q"), ("quit", "alt+f")]));
         assert!(errors.is_empty(), "{errors:?}");
@@ -501,7 +522,7 @@ mod tests {
         assert_eq!(k.match_key(&key(KeyCode::Char('?'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::Help));
         assert_eq!(k.match_key(&key(KeyCode::Char('+'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::Theme));
         assert_eq!(k.match_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)), None);
-        assert_eq!(k.show(Action::Quit), "Alt+O q");
+        assert_eq!(k.show(Action::Quit), "Alt+O, q");
         assert_eq!(k.show(Action::Snippets), "Ctrl+Alt+C");
         assert_eq!(k.show(Action::CloseTab), "Ctrl+Shift+C", "Shift tells letters apart");
     }

@@ -103,6 +103,24 @@ fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Draws the bottom line. In priority order: the find bar while searching,
 /// an error (plus any security-key notice), a notice, an info message, a
+/// The footer's shortcut part: the prefix named once, then each key pressed
+/// after it (`Alt+O then: 1…9 tab · w close`). Tab switching always comes
+/// first. Without a prefix (all remapped to chords) each chord is shown whole.
+fn shortcut_legend(app: &App, items: &[(Action, &str)]) -> String {
+    let k = &app.keys;
+    if let Some(p) = k.prefix() {
+        let mut parts = vec![format!("{} tab", k.tabs_after_prefix().unwrap_or_else(|| k.show_tabs()))];
+        parts.extend(items.iter().map(|&(a, what)| match k.after_prefix(a) {
+            Some(key) => format!("{key} {what}"),
+            None => format!("{} {what}", k.show(a)),
+        }));
+        return format!("{p} then: {}", parts.join(" · "));
+    }
+    let mut parts = vec![format!("{} tab", k.show_tabs())];
+    parts.extend(items.iter().map(|&(a, what)| format!("{} {what}", k.show(a))));
+    parts.join(" · ")
+}
+
 /// pointer to another tab waiting for an answer, else key hints for the tab.
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
@@ -122,9 +140,23 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let waiting = app.waiting_tabs();
     let notice = app.notices.first().map(|(host, req)| Span::styled(format!(" {host}: {}", req.prompt.trim()), Style::new().fg(t.warning)));
     let line = if app.prefix_pending {
-        // Between the prefix and its key: say what happens next.
-        let help = app.keys.show(Action::Help);
-        Line::styled(format!(" {}: press a shortcut key (Esc cancels; help: {help})", app.keys.show(Action::Prefix)), t.accent())
+        // Between the prefix and its key: list the keys that can follow.
+        let k = &app.keys;
+        let key = |a| k.after_prefix(a).unwrap_or_else(|| "-".into());
+        let tabs = k.tabs_after_prefix().unwrap_or_else(|| "-".into());
+        Line::styled(
+            format!(
+                " {} … now press: {tabs} tab · {} close · {} find · {} snippets · {} split · {} help · {} quit · Esc cancel",
+                k.show(Action::Prefix),
+                key(Action::CloseTab),
+                key(Action::Find),
+                key(Action::Snippets),
+                key(Action::SplitRight),
+                key(Action::Help),
+                key(Action::Quit),
+            ),
+            t.accent(),
+        )
     } else if let Some((msg, true, _)) = &app.status {
         // An error first, with a pending security-key notice after it.
         let mut spans = vec![Span::styled(format!(" Error: {msg}"), Style::new().fg(t.error))];
@@ -145,29 +177,35 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else {
         let hints = match &app.tabs[app.active].kind {
             TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear".to_string(),
+            // The shortcut legend leads so a narrow screen still shows it;
+            // `?` lists everything else.
             TabKind::Hosts => format!(
-                "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · {} tabs · ? help · q quit",
-                app.keys.show_tabs()
+                "{} │ Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · ? help · q quit",
+                shortcut_legend(app, &[])
             ),
             TabKind::Terminal(_) => {
-                let k = &app.keys;
-                let split = if app.tabs[app.active].split.is_some() {
-                    format!("{} other pane", k.show(Action::FocusNextPane))
+                let pane = if app.tabs[app.active].split.is_some() {
+                    (Action::FocusNextPane, "other pane")
                 } else {
-                    format!("{} split", k.show(Action::SplitRight))
+                    (Action::SplitRight, "split")
                 };
                 format!(
-                    "{} tabs · {} close · {} find · {} snippets · {split} · Shift+PgUp/PgDn scroll · {} help",
-                    k.show_tabs(),
-                    k.show(Action::CloseTab),
-                    k.show(Action::Find),
-                    k.show(Action::Snippets),
-                    k.show(Action::Help)
+                    "{} │ Shift+PgUp/PgDn scroll",
+                    shortcut_legend(
+                        app,
+                        &[
+                            (Action::CloseTab, "close"),
+                            (Action::Find, "find"),
+                            (Action::Snippets, "snippets"),
+                            pane,
+                            (Action::Help, "help")
+                        ]
+                    )
                 )
             }
             TabKind::Sftp(_) => format!(
-                "Tab pane · Enter open · Bksp up · c copy · X cancel copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh · {} tabs · q close · ? help",
-                app.keys.show_tabs()
+                "{} │ q close · ? help · Tab pane · Enter open · Bksp up · c copy · X cancel copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh",
+                shortcut_legend(app, &[])
             ),
         };
         Line::from(Span::styled(format!(" {hints}"), t.muted()))
@@ -629,6 +667,10 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             let a = |action: Action| k(&app.keys.show(action), action.label());
             let h = |s: &str| Line::styled(s.to_string(), t.title());
             let mut lines: Vec<Line> = app.key_errors.iter().map(|e| Line::styled(format!("  {e}"), Style::new().fg(t.error))).collect();
+            if let Some(p) = app.keys.prefix() {
+                // How to read "Alt+O, w" before the list uses it.
+                lines.push(Line::styled(format!("  \"{p}, w\" means: press {p}, let go, then press w (Esc cancels)."), t.muted()));
+            }
             lines.extend([
                 h("Everywhere ([tui_keys] in the config remaps these)"),
                 a(Action::Prefix),

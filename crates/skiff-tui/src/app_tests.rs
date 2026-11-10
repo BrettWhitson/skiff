@@ -1003,3 +1003,18 @@ fn prefix_shortcuts_work_in_an_sftp_tab() {
     cmd(&mut t, 'q');
     assert!(t.app.modal.is_some() || t.app.should_quit, "prefix + q quits");
 }
+
+/// The footer names the prefix once and the keys after it, early enough to
+/// fit an 80-column screen; after the prefix it lists what can follow.
+#[test]
+fn footer_legend_explains_the_prefix() {
+    let mut t = T::new("");
+    let term = draw(&mut t);
+    assert!(find_text(&term, "Alt+O then: 1…9 tab").is_some(), "hosts footer shows the prefix legend");
+    connecting_sftp_tab(&mut t);
+    let term = draw(&mut t);
+    assert!(find_text(&term, "Alt+O then: 1…9 tab │ q close").is_some(), "sftp footer shows the legend and q");
+    alt(&mut t, 'o');
+    let term = draw(&mut t);
+    assert!(find_text(&term, "now press: 1…9 tab · w close").is_some(), "pending prefix lists what can follow");
+}
