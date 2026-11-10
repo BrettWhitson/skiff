@@ -28,7 +28,11 @@ impl Fixture {
     }
 
     pub fn with_config(text: &str) -> Fixture {
-        let dir = tempfile::tempdir().unwrap();
+        Self::with_config_in(tempfile::tempdir().unwrap(), text)
+    }
+
+    /// Like `with_config`, in `dir` (which may hold other files the config names).
+    pub fn with_config_in(dir: tempfile::TempDir, text: &str) -> Fixture {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, text).unwrap();
         let cfg = Config::load_or_create(&path).unwrap();
@@ -153,8 +157,8 @@ fn duplicate_connection_gets_unique_name() {
     let mut f = Fixture::new();
     f.right_click_text("alpha");
     f.click_text("Duplicate");
-    assert!(f.app.cfg.connections.iter().any(|c| c.name == "alpha (copy)"));
-    assert!(std::fs::read_to_string(&f.path).unwrap().contains("alpha (copy)"));
+    assert!(f.app.cfg.connections.iter().any(|c| c.name == "alpha-copy"));
+    assert!(std::fs::read_to_string(&f.path).unwrap().contains("alpha-copy"));
 }
 
 #[test]

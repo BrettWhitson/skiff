@@ -1,13 +1,19 @@
 //! The application: owns config, hosts, theme, tabs and the engine, and
 //! implements the toolkit's `App` trait. Screens live in their own modules.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use termax_core::config::{Config, Connection, FileWatcher};
-use termax_core::hosts::{self, HostEntry, Source};
+use termax_core::config::{Config, FileWatcher, StatusChecks};
+use termax_core::forward::{Forward, ForwardHandle, ForwardState};
+use termax_core::history::{self, ConnKind, History};
+use termax_core::hostform::{self, Saved};
+use termax_core::hosts::{self, HostEntry};
+use termax_core::sshconfig::edit::{ConfigSet, backups_dir};
 use termax_core::state;
+use termax_core::status::{self, Status};
 use termax_core::theme::{ThemeDef, builtin};
 use termax_ui::geom::Rect;
 use termax_ui::input::Event;
@@ -21,7 +27,8 @@ use termax_ui::widgets::{TabTitle, button, label, splitter_h, tabs};
 use crate::engine::{Engine, Msg};
 use crate::files::{FilesTab, Location};
 use crate::keys::{Action, Keymap};
-use crate::sidebar::{Sidebar, SidebarAction, sidebar};
+use crate::forwards::{ForwardsState, Running};
+use crate::sidebar::{Sidebar, SidebarAction, SidebarCtx, sidebar};
 use crate::switcher::{Cmd, Item, SwitcherState};
 use crate::term::TermTab;
 use crate::theme::{GuiTheme, from_def};
@@ -47,6 +54,7 @@ pub enum TabKind {
     Terminal(Box<TermTab>),
     Files(Box<FilesTab>),
     Settings,
+    Forwards,
 }
 
 pub struct Tab {
@@ -60,6 +68,17 @@ pub struct GuiApp {
     /// The config as last loaded/saved: `Config::save` diffs against it.
     pub baseline: Config,
     pub hosts: Vec<HostEntry>,
+    /// Bumped whenever `hosts` is rebuilt (forms follow the list by it).
+    pub hosts_gen: u64,
+    /// The ssh config files (main first), for "Move to file…".
+    pub ssh_files: Vec<PathBuf>,
+    /// Reachability per host name (opt-in checks).
+    pub statuses: HashMap<String, Status>,
+    pub history: History,
+    history_path: PathBuf,
+    /// Terminal tabs to record in history once they prove connected.
+    pending_records: Vec<(u64, String, Instant)>,
+    pub forwards: ForwardsState,
     pub theme: GuiTheme,
     pub style: Style,
     pub keymap: Keymap,
@@ -84,8 +103,8 @@ pub struct GuiApp {
     pub new_connection: bool,
     /// Actions for the active view (copy, paste, zoom), consumed by it.
     pub view_actions: Vec<Action>,
-    /// Connection the settings screen should open for editing.
-    pub edit_target: Option<usize>,
+    /// Host (by name) the settings screen should open for editing.
+    pub edit_target: Option<String>,
     /// Host to open on the first frame (from the command line; `true` = files).
     pub open: Option<(String, bool)>,
     /// Where Local file panes start.
@@ -163,11 +182,20 @@ impl GuiApp {
             _ => None,
         };
         let cfg_path_for_watch = cfg_path.clone();
-        GuiApp {
+        let history_path = History::path_for(&cfg_path);
+        let on_start = cfg.settings.status_checks == StatusChecks::OnStart;
+        let mut app = GuiApp {
             baseline: cfg.clone(),
+            ssh_files: ssh_files(&cfg),
             cfg,
             cfg_path,
             hosts,
+            hosts_gen: 0,
+            statuses: HashMap::new(),
+            history: History::load(&history_path),
+            history_path,
+            pending_records: vec![],
+            forwards: ForwardsState::default(),
             theme,
             style,
             keymap,
@@ -199,7 +227,11 @@ impl GuiApp {
             last_poll: Instant::now(),
             window_focused: true,
             ui_state: UiState::default(),
+        };
+        if on_start {
+            app.check_status(None);
         }
+        app
     }
 
     pub fn warn(&mut self, w: impl Into<String>) {
@@ -220,7 +252,19 @@ impl GuiApp {
     }
 
     pub fn open_terminal(&mut self, host: &HostEntry) -> u64 {
-        self.push_tab(TabKind::Terminal(Box::new(TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback))))
+        let id = self.push_tab(TabKind::Terminal(Box::new(TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback))));
+        self.pending_records.push((id, host.name.clone(), Instant::now()));
+        id
+    }
+
+    /// Shows the Forwards tab (opening it if needed).
+    pub fn open_forwards(&mut self) {
+        match self.tabs.iter().position(|t| matches!(t.kind, TabKind::Forwards)) {
+            Some(i) => self.active = i,
+            None => {
+                self.push_tab(TabKind::Forwards);
+            }
+        }
     }
 
     pub fn open_files(&mut self, left: Location, right: Location) -> u64 {
@@ -235,14 +279,16 @@ impl GuiApp {
     }
 
     pub fn open_settings(&mut self) {
-        if let Some(i) = self.edit_target.take() {
+        if let Some(name) = self.edit_target.take() {
             let mut st = std::mem::take(&mut self.settings);
             st.section = crate::settings::Section::Connections;
-            st.conn.edit(i, self);
+            st.conn.edit_host(&name, self);
             self.settings = st;
         } else if std::mem::take(&mut self.new_connection) {
-            self.settings.section = crate::settings::Section::Connections;
-            self.settings.conn.new_form();
+            let mut st = std::mem::take(&mut self.settings);
+            st.section = crate::settings::Section::Connections;
+            st.conn.new_form(self);
+            self.settings = st;
         }
         match self.tabs.iter().position(|t| matches!(t.kind, TabKind::Settings)) {
             Some(i) => self.active = i,
@@ -291,6 +337,7 @@ impl GuiApp {
             TabKind::Terminal(t) => format!("\u{25CF} {}", t.host.name),
             TabKind::Files(f) => f.title(),
             TabKind::Settings => "Settings".into(),
+            TabKind::Forwards => "\u{21C4} Forwards".into(),
         }
     }
 
@@ -319,26 +366,176 @@ impl GuiApp {
     pub fn rebuild_hosts(&mut self) {
         let (hosts, w) = hosts::collect(&self.cfg);
         self.hosts = hosts;
+        self.hosts_gen += 1;
+        self.ssh_files = ssh_files(&self.cfg);
         if let Some(w) = w {
             self.warn(w);
         }
     }
 
-    pub(crate) fn unique_name(&self, base: &str) -> String {
-        let taken = |n: &str| self.cfg.connections.iter().any(|c| c.name == n);
-        let mut name = format!("{base} (copy)");
-        let mut k = 2;
-        while taken(&name) {
-            name = format!("{base} (copy {k})");
-            k += 1;
+    // ----- host management -------------------------------------------
+
+    /// The ssh config files, or an empty set when ssh config is off or unreadable.
+    pub fn load_set(&mut self) -> ConfigSet {
+        match hosts::ssh_config_path(&self.cfg) {
+            Some(p) => ConfigSet::load(&p).unwrap_or_else(|e| {
+                self.warn(format!("{e:#}"));
+                ConfigSet { docs: vec![] }
+            }),
+            None => ConfigSet { docs: vec![] },
         }
-        name
     }
 
-    fn custom_index(&self, host: usize) -> Option<usize> {
-        match self.hosts.get(host)?.source {
-            Source::Custom(i) => Some(i),
-            Source::SshConfig => None,
+    /// Writes what a host change touched (with a backup for ssh config)
+    /// and rebuilds the host list.
+    pub fn apply_saved(&mut self, saved: Saved, set: &mut ConfigSet) -> Result<(), String> {
+        match saved {
+            Saved::Ssh(_) => {
+                set.save(&backups_dir(&self.cfg_path)).map_err(|e| format!("{e:#}"))?;
+                self.rebuild_hosts();
+            }
+            Saved::Termax(_) => self.save_config(),
+        }
+        Ok(())
+    }
+
+    /// Adds a copy of host `i` (named `<name>-copy`) next to it; returns its name.
+    pub fn duplicate_host(&mut self, i: usize) -> Result<String, String> {
+        let h = self.hosts.get(i).cloned().ok_or("That host is gone")?;
+        let mut set = self.load_set();
+        let taken = hostform::taken_names(&self.hosts);
+        let form = hostform::duplicate(&h, &self.cfg, &set, &taken)?;
+        let saved = form.save(&mut self.cfg, &mut set, &taken)?;
+        let name = saved.name().to_string();
+        self.apply_saved(saved, &mut set)?;
+        Ok(name)
+    }
+
+    pub fn delete_host(&mut self, i: usize) -> Result<(), String> {
+        let h = self.hosts.get(i).cloned().ok_or("That host is gone")?;
+        let mut set = self.load_set();
+        let saved = hostform::delete(&h, &mut self.cfg, &mut set)?;
+        self.apply_saved(saved, &mut set)
+    }
+
+    fn set_host_hidden(&mut self, i: usize, hidden: bool) -> Result<(), String> {
+        let h = self.hosts.get(i).cloned().ok_or("That host is gone")?;
+        let mut set = self.load_set();
+        let saved = hostform::set_hidden(&h, hidden, &mut self.cfg, &mut set)?;
+        self.apply_saved(saved, &mut set)
+    }
+
+    fn move_host(&mut self, i: usize, doc: usize) -> Result<(), String> {
+        let h = self.hosts.get(i).cloned().ok_or("That host is gone")?;
+        let mut set = self.load_set();
+        set.move_host(&h.name, doc)?;
+        self.apply_saved(Saved::Ssh(h.name), &mut set)
+    }
+
+    pub fn set_show_hidden(&mut self, show: bool) {
+        self.geometry.show_hidden = show;
+        self.geometry_changed();
+    }
+
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        match self.history.save(&self.history_path) {
+            Ok(()) => self.warn("History cleared"),
+            Err(e) => self.warn(format!("could not save history: {e:#}")),
+        }
+    }
+
+    pub fn record(&mut self, name: &str, kind: ConnKind) {
+        self.history.record(name, kind, history::now());
+        if let Err(e) = self.history.save(&self.history_path) {
+            self.warn(format!("could not save history: {e:#}"));
+        }
+    }
+
+    /// Checks host `only`, or every listed host. Never runs on its own
+    /// unless `status_checks = "on_start"`.
+    pub fn check_status(&mut self, only: Option<usize>) {
+        let set = self.load_set();
+        let set = (!set.docs.is_empty()).then_some(set);
+        let idx: Vec<usize> = match only {
+            Some(i) => vec![i],
+            None => hosts::visible(&self.hosts, self.geometry.show_hidden),
+        };
+        let items: Vec<(String, hosts::Probe)> =
+            idx.into_iter().filter_map(|i| self.hosts.get(i)).map(|h| (h.name.clone(), h.probe(set.as_ref()))).collect();
+        for (n, _) in &items {
+            self.statuses.insert(n.clone(), Status::Checking);
+        }
+        let tx = self.engine.sender();
+        status::check_all(self.engine.rt.handle(), items, Arc::new(move |host, status| {
+            tx.send(Msg::HostStatus { host, status });
+        }));
+    }
+
+    /// The sidebar's selected host.
+    pub fn sidebar_selected(&self) -> Option<usize> {
+        self.sidebar.selected_host(&self.sidebar_ctx())
+    }
+
+    fn sidebar_ctx(&self) -> SidebarCtx<'_> {
+        SidebarCtx {
+            hosts: &self.hosts,
+            statuses: &self.statuses,
+            history: &self.history,
+            sort: self.geometry.sort,
+            show_hidden: self.geometry.show_hidden,
+            files: &self.ssh_files,
+        }
+    }
+
+    /// Starts forward `f` in the background; prompts arrive in the Forwards tab.
+    pub fn start_forward(&mut self, st: &mut ForwardsState, f: &Forward) {
+        let Some(host) = self.hosts.iter().find(|h| h.name == f.host).cloned() else {
+            self.warn(format!("unknown host: {}", f.host));
+            return;
+        };
+        st.stop(f);
+        st.running.retain(|r| &r.fwd != f || r.handle.state().is_live());
+        if self.ssh_version.is_none() {
+            self.ssh_version = Some(termax_core::sshver::client_version(&self.cfg.settings.ssh_binary).ok());
+        }
+        let can_prompt = self.askpass.is_some() && self.ssh_version.flatten().is_none_or(termax_core::sshver::supports_askpass_require);
+        let tag = st.new_tag();
+        let mut args = f.background_args(&host);
+        let mut env = vec![];
+        match (&self.askpass, can_prompt) {
+            (Some(b), true) => env = b.env(&tag),
+            _ => args.splice(0..0, ["-o".to_string(), "BatchMode=yes".to_string()]).for_each(drop),
+        }
+        let handle = ForwardHandle::start(self.engine.rt.handle(), &self.cfg.settings.ssh_binary, args, env);
+        st.running.push(Running { fwd: f.clone(), handle, tag, recorded: false });
+    }
+
+    /// History for terminals that have shown output and are still running
+    /// two seconds in, and for forwards that came up.
+    fn record_connections(&mut self) {
+        let mut done = vec![];
+        self.pending_records.retain(|(id, name, at)| {
+            let Some(tab) = self.tabs.iter_mut().find(|t| t.id == *id) else { return false };
+            let TabKind::Terminal(t) = &mut tab.kind else { return false };
+            match &mut t.session {
+                Some(s) if at.elapsed() >= Duration::from_secs(2) && s.generation() > 0 => {
+                    if s.is_alive() {
+                        done.push((name.clone(), ConnKind::Terminal));
+                    }
+                    false
+                }
+                _ => t.error.is_none(),
+            }
+        });
+        for r in &mut self.forwards.running {
+            if !r.recorded && r.handle.state() == ForwardState::Running {
+                r.recorded = true;
+                done.push((r.fwd.host.clone(), ConnKind::Forward));
+            }
+        }
+        for (name, kind) in done {
+            self.record(&name, kind);
         }
     }
 
@@ -355,22 +552,45 @@ impl GuiApp {
                 }
             }
             SidebarAction::Edit(h) => {
-                self.edit_target = self.custom_index(h);
+                self.edit_target = self.hosts.get(h).map(|h| h.name.clone());
                 self.open_settings();
             }
             SidebarAction::Duplicate(h) => {
-                if let Some(i) = self.custom_index(h) {
-                    let mut c: Connection = self.cfg.connections[i].clone();
-                    c.name = self.unique_name(&c.name);
-                    self.cfg.connections.push(c);
-                    self.save_config();
+                if let Err(e) = self.duplicate_host(h) {
+                    self.warn(e);
                 }
             }
             SidebarAction::Delete(h) => {
-                if let Some(i) = self.custom_index(h) {
-                    self.cfg.connections.remove(i);
-                    self.save_config();
+                if let Err(e) = self.delete_host(h) {
+                    self.warn(e);
                 }
+            }
+            SidebarAction::SetHidden(h, hidden) => {
+                if let Err(e) = self.set_host_hidden(h, hidden) {
+                    self.warn(e);
+                }
+            }
+            SidebarAction::MoveTo(h, doc) => {
+                if let Err(e) = self.move_host(h, doc) {
+                    self.warn(e);
+                }
+            }
+            SidebarAction::Forward(h) => {
+                self.forwards.new_form(h);
+                self.open_forwards();
+            }
+            SidebarAction::Check(h) => self.check_status(Some(h)),
+            SidebarAction::CheckAll => self.check_status(None),
+            SidebarAction::SetSort(s) => {
+                self.geometry.sort = s;
+                self.geometry_changed();
+            }
+            SidebarAction::ToggleShowHidden => self.set_show_hidden(!self.geometry.show_hidden),
+            SidebarAction::OpenForwards => self.open_forwards(),
+            SidebarAction::NewHost => {
+                self.edit_target = None;
+                self.new_connection = true;
+                self.open_settings();
             }
         }
     }
@@ -436,6 +656,8 @@ impl GuiApp {
                 self.open_settings();
             }
             Item::Command(Cmd::Settings) => self.open_settings(),
+            Item::Command(Cmd::Forwards) => self.open_forwards(),
+            Item::Command(Cmd::CheckStatus) => self.check_status(None),
             Item::Command(Cmd::ReloadConfig) => self.reload_config(),
         }
     }
@@ -450,7 +672,11 @@ impl GuiApp {
             return;
         }
         let tabs: Vec<(u64, String)> = (0..self.tabs.len()).map(|i| (self.tabs[i].id, self.tab_title(i))).collect();
-        let items = crate::switcher::rank(&self.switcher.query, &self.hosts, &tabs, &self.theme_names());
+        let ctx = crate::switcher::RankCtx {
+            show_hidden: self.geometry.show_hidden,
+            recent: self.history.recent(crate::switcher::RECENT_HOSTS),
+        };
+        let items = crate::switcher::rank(&self.switcher.query, &self.hosts, &tabs, &self.theme_names(), &ctx);
         let out = crate::switcher::show(ui, &mut self.switcher, &items);
         if out.close {
             self.switcher_open = false;
@@ -542,6 +768,9 @@ impl GuiApp {
                 continue; // the tab is gone
             }
             match m {
+                Msg::HostStatus { host, status } => {
+                    self.statuses.insert(host, status);
+                }
                 Msg::Notice { text, .. } => self.warn(text),
                 Msg::Transfer { tab, ev } => {
                     let ctx = crate::files::FilesCtx {
@@ -557,6 +786,14 @@ impl GuiApp {
                         f.on_transfer(ev, &ctx);
                     }
                 }
+                Msg::Ask(req) if req.tag.starts_with(crate::forwards::TAG_PREFIX) => {
+                    let live = self.forwards.running.iter().any(|r| r.tag == req.tag && r.handle.state().is_live());
+                    if live {
+                        self.forwards.ask(req);
+                    } else {
+                        let _ = req.reply.send(None);
+                    }
+                }
                 Msg::Ask(req) => {
                     let tab = crate::files::parse_tag(&req.tag).map(|(t, _)| t);
                     match self.tabs.iter_mut().find(|t| Some(t.id) == tab).map(|t| &mut t.kind) {
@@ -567,6 +804,13 @@ impl GuiApp {
                     }
                 }
                 Msg::Files { tab, side, ev } => {
+                    if let crate::files::FilesEvent::Connected { result: Ok(_), .. } = &ev
+                        && let Some(TabKind::Files(f)) = self.tabs.iter().find(|t| t.id == tab).map(|t| &t.kind)
+                        && let Some(Location::Host(h)) = f.panes.get(side).map(|p| &p.loc)
+                    {
+                        let name = h.name.clone();
+                        self.record(&name, ConnKind::Files);
+                    }
                     let ctx = crate::files::FilesCtx {
                         tab_id: tab,
                         engine: &self.engine,
@@ -611,6 +855,7 @@ impl GuiApp {
             self.handle_shortcuts(ui);
         }
         self.track_window_size(ui);
+        self.record_connections();
 
         let win = ui.window_rect();
         let p = self.theme.palette;
@@ -626,7 +871,10 @@ impl GuiApp {
             if self.geometry.sidebar_width != before {
                 self.geometry_changed();
             }
-            if let Some(a) = sidebar(ui, side, &mut self.sidebar, &self.hosts) {
+            let mut sb = std::mem::take(&mut self.sidebar);
+            let a = sidebar(ui, side, &mut sb, &self.sidebar_ctx());
+            self.sidebar = sb;
+            if let Some(a) = a {
                 self.on_sidebar(a);
             }
             main
@@ -703,6 +951,7 @@ impl GuiApp {
         let newly_shown = self.shown_tab != Some(tab.id);
         self.shown_tab = Some(tab.id);
         let mut show_settings = false;
+        let mut show_forwards = false;
         match &mut tab.kind {
             TabKind::Terminal(t) => {
                 let id = Id::new(("term", tab.id));
@@ -728,9 +977,13 @@ impl GuiApp {
                 let _ = line;
                 show_settings = true;
             }
+            TabKind::Forwards => show_forwards = true,
         }
         if show_settings {
             crate::settings::view(ui, content, self);
+        }
+        if show_forwards {
+            crate::forwards::view(ui, content, self);
         }
     }
 
@@ -794,8 +1047,17 @@ impl GuiApp {
             Some(TabKind::Terminal(t)) => t.status(),
             Some(TabKind::Files(f)) => format!("files: {} \u{2194} {}", f.panes[0].loc.label(), f.panes[1].loc.label()),
             Some(TabKind::Settings) => "settings".into(),
+            Some(TabKind::Forwards) => {
+                let n = self.forwards.running.iter().filter(|r| r.handle.state() == ForwardState::Running).count();
+                format!("{n} forward{} running", if n == 1 { "" } else { "s" })
+            }
             None => "no tabs".into(),
         };
+        // The host under the mouse is described in words (not only by its dot).
+        let hovered = self.sidebar.hovered.and_then(|i| self.hosts.get(i)).map(|h| {
+            let s = crate::sidebar::describe(h, self.statuses.get(&h.name), &self.history);
+            format!("{}: {s}", h.name)
+        });
         let n = self.tabs.len();
         let right = format!("{n} tab{} \u{00B7} theme: {}", if n == 1 { "" } else { "s" }, self.theme.name);
         let pad = ui.px(10);
@@ -803,7 +1065,9 @@ impl GuiApp {
         let inner = rect.inset(0);
         let parts = ui.split_h(Rect::new(inner.x + pad, inner.y, inner.w - 2 * pad, inner.h), &[L::Frac(0.35), L::Fill, L::Px((rw as f32 / ui.scale()).ceil() as i32 + 2)], 12);
         label(ui, parts[0], &left, Some(p.muted));
-        if let Some(w) = self.warnings.last().cloned() {
+        if let Some(h) = hovered {
+            label(ui, parts[1], &h, Some(p.fg));
+        } else if let Some(w) = self.warnings.last().cloned() {
             label(ui, parts[1], &w, Some(p.warning));
         }
         label(ui, parts[2], &right, Some(p.muted));
@@ -822,7 +1086,16 @@ impl App for GuiApp {
     }
 
     fn exit(&mut self) {
+        self.forwards.stop_all();
         self.flush_geometry();
+    }
+}
+
+/// Paths of the ssh config files in use (none when ssh config is off).
+fn ssh_files(cfg: &Config) -> Vec<PathBuf> {
+    match hosts::ssh_config_path(cfg) {
+        Some(p) => ConfigSet::load(&p).map(|s| s.docs.into_iter().map(|d| d.path).collect()).unwrap_or_default(),
+        None => vec![],
     }
 }
 

@@ -226,7 +226,7 @@ fn main() {
     s.save("4-password-prompt");
 
     // 5. Settings: editing a connection.
-    s.app.edit_target = Some(0);
+    s.app.edit_target = Some("file-server".into());
     s.app.open_settings();
     s.settle();
     s.save("5-settings");

@@ -16,18 +16,33 @@ pub enum Cmd {
     NewConnection,
     Settings,
     ReloadConfig,
+    Forwards,
+    CheckStatus,
 }
 
 impl Cmd {
-    const ALL: [Cmd; 3] = [Cmd::NewConnection, Cmd::Settings, Cmd::ReloadConfig];
+    const ALL: [Cmd; 5] = [Cmd::NewConnection, Cmd::Settings, Cmd::ReloadConfig, Cmd::Forwards, Cmd::CheckStatus];
 
     fn label(self) -> &'static str {
         match self {
-            Cmd::NewConnection => "New connection",
+            Cmd::NewConnection => "New host",
             Cmd::Settings => "Settings",
             Cmd::ReloadConfig => "Reload config",
+            Cmd::Forwards => "Port forwards",
+            Cmd::CheckStatus => "Check host status",
         }
     }
+}
+
+/// How many recent hosts an empty query lists.
+pub const RECENT_HOSTS: usize = 8;
+
+/// What ranking needs from the app besides the lists.
+#[derive(Debug, Default)]
+pub struct RankCtx {
+    pub show_hidden: bool,
+    /// Most recent first (see `History::recent`).
+    pub recent: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +76,7 @@ fn score_text(query: &str, text: &str) -> Option<i64> {
 }
 
 /// Everything matching `query`, best first, with display labels.
-pub fn rank(query: &str, hosts: &[HostEntry], tabs: &[(u64, String)], themes: &[String]) -> Vec<(Item, String, i64)> {
+pub fn rank(query: &str, hosts: &[HostEntry], tabs: &[(u64, String)], themes: &[String], ctx: &RankCtx) -> Vec<(Item, String, i64)> {
     let q = query.trim();
     let mut out: Vec<(Item, String, i64)> = vec![];
     let empty = q.is_empty();
@@ -72,8 +87,20 @@ pub fn rank(query: &str, hosts: &[HostEntry], tabs: &[(u64, String)], themes: &[
     }
     let n = hosts.len() as i64;
     for (i, h) in hosts.iter().enumerate() {
+        if h.hidden && !ctx.show_hidden {
+            continue;
+        }
+        // An empty query lists recent hosts only (all hosts when there is no history yet).
+        let recent = ctx.recent.iter().position(|r| *r == h.name);
+        if empty && !ctx.recent.is_empty() && recent.is_none() {
+            continue;
+        }
         if let Some(s) = fuzzy_score(q, h) {
-            let base = if empty { 2000 + n - i as i64 } else { s };
+            let base = match (empty, recent) {
+                (true, Some(r)) => 2000 + n - r as i64,
+                (true, None) => 2000 + n - i as i64,
+                _ => s,
+            };
             out.push((Item::Host(i), format!("{}  \u{2014} terminal", h.name), base));
             if !empty {
                 out.push((Item::HostFiles(i), format!("{}  \u{2014} file transfer", h.name), base - 1));
