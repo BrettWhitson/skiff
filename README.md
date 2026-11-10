@@ -43,7 +43,8 @@ cargo run -p skiff-gui --release     # GUI
 Requirements: the OpenSSH client on `PATH`. Answering passwords inside the
 app for SFTP and forwards needs OpenSSH 8.4 or newer; with an older `ssh`,
 use keys or an agent. Skiff was called termax before; your old settings are
-copied over on first start (see [Coming from termax](docs/CONFIGURATION.md#coming-from-termax)).
+copied over on first start (see [Coming from termax](docs/CONFIGURATION.md#coming-from-termax)
+and the [changelog](CHANGELOG.md)).
 
 ## Quick start
 
@@ -299,6 +300,8 @@ Please report anything a screen reader gets wrong.
   threading, the GUI toolkit and accessibility design, key files.
 - [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md): setup, build, tests, style,
   and how to add a keybinding, setting or theme.
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release, including the
+  rename from termax and the moved TUI keys.
 
 ## Known limitations
 
