@@ -67,7 +67,14 @@ pub struct SnippetsState {
     pub error: Option<String>,
     /// Asking "Delete snippet …?"; the first frame moves focus to Cancel.
     confirm_delete: Option<bool>,
+    /// Another row was picked while the form had unsaved edits: asking
+    /// "Discard …?" before switching to it; the first frame focuses Keep.
+    confirm_discard: Option<(usize, bool)>,
     selected: Option<usize>,
+    /// A stable id per command line input (so focus and cursor stay with a
+    /// line when one above it is removed), parallel to `form.lines`.
+    line_ids: Vec<u64>,
+    next_line_id: u64,
 }
 
 impl SnippetsState {
@@ -75,6 +82,25 @@ impl SnippetsState {
         self.form = Some(SnippetForm::of(s));
         self.error = None;
         self.confirm_delete = None;
+        self.confirm_discard = None;
+    }
+
+    fn new_line_id(&mut self) -> u64 {
+        self.next_line_id += 1;
+        self.next_line_id
+    }
+
+    /// Keeps `line_ids` as long as the form's lines (a replaced form with
+    /// another line count gets fresh ids).
+    fn sync_line_ids(&mut self) {
+        let n = self.form.as_ref().map_or(0, |f| f.lines.len());
+        if self.line_ids.len() != n {
+            self.line_ids.clear();
+            for _ in 0..n {
+                let id = self.new_line_id();
+                self.line_ids.push(id);
+            }
+        }
     }
 }
 
@@ -110,9 +136,15 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
         label(ui, r, &names[i], None);
     });
     if st.selected != before
-        && let Some(s) = st.selected.and_then(|i| app.cfg.snippets.get(i)).cloned()
+        && let Some(i) = st.selected
     {
-        st.select(&s);
+        if st.form.as_ref().is_some_and(|f| f.dirty) {
+            st.confirm_discard = Some((i, true));
+            st.confirm_delete = None;
+            st.selected = before;
+        } else if let Some(s) = app.cfg.snippets.get(i).cloned() {
+            st.select(&s);
+        }
     }
     let btns = ui.split_h(left[1], &[L::Frac(0.5), L::Frac(0.5)], 4);
     if button(ui, Id::new("settings-snip-add"), btns[0], "Add").clicked {
@@ -127,6 +159,29 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     }
 
     let mut rows = Rows::new(cols[1]);
+    if let Some((target, first)) = st.confirm_discard {
+        let what = st.form.as_ref().and_then(|f| f.editing.clone()).map_or("the new snippet".to_string(), |n| n);
+        label(ui, rows.next(ui), &format!("Discard unsaved changes to {what}?"), None);
+        let r = rows.next(ui);
+        let b = ui.split_h(Rect::new(r.x, r.y, ui.px(240), r.h), &[L::Frac(0.5), L::Frac(0.5)], 8);
+        let (yes, no) = (Id::new("settings-snip-discard-yes"), Id::new("settings-snip-discard-no"));
+        if first {
+            ui.request_focus(no); // a reflexive Enter keeps the edits
+            st.confirm_discard = Some((target, false));
+        }
+        let esc = (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE);
+        if button(ui, yes, b[0], "Discard").clicked {
+            match app.cfg.snippets.get(target).cloned() {
+                Some(s) => st.select(&s),
+                None => st.confirm_discard = None,
+            }
+            ui.request_focus(list_id);
+        } else if button(ui, no, b[1], "Keep editing").clicked || esc {
+            st.confirm_discard = None;
+            ui.request_focus(list_id);
+        }
+        return;
+    }
     if let (Some(first), Some(i)) = (st.confirm_delete, st.selected) {
         let name = app.cfg.snippets[i].name.clone();
         label(ui, rows.next(ui), &format!("Delete snippet {name}?"), None);
@@ -152,6 +207,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
         return;
     }
     st.confirm_delete = None;
+    st.sync_line_ids();
     let muted = ui.style().palette.muted;
     let Some(form) = &mut st.form else {
         label(ui, rows.next(ui), "Select a snippet, or Add one. Run them from the quick switcher (Ctrl+Shift+K).", Some(muted));
@@ -162,7 +218,7 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     form.dirty |= field(ui, Id::new("settings-snip-name"), rows.next(ui), "Name", &mut form.name);
     let mut remove = None;
     let n = form.lines.len();
-    for (i, line) in form.lines.iter_mut().enumerate() {
+    for (i, (line, &key)) in form.lines.iter_mut().zip(&st.line_ids).enumerate() {
         let (l, c) = split_row(ui, rows.next(ui));
         if i == 0 {
             label(ui, l, "Command", None);
@@ -171,8 +227,8 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
         let name = if n == 1 { "Command".to_string() } else { format!("Command line {}", i + 1) };
         let opts =
             TextInputOpts { label: &name, placeholder: if i == 0 { "e.g. tail -f /var/log/syslog" } else { "" }, ..Default::default() };
-        form.dirty |= text_input(ui, Id::new(("settings-snip-line", i)), parts[0], line, opts).changed;
-        let del = Id::new(("settings-snip-line-del", i));
+        form.dirty |= text_input(ui, Id::new(("settings-snip-line", key)), parts[0], line, opts).changed;
+        let del = Id::new(("settings-snip-line-del", key));
         if n > 1 {
             if button(ui, del, parts[1], "\u{2715}").clicked {
                 remove = Some(i);
@@ -184,13 +240,16 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut SnippetsState, app: &mut GuiApp) {
     }
     if let Some(i) = remove {
         form.lines.remove(i);
+        st.line_ids.remove(i);
         form.dirty = true;
     }
     let (_, c) = split_row(ui, rows.next(ui));
     if button(ui, Id::new("settings-snip-line-add"), Rect::new(c.x, c.y, ui.px(130), c.h), "+ Add line").clicked {
         form.lines.push(String::new());
         form.dirty = true;
-        ui.request_focus(Id::new(("settings-snip-line", form.lines.len() - 1)));
+        st.next_line_id += 1;
+        st.line_ids.push(st.next_line_id);
+        ui.request_focus(Id::new(("settings-snip-line", st.next_line_id)));
     }
     // Host: every host, or one (a host no longer listed stays choosable).
     let mut hosts: Vec<String> = app.hosts.iter().map(|h| h.name.clone()).collect();
