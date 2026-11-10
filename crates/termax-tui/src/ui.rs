@@ -28,7 +28,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         TabKind::Sftp(_) => draw_sftp(f, app, body),
     }
     draw_status(f, app, status_area);
-    draw_modal(f, app, area);
+    let states: Vec<String> = match app.modal {
+        Some(Modal::Forwards { .. }) => (0..app.cfg.forwards.len()).map(|i| app.forward_state(i)).collect(),
+        _ => vec![],
+    };
+    draw_modal(f, app, area, &states);
 }
 
 fn block<'a>(t: &Theme, title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
@@ -359,7 +363,8 @@ fn unicode_width(s: &str) -> u16 {
     Line::raw(s).width() as u16
 }
 
-fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
+/// `states`: each saved forward's state, while the forwards list is open.
+fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
     let t = &app.theme;
     let Some(modal) = &app.modal else { return };
     match modal {
@@ -500,16 +505,17 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
         }
         Modal::Forwards { selected } => {
             let list = &app.cfg.forwards;
-            let r = centered(area, 64, list.len().max(1) as u16 + 4);
+            let r = centered(area, 76, list.len().max(1) as u16 + 4);
             f.render_widget(Clear, r);
-            let b = block(t, " Saved forwards (Enter start · d delete · Esc close) ", true);
+            let b = block(t, " Saved forwards (Enter start · s stop · e edit · d delete · Esc close) ", true);
             if list.is_empty() {
                 f.render_widget(
                     Paragraph::new("No saved forwards. Select a host and press f.").style(t.muted()).block(b),
                     r,
                 );
             } else {
-                let items: Vec<ListItem> = list.iter().map(|fw| ListItem::new(format!(" {}", fw.title()))).collect();
+                let items: Vec<ListItem> =
+                    list.iter().zip(states).map(|(fw, st)| ListItem::new(format!(" {}  —  {st}", fw.title()))).collect();
                 let mut state = ListState::default().with_selected(Some(*selected));
                 f.render_stateful_widget(List::new(items).highlight_style(t.selected()).block(b), r, &mut state);
             }

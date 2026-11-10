@@ -169,7 +169,7 @@ fn is_up_marker(line: &str) -> bool {
 }
 
 /// The line that best explains why ssh exited.
-fn error_line(lines: &[String]) -> Option<String> {
+pub fn error_line(lines: &[String]) -> Option<String> {
     let useful: Vec<&String> =
         lines.iter().filter(|l| !l.starts_with("debug") && !l.starts_with("OpenSSH_") && !l.trim().is_empty()).collect();
     let key = ["bind", "listen", "address already in use", "could not", "error", "refused", "denied", "failed"];

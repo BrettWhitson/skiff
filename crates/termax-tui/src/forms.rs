@@ -181,6 +181,19 @@ impl ForwardForm {
         }
     }
 
+    /// The form for saved forward `f` (index `i` in `Config::forwards`).
+    pub fn edit(f: &termax_core::forward::Forward, i: usize) -> ForwardForm {
+        ForwardForm {
+            kind: f.kind,
+            name: TextInput::new(f.name.clone().unwrap_or_default()),
+            bind: TextInput::new(f.bind.clone().unwrap_or_default()),
+            listen: TextInput::new(f.listen.to_string()),
+            target: TextInput::new(f.target.clone().unwrap_or_default()),
+            editing: Some(i),
+            ..ForwardForm::new(&f.host)
+        }
+    }
+
     pub fn rows(&self) -> Vec<FwdRow> {
         let mut r = vec![FwdRow::Kind, FwdRow::Name, FwdRow::Bind, FwdRow::Listen];
         if self.kind != ForwardKind::Dynamic {
