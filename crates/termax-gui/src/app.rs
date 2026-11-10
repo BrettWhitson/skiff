@@ -974,6 +974,7 @@ impl GuiApp {
         match &mut tab.kind {
             TabKind::Terminal(t) => {
                 t.announce = self.cfg.gui.announce_output;
+                t.confirm_paste = self.cfg.settings.confirm_multiline_paste;
                 t.blink = self.cfg.gui.cursor_blink && crate::os::animations();
                 let id = Id::new(("term", tab.id));
                 if newly_shown {

@@ -240,3 +240,51 @@ fn gui_search_highlights_and_counts() {
     l.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }], vec![]);
     assert!(l.tab.search.is_none(), "Esc closes the search");
 }
+
+fn text_at(l: &Live, s: &str) -> Option<Point> {
+    l.h.list().prims.iter().find_map(|p| match p {
+        termax_ui::display::Prim::Text { text, bounds, .. } if text == s => Some(Point::new(bounds.x + bounds.w / 2, bounds.y + bounds.h / 2)),
+        _ => None,
+    })
+}
+
+#[test]
+fn gui_multiline_paste_prompts() {
+    let mut l = Live::new();
+    l.h.clipboard.text = Some("echo a\necho b".into());
+    l.frame(vec![], vec![Action::Paste]);
+    l.frame(vec![], vec![]);
+    assert!(on_screen(&l, "Paste 2 lines into fx?"), "the paste waits for a yes");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!l.screen_text().contains("echo a"), "nothing sent yet");
+    let at = text_at(&l, "Paste").expect("Paste button");
+    l.frame(press(at), vec![]);
+    l.frame(release(at), vec![]);
+    l.wait_for("echo b");
+    assert!(l.screen_text().contains("echo a"));
+}
+
+#[test]
+fn shift_bypasses_mouse_reporting() {
+    let mut l = Live::new();
+    // The echo shell sends this back, so the "program" turns on SGR mouse.
+    l.tab.session.as_mut().unwrap().write(b"\x1b[?1000h\x1b[?1006h");
+    let start = Instant::now();
+    let on = |l: &Live| l.tab.session.as_ref().unwrap().parser.lock().unwrap().screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
+    while !on(&l) {
+        assert!(start.elapsed() < Duration::from_secs(15), "mouse mode never turned on");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let (cw, chh) = l.tab.cell_size();
+    let pt = |c: i32| Point::new(6 + c * cw + cw / 2, 6 + chh / 2);
+    l.frame(press(pt(0)), vec![]);
+    l.frame(vec![Event::MouseMove(pt(5))], vec![]);
+    l.frame(release(pt(5)), vec![]);
+    assert!(l.tab.select.sel.is_none(), "the program gets the drag, no selection");
+    let shift = Modifiers { shift: true, ..Modifiers::NONE };
+    l.frame(vec![Event::Modifiers(shift)], vec![]);
+    l.frame(press(pt(0)), vec![]);
+    l.frame(vec![Event::MouseMove(pt(5))], vec![]);
+    l.frame(release(pt(5)), vec![]);
+    assert!(l.tab.select.sel.is_some(), "Shift+drag selects");
+}

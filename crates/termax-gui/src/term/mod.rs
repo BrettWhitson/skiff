@@ -9,7 +9,8 @@ use termax_ui::geom::{Point, Rect, Size};
 use termax_ui::input::{CursorIcon, Event, Key, Modifiers};
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Sense, Ui};
-use termax_ui::widgets::{MenuItem, context_menu, label, open_context_menu};
+use termax_ui::layout::Size as L;
+use termax_ui::widgets::{MenuItem, button, context_menu, label, open_context_menu};
 
 use crate::engine::WakeFn;
 use crate::keys::{Action, Keymap};
@@ -21,6 +22,7 @@ use self::select::{SelectState, handle_mouse, selection_text};
 pub mod announce;
 pub mod input;
 pub mod render;
+pub mod mouse;
 pub mod search;
 pub mod select;
 
@@ -62,6 +64,11 @@ pub struct TermTab {
     resync: bool,
     /// The open find bar.
     pub search: Option<search::SearchState>,
+    /// Ask before a multi-line paste (`settings.confirm_multiline_paste`); set by the app.
+    pub confirm_paste: bool,
+    /// A paste waiting for a yes: the text and its line count.
+    pub pending_paste: Option<(String, usize)>,
+    mouse: mouse::MouseState,
 }
 
 /// Rows × columns that fit `rect` (at least 2 × 10, as the pty needs).
@@ -100,10 +107,23 @@ impl TermTab {
             live: String::new(),
             resync: false,
             search: None,
+            confirm_paste: true,
+            pending_paste: None,
+            mouse: mouse::MouseState::default(),
         }
     }
 
     /// Cell width and height of the last frame, in physical pixels.
+    /// Sends (`yes`) or drops the paste waiting for confirmation.
+    pub fn paste_answer(&mut self, yes: bool) {
+        if let Some((text, _)) = self.pending_paste.take()
+            && yes
+            && let Some(s) = self.session.as_mut()
+        {
+            s.paste(&text);
+        }
+    }
+
     /// The tab came to the front: its screen is taken as read, so screen
     /// readers hear only output from here on.
     pub fn shown(&mut self) {
@@ -200,7 +220,11 @@ pub fn view(
             }
             Action::Paste => {
                 if let (Some(t), Some(s)) = (ui.clipboard().get(), tab.session.as_mut()) {
-                    s.paste(&t);
+                    let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
+                    match termax_core::termx::paste_lines(&t, bracketed, tab.confirm_paste) {
+                        Some(n) => tab.pending_paste = Some((t, n)),
+                        None => s.paste(&t),
+                    }
                 }
             }
             Action::Find => {
@@ -252,6 +276,12 @@ pub fn view(
         tab.resizes += 1;
     }
 
+    // A program that turned mouse mode on gets the mouse; Shift keeps it
+    // for selecting (as in xterm), and a selection already started finishes.
+    let (mouse_mode, mouse_enc) =
+        session.parser.lock().map(|p| (p.screen().mouse_protocol_mode(), p.screen().mouse_protocol_encoding())).unwrap_or_default();
+    let report_mouse = mouse_mode != vt100::MouseProtocolMode::None && !ui.input().mods.shift && !tab.select.dragging;
+
     // Wheel: scrollback (or arrow keys in full-screen apps like less/vim).
     let (_, dy) = ui.input().wheel();
     if dy != 0.0 && inner.contains(ui.input().mouse) {
@@ -260,7 +290,16 @@ pub fn view(
         tab.wheel_rest -= lines as f32;
         if lines != 0 {
             let alt = session.parser.lock().map(|p| p.screen().alternate_screen()).unwrap_or(false);
-            if alt {
+            if report_mouse {
+                let ev = if lines > 0 { termax_core::termx::MouseEv::WheelUp } else { termax_core::termx::MouseEv::WheelDown };
+                let (c, r) = mouse::cell_of(ui.input().mouse, inner, cell);
+                let m = ui.input().mods;
+                if let Some(b) = termax_core::termx::encode_mouse(mouse_mode, mouse_enc, ev, c, r, m.shift, m.alt, m.ctrl) {
+                    for _ in 0..lines.unsigned_abs() {
+                        session.write(&b);
+                    }
+                }
+            } else if alt {
                 let key = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
                 for _ in 0..lines.unsigned_abs() {
                     session.write(key);
@@ -283,6 +322,13 @@ pub fn view(
                     tab.error = Some(format!("reconnect failed: {e:#}"));
                 }
                 tab.reset_blink();
+            }
+        } else if tab.pending_paste.is_some() {
+            // The paste prompt owns Enter / Esc; other keys wait.
+            if ui.input_mut().take_key(&Key::Enter, Modifiers::NONE) {
+                tab.paste_answer(true);
+            } else if ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
+                tab.paste_answer(false);
             }
         } else {
             let bytes = input::route(&events, keymap, session.application_cursor());
@@ -330,7 +376,15 @@ pub fn view(
         }
     }
     let offset = parser.lock().map(|p| p.screen().scrollback()).unwrap_or(0);
-    if handle_mouse(ui, id, inner, cell, &mut tab.select, offset)
+    if report_mouse {
+        let events = ui.input().events.clone();
+        let mods = ui.input().mods;
+        for b in mouse::reports(&events, inner, cell, mouse_mode, mouse_enc, mods, &mut tab.mouse) {
+            if let Some(s) = tab.session.as_mut() {
+                s.write(&b);
+            }
+        }
+    } else if handle_mouse(ui, id, inner, cell, &mut tab.select, offset)
         && let Ok(p) = parser.lock()
     {
         tab.select.resolve(p.screen(), offset);
@@ -338,7 +392,7 @@ pub fn view(
 
     // Right-click menu: Copy / Paste.
     let menu = id.with("menu");
-    if r.right_clicked {
+    if r.right_clicked && !report_mouse {
         open_context_menu(ui, menu, ui.input().mouse);
     }
     let has_sel = tab.select.sel.is_some();
@@ -382,6 +436,35 @@ pub fn view(
         ui.painter().text(at, msg, FontKind::Mono, px, theme.palette.warning);
     }
     find_bar(ui, id, inner, tab, &parser);
+    paste_bar(ui, id, inner, tab);
+}
+
+/// "Paste n lines into host?" along the bottom of the terminal.
+fn paste_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab) {
+    let Some((_, n)) = tab.pending_paste.as_ref() else { return };
+    let msg = format!("Paste {n} lines into {}?", tab.host.name);
+    let h = ui.px(36);
+    let rect = Rect::new(inner.x, inner.bottom() - h, inner.w, h);
+    let mut answer = None;
+    ui.a11y_group(id.with("paste"), Role::Dialog, &msg, |ui| {
+        let p = ui.style().palette;
+        ui.interact(id.with("paste-panel"), rect, Sense::hover());
+        let (radius, bw) = (ui.px(6) as f32, ui.px(1).max(1));
+        ui.painter().rect(rect, p.surface_alt, radius);
+        ui.painter().border(rect, p.warning, bw, radius);
+        let parts = ui.split_h(rect.inset(ui.px(4)), &[L::Fill, L::Px(80), L::Px(80)], 6);
+        label(ui, parts[0], &msg, Some(p.fg));
+        if button(ui, id.with("paste-yes"), parts[1], "Paste").clicked {
+            answer = Some(true);
+        }
+        if button(ui, id.with("paste-no"), parts[2], "Cancel").clicked {
+            answer = Some(false);
+        }
+    });
+    if let Some(yes) = answer {
+        tab.paste_answer(yes);
+        ui.request_focus(id);
+    }
 }
 
 /// The find bar over the top-right of the terminal, while search is open:
