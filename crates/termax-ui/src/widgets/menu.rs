@@ -2,6 +2,7 @@
 //! and call `context_menu` every frame; it closes itself on a choice,
 //! Escape, or a click outside.
 
+use crate::a11y::Role;
 use crate::geom::{Point, Rect};
 use crate::input::{Event, Key, Modifiers};
 use crate::text::FontKind;
@@ -97,8 +98,10 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
     let p = ui.style().palette;
     let radius = ui.px(6) as f32;
     let lh = ui.line_height(FontKind::Ui, px);
-    ui.overlay(|ui| {
+    ui.overlay(|ui| ui.a11y_group(id.with("a11y"), Role::Menu, "", |ui| {
         ui.interact(id, menu, Sense::hover());
+        let focus = st.hover.map_or(id.with("a11y"), |h| id.with(h));
+        ui.a11y_focus(focus);
         let bw = ui.px(1).max(1);
         {
             let mut painter = ui.painter();
@@ -117,6 +120,9 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
             if it.enabled && rr.clicked {
                 chosen = Some(i);
             }
+            if let Some(n) = ui.a11y_node(id.with(i), Role::MenuItem, it.label) {
+                n.disabled = !it.enabled;
+            }
             let ty = row.y + (row_h - lh) / 2;
             let fg = if it.enabled { p.fg } else { p.muted.with_alpha(160) };
             let sw = it.shortcut.map(|s| (s, ui.measure(s, FontKind::Ui, px).ceil() as i32));
@@ -129,7 +135,7 @@ pub fn context_menu(ui: &mut Ui, id: Id, items: &[MenuItem]) -> Option<usize> {
                 painter.text(Point::new(row.right() - pad - w, ty), s, FontKind::Ui, px, p.muted);
             }
         }
-    });
+    }));
 
     st.fresh = false;
     if chosen.is_some() || close {

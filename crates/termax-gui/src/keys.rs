@@ -24,10 +24,13 @@ pub enum Action {
     Settings,
     /// Reserved (terminal search is a v1 non-goal).
     Find,
+    UiScaleUp,
+    UiScaleDown,
+    UiScaleReset,
 }
 
 impl Action {
-    pub const ALL: [Action; 13] = [
+    pub const ALL: [Action; 16] = [
         Action::QuickSwitcher,
         Action::NewTab,
         Action::CloseTab,
@@ -41,6 +44,9 @@ impl Action {
         Action::ToggleSidebar,
         Action::Settings,
         Action::Find,
+        Action::UiScaleUp,
+        Action::UiScaleDown,
+        Action::UiScaleReset,
     ];
 
     /// The name used in the `[keys]` table.
@@ -59,6 +65,9 @@ impl Action {
             Action::ToggleSidebar => "toggle_sidebar",
             Action::Settings => "settings",
             Action::Find => "find",
+            Action::UiScaleUp => "ui_scale_up",
+            Action::UiScaleDown => "ui_scale_down",
+            Action::UiScaleReset => "ui_scale_reset",
         }
     }
 
@@ -77,6 +86,9 @@ impl Action {
             Action::ToggleSidebar => "Toggle sidebar",
             Action::Settings => "Settings",
             Action::Find => "Find",
+            Action::UiScaleUp => "Larger interface",
+            Action::UiScaleDown => "Smaller interface",
+            Action::UiScaleReset => "Reset interface size",
         }
     }
 
@@ -102,6 +114,9 @@ impl Action {
                 ToggleSidebar => &["cmd+b"],
                 Settings => &["cmd+,"],
                 Find => &[],
+                UiScaleUp => &["cmd+alt+="],
+                UiScaleDown => &["cmd+alt+-"],
+                UiScaleReset => &["cmd+alt+0"],
             };
         }
         match self {
@@ -118,6 +133,9 @@ impl Action {
             ToggleSidebar => &["ctrl+shift+b"],
             Settings => &["ctrl+shift+,"],
             Find => &[],
+            UiScaleUp => &["ctrl+alt+="],
+            UiScaleDown => &["ctrl+alt+-"],
+            UiScaleReset => &["ctrl+alt+0"],
         }
     }
 }
@@ -213,6 +231,7 @@ impl Chord {
             Key::Insert => "insert".into(),
             Key::Delete => "delete".into(),
             Key::Backspace => "backspace".into(),
+            Key::ContextMenu => "menu".into(),
             Key::Other(_) => return None,
         };
         let mut s = String::new();

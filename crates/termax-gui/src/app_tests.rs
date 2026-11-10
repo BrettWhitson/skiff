@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use termax_ui::display::Prim;
 use termax_ui::geom::Point;
-use termax_ui::input::{Event, MouseButton};
+use termax_ui::input::{Event, Key, Modifiers, MouseButton};
 use termax_ui::ui::testing::Harness;
 
 use super::*;
@@ -303,4 +303,99 @@ fn show_hidden_setting_seeds_file_panes() {
     let id = f.app.open_files(Location::Local, Location::Local);
     let TabKind::Files(ft) = &f.app.tabs.iter().find(|t| t.id == id).unwrap().kind else { panic!() };
     assert!(ft.panes.iter().all(|p| p.show_hidden));
+}
+
+#[test]
+fn f6_cycles_regions_from_terminal() {
+    let mut f = Fixture::new();
+    f.double_click_text("alpha");
+    f.frame(vec![]);
+    let term = Id::new(("term", f.app.tabs[0].id));
+    assert_eq!(f.h.state.focused(), Some(term));
+    let f6 = |shift| Event::KeyDown { key: Key::F(6), mods: Modifiers { shift, ..Modifiers::NONE }, text: None };
+    f.frame(vec![f6(false)]);
+    f.frame(vec![]);
+    assert!(f.h.state.focused().is_some_and(|id| id != term), "F6 leaves the terminal");
+    f.frame(vec![f6(true)]);
+    f.frame(vec![]);
+    assert_eq!(f.h.state.focused(), Some(term), "Shift+F6 comes back");
+}
+
+#[test]
+fn tab_strip_arrows_keep_focus_on_strip() {
+    let mut f = Fixture::new();
+    f.double_click_text("alpha");
+    f.frame(vec![]);
+    f.double_click_text("beta");
+    f.frame(vec![]);
+    assert_eq!(f.app.active, 1);
+    let key = |key, shift| Event::KeyDown { key, mods: Modifiers { shift, ..Modifiers::NONE }, text: None };
+    f.frame(vec![key(Key::F(6), true)]);
+    f.frame(vec![]);
+    assert_eq!(f.h.state.focused(), Some(Id::new("tabs")));
+    f.frame(vec![key(Key::Left, false)]);
+    f.frame(vec![]);
+    assert_eq!(f.app.active, 0);
+    assert_eq!(f.h.state.focused(), Some(Id::new("tabs")), "arrows stay on the strip, not the shell");
+}
+
+#[test]
+fn shift_f10_opens_host_menu() {
+    let mut f = Fixture::new();
+    f.click_text("alpha");
+    f.frame(vec![Event::KeyDown { key: Key::F(10), mods: Modifiers { shift: true, ..Modifiers::NONE }, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("Open terminal").is_some(), "{:?}", f.texts());
+}
+
+#[test]
+fn sidebar_tree_names_hosts() {
+    let f = Fixture::new();
+    let t = f.h.tree();
+    let names: Vec<&str> = t.nodes.iter().map(|n| n.name.as_str()).collect();
+    let row = t.find("alpha, not checked, 127.0.0.1:1").unwrap_or_else(|| panic!("{names:?}"));
+    assert_eq!(row.role, termax_ui::a11y::Role::ListItem);
+    assert_eq!(t.find("Hosts").map(|n| n.role), Some(termax_ui::a11y::Role::Region));
+}
+
+#[test]
+fn a11y_click_opens_host() {
+    use termax_ui::a11y::A11yAction;
+    let mut f = Fixture::new();
+    let row = f.h.tree().find("alpha, not checked, 127.0.0.1:1").expect("row").id;
+    let click = Event::A11y { target: row, action: A11yAction::Click };
+    f.frame(vec![click.clone()]);
+    f.frame(vec![]);
+    assert!(f.app.tabs.is_empty(), "the first Click selects");
+    f.frame(vec![click]);
+    f.frame(vec![]);
+    assert!(matches!(f.app.tabs.first().map(|t| &t.kind), Some(TabKind::Terminal(_))), "the second Click opens it");
+    assert_eq!(f.h.tree().find("Terminal: alpha").map(|n| n.role), Some(termax_ui::a11y::Role::Terminal));
+}
+
+#[test]
+fn settings_inputs_have_labels() {
+    let mut f = Fixture::new();
+    f.app.open_settings();
+    f.frame(vec![]);
+    f.click_text("Connections");
+    f.click_text("Add");
+    let t = f.h.tree();
+    assert_eq!(t.find("Name").map(|n| n.role), Some(termax_ui::a11y::Role::TextInput));
+}
+
+#[test]
+fn ui_scale_shortcuts_persist() {
+    let mut f = Fixture::new();
+    let ctrl_alt = Modifiers { ctrl: true, alt: true, ..Modifiers::NONE };
+    let up = Event::KeyDown { key: Key::Char('='), mods: ctrl_alt, text: None };
+    f.frame(vec![up.clone()]);
+    f.frame(vec![up]);
+    assert_eq!(f.app.cfg.gui.ui_scale, 1.2);
+    assert!(std::fs::read_to_string(&f.path).unwrap().contains("ui_scale = 1.2"));
+    // AltGr (Ctrl+Alt) that types a character is typing, not a shortcut.
+    f.frame(vec![Event::KeyDown { key: Key::Char('0'), mods: ctrl_alt, text: Some("}".into()) }]);
+    assert_eq!(f.app.cfg.gui.ui_scale, 1.2);
+    f.frame(vec![Event::KeyDown { key: Key::Char('0'), mods: ctrl_alt, text: None }]);
+    assert_eq!(f.app.cfg.gui.ui_scale, 1.0);
 }

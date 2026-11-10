@@ -44,6 +44,10 @@ pub struct FrameCtx<'a> {
     /// Set to swap fonts after this frame: the shell drops cached glyphs,
     /// repaints everything and immediately runs another frame.
     pub replace_fonts: Option<Fonts>,
+    /// An assistive technology is listening: build the accessibility tree.
+    pub a11y_active: bool,
+    /// This frame's accessibility tree (set by `Ui::run` when active).
+    pub a11y_tree: Option<crate::a11y::Tree>,
 }
 
 pub trait App {
@@ -61,14 +65,25 @@ pub struct WindowOptions {
 
 /// Wakes the shell from another thread (e.g. when a transfer progresses).
 #[derive(Clone)]
-pub struct Waker(EventLoopProxy<Wake>);
+pub struct Waker(EventLoopProxy<UserEvent>);
 
-#[derive(Debug, Clone, Copy)]
-pub struct Wake;
+/// Events the shell's event loop receives from other threads.
+#[derive(Debug)]
+pub enum UserEvent {
+    Wake,
+    /// The screen reader adapter wants something.
+    A11y(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for UserEvent {
+    fn from(e: accesskit_winit::Event) -> Self {
+        UserEvent::A11y(e)
+    }
+}
 
 impl Waker {
     pub fn wake(&self) {
-        let _ = self.0.send_event(Wake);
+        let _ = self.0.send_event(UserEvent::Wake);
     }
 }
 
@@ -169,6 +184,7 @@ fn frame_once(
     fonts: &Fonts,
     cache: &mut GlyphCache,
     clipboard: &mut dyn Clipboard,
+    a11y_active: bool,
 ) -> FrameOut {
     list.clear();
     let mut ctx = FrameCtx {
@@ -185,12 +201,21 @@ fn frame_once(
         background: Color::BLACK,
         cursor: CursorIcon::Default,
         replace_fonts: None,
+        a11y_active,
+        a11y_tree: None,
     };
     app.frame(&mut ctx);
-    let (redraw_in, title, quit, bg, cursor, replace_fonts) =
-        (ctx.request_redraw_in, ctx.title.take(), ctx.quit, ctx.background, ctx.cursor, ctx.replace_fonts.take());
+    let (redraw_in, title, quit, bg, cursor, replace_fonts, tree) = (
+        ctx.request_redraw_in,
+        ctx.title.take(),
+        ctx.quit,
+        ctx.background,
+        ctx.cursor,
+        ctx.replace_fonts.take(),
+        ctx.a11y_tree.take(),
+    );
     let damage = renderer.render(list, canvas, fonts, cache, bg);
-    FrameOut { damage, redraw_in, title, quit, cursor, replace_fonts }
+    FrameOut { damage, redraw_in, title, quit, cursor, replace_fonts, tree }
 }
 
 struct FrameOut {
@@ -200,6 +225,7 @@ struct FrameOut {
     quit: bool,
     cursor: CursorIcon,
     replace_fonts: Option<Fonts>,
+    tree: Option<crate::a11y::Tree>,
 }
 
 /// Installs fonts an app asked for: cached glyphs and tile hashes belong
@@ -249,6 +275,7 @@ impl Offscreen {
             &self.fonts,
             &mut self.cache,
             &mut self.clip,
+            false,
         );
         apply_font_swap(&mut out, &mut self.fonts, &mut self.cache, &mut self.renderer);
         out
@@ -282,6 +309,8 @@ pub fn render_offscreen(app: &mut impl App, size: Size, scale: f32, frames: Vec<
 struct Gfx {
     window: Rc<Window>,
     surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
+    /// Talks to the platform screen reader.
+    adapter: accesskit_winit::Adapter,
 }
 
 struct Shell<A: App> {
@@ -302,6 +331,9 @@ struct Shell<A: App> {
     os_redraw: bool,
     cursor: CursorIcon,
     error: Option<anyhow::Error>,
+    proxy: EventLoopProxy<UserEvent>,
+    /// A screen reader asked for the tree and hasn't gone away.
+    a11y_active: bool,
 }
 
 impl<A: App> Shell<A> {
@@ -313,15 +345,19 @@ impl<A: App> Shell<A> {
     }
 
     fn create_window(&mut self, el: &ActiveEventLoop) -> Result<()> {
+        // Hidden until the screen reader adapter is attached (AccessKit's rule).
         let attrs = Window::default_attributes()
             .with_title(self.opts_title.clone())
-            .with_inner_size(LogicalSize::new(self.opts_size.0, self.opts_size.1));
+            .with_inner_size(LogicalSize::new(self.opts_size.0, self.opts_size.1))
+            .with_visible(false);
         let window = Rc::new(el.create_window(attrs).context("creating window")?);
+        let adapter = accesskit_winit::Adapter::with_event_loop_proxy(el, &window, self.proxy.clone());
+        window.set_visible(true);
         let context = softbuffer::Context::new(window.clone()).map_err(|e| anyhow::anyhow!("softbuffer context: {e}"))?;
         let surface =
             softbuffer::Surface::new(&context, window.clone()).map_err(|e| anyhow::anyhow!("softbuffer surface: {e}"))?;
         window.request_redraw();
-        self.gfx = Some(Gfx { window, surface });
+        self.gfx = Some(Gfx { window, surface, adapter });
         Ok(())
     }
 
@@ -344,11 +380,17 @@ impl<A: App> Shell<A> {
             &self.fonts,
             &mut self.cache,
             &mut self.clipboard,
+            self.a11y_active,
         );
         apply_font_swap(&mut out, &mut self.fonts, &mut self.cache, &mut self.renderer);
-        let FrameOut { damage, redraw_in, title, quit, cursor, .. } = out;
+        let FrameOut { damage, redraw_in, title, quit, cursor, tree, .. } = out;
         if let Some(t) = title {
             gfx.window.set_title(&t);
+            self.opts_title = t;
+        }
+        if let Some(tree) = tree {
+            let title = &self.opts_title;
+            gfx.adapter.update_if_active(|| crate::a11y_kit::to_update(&tree, title));
         }
         if cursor != self.cursor {
             self.cursor = cursor;
@@ -398,7 +440,7 @@ impl<A: App> Shell<A> {
     }
 }
 
-impl<A: App> ApplicationHandler<Wake> for Shell<A> {
+impl<A: App> ApplicationHandler<UserEvent> for Shell<A> {
     fn exiting(&mut self, _el: &ActiveEventLoop) {
         self.app.exit();
     }
@@ -418,11 +460,23 @@ impl<A: App> ApplicationHandler<Wake> for Shell<A> {
         }
     }
 
-    fn user_event(&mut self, _el: &ActiveEventLoop, _ev: Wake) {
+    fn user_event(&mut self, _el: &ActiveEventLoop, ev: UserEvent) {
+        use accesskit_winit::WindowEvent as A;
+        match ev {
+            UserEvent::Wake => {}
+            UserEvent::A11y(e) => match e.window_event {
+                A::InitialTreeRequested => self.a11y_active = true,
+                A::ActionRequested(req) => self.pending.extend(crate::a11y_kit::to_event(req)),
+                A::AccessibilityDeactivated => self.a11y_active = false,
+            },
+        }
         self.request_redraw();
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let Some(g) = self.gfx.as_mut() {
+            g.adapter.process_event(&g.window, &event);
+        }
         match &event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::RedrawRequested => {
@@ -466,9 +520,10 @@ pub fn run(app: impl App + 'static, opts: WindowOptions) -> Result<()> {
 
 /// Like `run`, but hands the app constructor a `Waker` first.
 pub fn run_with_waker<A: App + 'static>(make: impl FnOnce(Waker) -> A, opts: WindowOptions) -> Result<()> {
-    let event_loop = EventLoop::<Wake>::with_user_event().build().context("creating event loop")?;
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build().context("creating event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let app = make(Waker(event_loop.create_proxy()));
+    let proxy = event_loop.create_proxy();
+    let app = make(Waker(proxy.clone()));
     let mut shell = Shell {
         app,
         opts_title: opts.title,
@@ -487,6 +542,8 @@ pub fn run_with_waker<A: App + 'static>(make: impl FnOnce(Waker) -> A, opts: Win
         os_redraw: false,
         cursor: CursorIcon::Default,
         error: None,
+        proxy,
+        a11y_active: false,
     };
     event_loop.run_app(&mut shell).context("event loop")?;
     match shell.error {

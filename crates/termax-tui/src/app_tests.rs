@@ -204,3 +204,19 @@ fn forwards_panel_shows_state_stop_and_edit() {
         _ => panic!("e opens the forward editor"),
     }
 }
+
+#[test]
+fn cursor_follows_selected_host() {
+    use ratatui::backend::Backend;
+    let mut t = T::new("Host a\n    HostName 10.0.0.1\nHost b\n    HostName 10.0.0.2\n");
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 16)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &mut t.app)).unwrap();
+    let first = term.backend_mut().get_cursor_position().unwrap();
+    t.key(KeyCode::Down);
+    term.draw(|f| crate::ui::draw(f, &mut t.app)).unwrap();
+    let pos = term.backend_mut().get_cursor_position().unwrap();
+    assert_eq!((pos.x, pos.y), (first.x, first.y + 1), "the cursor sits on the selected row");
+    let buf = term.backend().buffer();
+    let row: String = (pos.x..pos.x + 4).map(|x| buf[(x, pos.y)].symbol().to_string()).collect();
+    assert!(row.starts_with('›'), "selection marked by a symbol, not only color: {row:?}");
+}

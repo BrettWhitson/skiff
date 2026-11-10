@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use winit::keyboard::NamedKey;
 
+use crate::a11y::A11yAction;
 use crate::geom::Point;
+use crate::ui::Id;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -26,6 +28,8 @@ pub enum Key {
     Tab,
     Escape,
     Space,
+    /// The Menu / Application key.
+    ContextMenu,
     Other(String),
 }
 
@@ -86,6 +90,8 @@ pub enum Event {
     FocusGained,
     /// The held modifier keys changed (needed for Ctrl/Shift-click).
     Modifiers(Modifiers),
+    /// A screen reader asked widget `target` to do something.
+    A11y { target: Id, action: A11yAction },
 }
 
 pub fn map_named_key(k: &NamedKey) -> Option<Key> {
@@ -106,6 +112,7 @@ pub fn map_named_key(k: &NamedKey) -> Option<Key> {
         N::Tab => Key::Tab,
         N::Escape => Key::Escape,
         N::Space => Key::Space,
+        N::ContextMenu => Key::ContextMenu,
         N::F1 => Key::F(1),
         N::F2 => Key::F(2),
         N::F3 => Key::F(3),

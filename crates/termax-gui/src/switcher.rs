@@ -166,7 +166,7 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
     let pad = ui.px(8);
     let h = input_h + 3 * pad + row_h * shown.max(1) as i32;
     let panel = Rect::new(win.x + (win.w - w) / 2, win.y + ui.px(80), w, h);
-    ui.overlay(|ui| {
+    ui.overlay(|ui| ui.a11y_group(Id::new("switcher-dialog"), termax_ui::a11y::Role::Dialog, "Quick switcher", |ui| {
         let backdrop = ui.interact(Id::new("switcher-backdrop"), win, Sense::click());
         if backdrop.clicked {
             out.close = true;
@@ -181,7 +181,7 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
         }
         ui.interact(Id::new("switcher-panel"), panel, Sense::hover());
         let input = Rect::new(panel.x + pad, panel.y + pad, panel.w - 2 * pad, input_h);
-        let r = text_input(ui, input_id, input, &mut st.query, TextInputOpts { password: false, placeholder: "Search hosts, tabs, themes, commands" });
+        let r = text_input(ui, input_id, input, &mut st.query, TextInputOpts { password: false, placeholder: "Search hosts, tabs, themes, commands", ..Default::default() });
         if r.changed {
             st.sel = 0;
         }
@@ -206,8 +206,11 @@ pub fn show(ui: &mut Ui, st: &mut SwitcherState, items: &[(Item, String, i64)]) 
             }
             let at = Point::new(row.x + pad, row.y + (row_h - lh) / 2);
             ui.painter().text(at, label, FontKind::Ui, px, p.fg);
+            if let Some(n) = ui.a11y_node(Id::new(("switcher-row", i)), termax_ui::a11y::Role::ListItem, label) {
+                n.selected = Some(i == st.sel);
+            }
         }
-    });
+    }));
     if out.chosen.is_some() {
         out.close = true;
     }

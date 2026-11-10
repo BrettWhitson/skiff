@@ -1,3 +1,4 @@
+use crate::a11y::Role;
 use crate::geom::Rect;
 use crate::input::CursorIcon;
 use crate::ui::{Id, Response, Sense, Ui};
@@ -11,6 +12,9 @@ pub fn checkbox(ui: &mut Ui, id: Id, rect: Rect, value: &mut bool, text: &str) -
     keyboard_activate(ui, id, &mut r);
     if r.clicked {
         *value = !*value;
+    }
+    if let Some(n) = ui.a11y_node(id, Role::CheckBox, text) {
+        n.checked = Some(*value);
     }
     if r.hovered {
         ui.set_cursor_icon(CursorIcon::Pointer);
@@ -28,7 +32,7 @@ pub fn checkbox(ui: &mut Ui, id: Id, rect: Rect, value: &mut bool, text: &str) -
         } else {
             painter.rect(bx, p.surface, radius);
         }
-        painter.border(bx, if r.focused || r.hovered { p.accent } else { p.border }, bw, radius);
+        painter.border(bx, if r.focused || r.hovered { p.accent } else { p.control }, bw, radius);
     }
     let gap = ui.px(ui.style().spacing);
     let text_rect = Rect::new(bx.right() + gap, rect.y, rect.right() - bx.right() - gap, rect.h);

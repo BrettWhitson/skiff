@@ -1,6 +1,7 @@
 //! Single-line text field. Edits happen on a `Vec<char>`, so cursor
 //! movement and deletion can never split a UTF-8 sequence.
 
+use crate::a11y::{A11yAction, Role};
 use crate::geom::{Point, Rect};
 use crate::input::{CursorIcon, Event, Key, MouseButton};
 use crate::text::FontKind;
@@ -12,6 +13,8 @@ pub struct TextInputOpts<'a> {
     pub password: bool,
     /// Shown (muted) while the value is empty.
     pub placeholder: &'a str,
+    /// The name screen readers announce; the placeholder when empty.
+    pub label: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -143,6 +146,12 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
     };
 
     let mut submitted = false;
+    if let Some(A11yAction::SetValue(v)) = ui.take_a11y_action(id, |a| matches!(a, A11yAction::SetValue(_))) {
+        ed.chars = sanitize(&v);
+        ed.st.cursor = ed.chars.len();
+        ed.st.anchor = ed.st.cursor;
+        ed.changed = true;
+    }
     if r.focused {
         if !ed.st.had_focus && !r.pressed && !r.clicked {
             // Focus arrived by keyboard: cursor to the end.
@@ -265,6 +274,11 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
     if ed.changed {
         *value = ed.chars.iter().collect();
     }
+    let name = if opts.label.is_empty() { opts.placeholder } else { opts.label };
+    let role = if opts.password { Role::PasswordInput } else { Role::TextInput };
+    if let Some(n) = ui.a11y_node(id, role, name) {
+        n.value = (!opts.password).then(|| value.clone());
+    }
 
     // Layout: keep the cursor visible.
     let shown = display(&ed.chars);
@@ -299,7 +313,7 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
     {
         let mut painter = ui.painter();
         painter.rect(rect, p.surface, radius);
-        painter.border(rect, if r.focused { p.accent } else { p.border }, bw, radius);
+        painter.border(rect, if r.focused { p.accent } else { p.control }, bw, radius);
     }
     ui.with_clip(inner, |ui| {
         let mut painter = ui.painter();

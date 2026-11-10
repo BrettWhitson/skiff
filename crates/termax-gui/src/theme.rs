@@ -1,6 +1,6 @@
 //! Turns core [`ThemeDef`]s into toolkit colours.
 
-use termax_core::theme::{Rgb, ThemeDef, parse_color};
+use termax_core::theme::{Rgb, ThemeDef, contrast, parse_color};
 use termax_ui::color::Color;
 use termax_ui::style::Palette;
 
@@ -69,12 +69,23 @@ pub fn from_def(d: &ThemeDef) -> GuiTheme {
         accent: get(&d.accent, fg),
         accent_fg: bg,
         border: get(&d.border, bg.mix(fg, 0.2)),
+        control: Color::BLACK, // set below
         selection: get(&d.selection_bg, bg.mix(fg, 0.25)),
         danger: get(&d.error, Color::hex(0xe5534b)),
         success: get(&d.success, Color::hex(0x57ab5a)),
         warning: get(&d.warning, Color::hex(0xc69026)),
     };
+    let mut palette = palette;
+    palette.control = control_outline(&palette);
     GuiTheme { name: d.name.clone(), palette, ansi, term_fg: fg, term_bg: bg }
+}
+
+/// The theme's border, moved toward `fg` until it stands out 3:1 from the
+/// window and panel backgrounds.
+fn control_outline(p: &Palette) -> Color {
+    let rgb = |c: Color| (c.r, c.g, c.b);
+    let ok = |c: Color| contrast(rgb(c), rgb(p.bg)) >= 3.0 && contrast(rgb(c), rgb(p.surface)) >= 3.0;
+    (0..=20).map(|i| p.border.mix(p.fg, i as f32 / 20.0)).find(|&c| ok(c)).unwrap_or(p.fg)
 }
 
 #[cfg(test)]

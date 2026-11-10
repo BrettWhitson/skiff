@@ -1,7 +1,8 @@
 //! Tab strip with close buttons, drag-to-reorder and a "+" button.
 
+use crate::a11y::Role;
 use crate::geom::{Point, Rect};
-use crate::input::{CursorIcon, Event, MouseButton};
+use crate::input::{CursorIcon, Event, Key, Modifiers, MouseButton};
 use crate::text::FontKind;
 use crate::ui::{Id, Sense, Ui};
 
@@ -66,7 +67,30 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
     let strip = Rect::new(rect.x, rect.y, strip_right - rect.x, rect.h);
 
     // The whole strip is one widget, so a drag survives the reorder.
-    let sr = ui.interact(id, strip, Sense::click_and_drag());
+    let sr = ui.interact(id, strip, Sense { click: true, drag: true, focus: true });
+    if ui.a11y_on() {
+        ui.a11y_group(id, Role::TabList, "Tabs", |ui| {
+            for (i, t) in titles.iter().enumerate() {
+                let tid = id.with(("tab", i));
+                if ui.a11y_clicked(tid) {
+                    *active = i;
+                }
+                if let Some(nd) = ui.a11y_node(tid, Role::Tab, t.text) {
+                    nd.bounds = out.tab_rects[i];
+                    nd.selected = Some(i == *active);
+                }
+            }
+            ui.a11y_focus_child(id, id.with(("tab", *active)));
+        });
+    }
+    if sr.focused && n > 0 && ui.keys_for(id) {
+        if ui.input_mut().take_key(&Key::Right, Modifiers::NONE) {
+            *active = (*active + 1).min(n - 1);
+        }
+        if ui.input_mut().take_key(&Key::Left, Modifiers::NONE) {
+            *active = active.saturating_sub(1);
+        }
+    }
     let mouse = ui.input().mouse;
     let pressed_now = ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(MouseButton::Left, _)));
     let mut drag = *ui.memory::<TabDrag>(id);

@@ -11,11 +11,12 @@ use termax_core::sshconfig::edit::display_path;
 use termax_core::state::SortMode;
 use termax_core::status::Status;
 use termax_ui::geom::{Point, Rect};
+use termax_ui::input::{Event, Key, Modifiers};
 use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Ui};
 use termax_ui::widgets::{
-    MenuItem, TextInputOpts, button, context_menu, dropdown, elide, label, list, open_context_menu, text_input,
+    MenuItem, TextInputOpts, button, context_menu, dropdown, elide, label, list_named, open_context_menu, text_input,
 };
 
 const ROW_H: i32 = 26;
@@ -156,7 +157,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let mut action = None;
 
     let head = ui.split_h(head_r, &[L::Fill, L::Px(84), L::Px(30)], 4);
-    let fr = text_input(ui, Id::new("sidebar-filter"), head[0], &mut sb.filter, TextInputOpts { password: false, placeholder: "Filter hosts" });
+    let fr = text_input(ui, Id::new("sidebar-filter"), head[0], &mut sb.filter, TextInputOpts { password: false, placeholder: "Filter hosts", ..Default::default() });
     if fr.changed {
         sb.selected = None;
     }
@@ -192,7 +193,15 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     let mut hovered = None;
     let collapsed = &sb.collapsed;
     let filtering = !sb.filter.trim().is_empty();
-    let lr = list(ui, Id::new("sidebar-list"), list_r, rows.len(), ROW_H, &mut sb.selected, |ui, r, i, _sel| {
+    let row_name = |i: usize| match &rows[i] {
+        Row::Header(g) => format!("{g}, {}", if collapsed.contains(g) && !filtering { "collapsed" } else { "expanded" }),
+        Row::Host(hi) => {
+            let h = &hosts[*hi];
+            let st = ctx.statuses.get(&h.name).map_or_else(|| "not checked".to_string(), |s| s.label());
+            format!("{}, {st}, {}", h.name, h.target())
+        }
+    };
+    let lr = list_named(ui, Id::new("sidebar-list"), list_r, "Host list", rows.len(), ROW_H, &mut sb.selected, row_name, |ui, r, i, _sel| {
         let lh = ui.line_height(FontKind::Ui, px);
         let y = r.y + (r.h - lh) / 2;
         match &rows[i] {
@@ -236,14 +245,29 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     });
     sb.hovered = hovered;
 
-    // A header row toggles its group instead of staying selected.
+    // A clicked header toggles its group instead of staying selected; with
+    // the keyboard a header can be selected and Enter toggles it.
+    let clicked = ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(..)));
     if sb.selected != before
+        && clicked
         && let Some(Row::Header(g)) = sb.selected.and_then(|i| rows.get(i))
     {
         if !sb.collapsed.remove(g) {
             sb.collapsed.insert(g.clone());
         }
         sb.selected = before.filter(|&b| b < rows.len() && matches!(rows[b], Row::Host(_)));
+    }
+    if let Some(i) = lr.activated
+        && let Some(Row::Header(g)) = rows.get(i)
+        && !sb.collapsed.remove(g)
+    {
+        sb.collapsed.insert(g.clone());
+    }
+    if lr.response.focused
+        && let Some(Row::Host(h)) = sb.selected.and_then(|i| rows.get(i))
+        && ui.input_mut().take_key(&Key::Delete, Modifiers::NONE)
+    {
+        sb.confirm_delete = Some(*h);
     }
     if let Some(i) = lr.activated
         && let Some(Row::Host(h)) = rows.get(i)
@@ -312,6 +336,9 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
                     None => format!("Delete {}?", host.name),
                 };
                 label(ui, rows[0], &what, Some(p.danger));
+                if let Some(n) = ui.a11y_node(Id::new("sidebar-delete-confirm"), termax_ui::a11y::Role::Dialog, &what) {
+                    n.live = true;
+                }
                 let btns = ui.split_h(rows[1], &[L::Frac(0.5), L::Frac(0.5)], 6);
                 if button(ui, Id::new("sidebar-del-yes"), btns[0], "Delete").clicked {
                     action = Some(SidebarAction::Delete(h));

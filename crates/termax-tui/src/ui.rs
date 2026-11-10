@@ -3,7 +3,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+};
+
+/// Marks the selected row in every list (not only by color).
+const MARK: &str = "› ";
 use ratatui::Frame;
 use tui_term::widget::{Cursor, PseudoTerminal};
 
@@ -15,6 +20,7 @@ use crate::sftp_tab::{human_size, Pane, SftpTab, Side, Status, TransferState};
 use crate::tui_theme::Theme;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.theme.plain = app.plain;
     let area = f.area();
     f.render_widget(Block::new().style(app.theme.base()), area);
     let [tabs_area, body, status_area] =
@@ -36,6 +42,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn block<'a>(t: &Theme, title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
+    if t.plain {
+        // The title stays as a text line; no box-drawing for readers to spell out.
+        return Block::new()
+            .title(title.into().style(if focused { t.title() } else { t.muted() }))
+            .style(t.base());
+    }
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(t.border(focused))
@@ -63,7 +75,8 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let line = if let Some((msg, is_err, _)) = &app.status {
-        Line::from(Span::styled(format!(" {msg}"), Style::new().fg(if *is_err { t.error } else { t.success })))
+        let kind = if *is_err { "Error" } else { "Info" };
+        Line::from(Span::styled(format!(" {kind}: {msg}"), Style::new().fg(if *is_err { t.error } else { t.success })))
     } else {
         let hints = match &app.tabs[app.active].kind {
             TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear",
@@ -129,8 +142,13 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
             })
             .collect();
         let mut state = ListState::default().with_offset(app.host_offset).with_selected(Some(app.host_selected));
-        f.render_stateful_widget(List::new(items).highlight_style(t.selected()), list_area, &mut state);
+        let list = List::new(items).highlight_style(t.selected()).highlight_symbol(MARK).highlight_spacing(HighlightSpacing::Always);
+        f.render_stateful_widget(list, list_area, &mut state);
         app.host_offset = state.offset();
+        // The terminal cursor on the selection lets screen readers follow it.
+        if !app.filtering && app.modal.is_none() {
+            row_cursor(f, list_area, app.host_selected, app.host_offset);
+        }
     }
 
     // Details pane
@@ -287,10 +305,15 @@ fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: Strin
         .collect();
     let table = Table::new(rows, [Constraint::Min(10), Constraint::Length(8), Constraint::Length(16)])
         .column_spacing(1)
-        .row_highlight_style(if focused { t.selected() } else { Style::new().add_modifier(Modifier::REVERSED) });
+        .row_highlight_style(if focused { t.selected() } else { Style::new().add_modifier(Modifier::REVERSED) })
+        .highlight_symbol(MARK)
+        .highlight_spacing(HighlightSpacing::Always);
     let mut state = TableState::default().with_offset(pane.offset).with_selected(Some(pane.selected));
     f.render_stateful_widget(table, list_area, &mut state);
     pane.offset = state.offset();
+    if focused {
+        row_cursor(f, list_area, pane.selected, pane.offset);
+    }
 
     if let (Some(err), Some(a)) = (&pane.error, err_area) {
         f.render_widget(Paragraph::new(err.as_str()).style(Style::new().fg(t.error)).wrap(Wrap { trim: true }), a);
@@ -352,6 +375,15 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width.saturating_sub(2));
     let h = h.min(area.height.saturating_sub(2));
     Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h)
+}
+
+/// Puts the terminal cursor at the start of row `selected` of a list drawn
+/// in `area` and scrolled to `offset`.
+fn row_cursor(f: &mut Frame, area: Rect, selected: usize, offset: usize) {
+    let Some(row) = selected.checked_sub(offset) else { return };
+    if (row as u16) < area.height {
+        f.set_cursor_position(Position::new(area.x, area.y + row as u16));
+    }
 }
 
 fn set_cursor(f: &mut Frame, x: u16, y: u16, input: &TextInput) {
@@ -435,10 +467,11 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 })
                 .collect();
             let mut state = ListState::default().with_selected(Some(*selected));
-            let list = List::new(items)
-                .highlight_style(t.selected())
-                .block(block(t, " Theme (Enter save · Esc cancel) ", true));
+            let b = block(t, " Theme (Enter save · Esc cancel) ", true);
+            let inner = b.inner(r);
+            let list = List::new(items).highlight_style(t.selected()).highlight_symbol(MARK).block(b);
             f.render_stateful_widget(list, r, &mut state);
+            row_cursor(f, inner, *selected, state.offset());
         }
         Modal::Editor(ed) => {
             let rows = ed.rows();
@@ -517,7 +550,9 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 let items: Vec<ListItem> =
                     list.iter().zip(states).map(|(fw, st)| ListItem::new(format!(" {}  —  {st}", fw.title()))).collect();
                 let mut state = ListState::default().with_selected(Some(*selected));
-                f.render_stateful_widget(List::new(items).highlight_style(t.selected()).block(b), r, &mut state);
+                let inner = b.inner(r);
+                f.render_stateful_widget(List::new(items).highlight_style(t.selected()).highlight_symbol(MARK).block(b), r, &mut state);
+                row_cursor(f, inner, *selected, state.offset());
             }
         }
         Modal::Prompt(p) => {
@@ -543,6 +578,17 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
 
 /// The list symbol for a host's status (shape differs too, not only color).
 fn status_symbol(t: &Theme, s: Option<&HostStatus>) -> (&'static str, Style) {
+    if t.plain {
+        let word = match s {
+            Some(HostStatus::Online { .. }) => "online",
+            Some(HostStatus::Offline(_)) => "offline",
+            Some(HostStatus::NotSsh) => "not ssh",
+            Some(HostStatus::Checking) => "checking",
+            Some(HostStatus::Unknown(_)) => "unknown",
+            Some(HostStatus::Unchecked) | None => "-",
+        };
+        return (word, t.muted());
+    }
     match s {
         Some(HostStatus::Online { .. }) => ("●", Style::new().fg(t.success)),
         Some(HostStatus::Offline(_)) => ("✕", Style::new().fg(t.error)),

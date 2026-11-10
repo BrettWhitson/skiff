@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
+use crate::a11y::{A11yAction, Builder, Node, Role, Tree};
 use crate::clipboard::Clipboard;
 use crate::color::Color;
 use crate::display::{DisplayList, Prim};
@@ -153,6 +154,10 @@ pub struct UiState {
     /// Widget that owns the keyboard (an open menu); carried to the next frame.
     capture: Option<Id>,
     drag: Option<crate::dnd::DragState>,
+    /// The last focused widget in each region (F6 returns there).
+    region_focus: HashMap<Id, Id>,
+    /// Focus moved by keyboard: the focus ring shows until the next click.
+    focus_visible: bool,
 }
 
 impl UiState {
@@ -183,6 +188,8 @@ impl Default for UiState {
             last_click: None,
             capture: None,
             drag: None,
+            region_focus: HashMap::new(),
+            focus_visible: false,
         }
     }
 }
@@ -274,6 +281,11 @@ pub struct Ui<'a> {
     cursor: CursorIcon,
     /// The left button was released this frame (ends a drag).
     drag_released: bool,
+    a11y: Option<Builder>,
+    /// Focus regions this frame, each with its focusable widgets in order.
+    regions: Vec<(Id, Vec<Id>)>,
+    region_stack: Vec<usize>,
+    region_move: Option<bool>,
 }
 
 impl<'a> Ui<'a> {
@@ -281,7 +293,8 @@ impl<'a> Ui<'a> {
     pub fn run(state: &mut UiState, ctx: &mut FrameCtx, style: &Style, f: impl FnOnce(&mut Ui)) {
         let events = std::mem::take(&mut ctx.events);
         let (size, scale) = (ctx.size, ctx.scale);
-        let (repaint, cursor) = {
+        let a11y = ctx.a11y_active;
+        let (repaint, cursor, tree) = {
             let mut ui = Ui::begin(
                 state,
                 &mut *ctx.list,
@@ -292,10 +305,12 @@ impl<'a> Ui<'a> {
                 size,
                 scale,
                 events,
+                a11y,
             );
             f(&mut ui);
             ui.finish()
         };
+        ctx.a11y_tree = tree;
         ctx.request_redraw_in = match (ctx.request_redraw_in, repaint) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -315,6 +330,7 @@ impl<'a> Ui<'a> {
         size: Size,
         scale: f32,
         events: Vec<Event>,
+        a11y: bool,
     ) -> Ui<'a> {
         let mut frame = FrameHits::default();
         for e in &events {
@@ -326,6 +342,7 @@ impl<'a> Ui<'a> {
                     match b {
                         MouseButton::Left => {
                             st.left = true;
+                            st.focus_visible = false;
                             st.active = top.map(|h| h.id);
                             st.drag_last = *p;
                             st.focus = top.filter(|h| h.sense.focus).map(|h| h.id);
@@ -374,8 +391,21 @@ impl<'a> Ui<'a> {
                     if *key == Key::Escape {
                         st.drag = None;
                     }
+                    if matches!(key, Key::Tab | Key::F(6) | Key::Up | Key::Down | Key::Left | Key::Right) {
+                        st.focus_visible = true;
+                    }
                 }
                 Event::KeyUp { mods, .. } | Event::Modifiers(mods) => st.mods = *mods,
+                Event::A11y { target, action: A11yAction::Click } => {
+                    frame.clicked.insert(*target);
+                }
+                // Only widgets that take keyboard focus can get it; a row or
+                // tab is reached through its list or strip.
+                Event::A11y { target, action: A11yAction::Focus } => {
+                    if st.prev_hits.iter().any(|h| h.id == *target && h.sense.focus) {
+                        st.focus = Some(*target);
+                    }
+                }
                 Event::FocusLost => {
                     st.left = false;
                     st.right = false;
@@ -422,18 +452,50 @@ impl<'a> Ui<'a> {
             repaint_in: None,
             cursor: CursorIcon::Default,
             drag_released,
+            a11y: a11y.then(|| Builder::new("", window)),
+            regions: vec![],
+            region_stack: vec![],
+            region_move: None,
         }
     }
 
-    fn finish(mut self) -> (Option<Duration>, CursorIcon) {
+    fn finish(mut self) -> (Option<Duration>, CursorIcon, Option<Tree>) {
         // Tab / Shift+Tab nobody took moves focus.
         let mut mv = self.focus_move;
         let captured = self.capture.is_some();
+        let mut region_mv = self.region_move;
         for e in &self.input.events {
-            if let Event::KeyDown { key: Key::Tab, mods, .. } = e {
+            if let Event::KeyDown { key, mods, .. } = e {
                 if !captured && !mods.ctrl && !mods.alt && !mods.logo {
-                    mv = Some(!mods.shift);
+                    match key {
+                        Key::Tab => mv = Some(!mods.shift),
+                        Key::F(6) => region_mv = Some(!mods.shift),
+                        _ => {}
+                    }
                 }
+            }
+        }
+        if let Some(f) = self.st.focus {
+            if let Some((rid, _)) = self.regions.iter().find(|(_, ids)| ids.contains(&f)) {
+                self.st.region_focus.insert(*rid, f);
+            }
+        }
+        if let Some(forward) = region_mv {
+            let regions: Vec<&(Id, Vec<Id>)> = self.regions.iter().filter(|(_, ids)| !ids.is_empty()).collect();
+            if !regions.is_empty() {
+                let n = regions.len();
+                let cur = self.st.focus.and_then(|f| regions.iter().position(|(_, ids)| ids.contains(&f)));
+                let next = match (cur, forward) {
+                    (None, true) => 0,
+                    (None, false) => n - 1,
+                    (Some(i), true) => (i + 1) % n,
+                    (Some(i), false) => (i + n - 1) % n,
+                };
+                let (rid, ids) = regions[next];
+                let target = self.st.region_focus.get(rid).copied().filter(|t| ids.contains(t)).unwrap_or(ids[0]);
+                self.st.focus = Some(target);
+                self.st.focus_visible = true;
+                mv = None;
             }
         }
         let order = &self.focusables;
@@ -459,11 +521,108 @@ impl<'a> Ui<'a> {
             self.st.drag = None; // released over no target
         }
         self.draw_drag_label();
+        self.draw_focus_ring();
         let overlay = std::mem::take(&mut self.overlay_list);
         self.list.prims.extend(overlay.prims);
         self.st.prev_hits = std::mem::take(&mut self.hits);
         self.st.capture = self.next_capture;
-        (self.repaint_in, self.cursor)
+        let tree = self.a11y.take().map(|b| b.finish(self.st.focus));
+        (self.repaint_in, self.cursor, tree)
+    }
+
+    /// A focus region (sidebar, tab strip, content): F6 / Shift+F6 move
+    /// focus to the next / previous one, back to where it last was.
+    pub fn region<R>(&mut self, id: Id, name: &str, f: impl FnOnce(&mut Ui) -> R) -> R {
+        self.regions.push((id, vec![]));
+        self.region_stack.push(self.regions.len() - 1);
+        let r = self.a11y_group(id, Role::Region, name, f);
+        self.region_stack.pop();
+        r
+    }
+
+    /// Moves focus to the next (or previous) region at the end of the frame,
+    /// for a widget that owns the keyboard (a terminal) and saw F6.
+    pub fn cycle_region(&mut self, forward: bool) {
+        self.region_move = Some(forward);
+    }
+
+    /// A 2px accent ring just outside the focused widget, while focus is
+    /// being moved by keyboard.
+    fn draw_focus_ring(&mut self) {
+        let Some(f) = self.st.focus.filter(|_| self.st.focus_visible) else { return };
+        let Some(h) = self.hits.iter().rev().find(|h| h.id == f) else { return };
+        let w = self.px(2).max(2);
+        let gap = self.px(1).max(1);
+        let r = h.rect;
+        let ring = Rect::new(r.x - gap - w, r.y - gap - w, r.w + 2 * (gap + w), r.h + 2 * (gap + w));
+        let radius = self.style.radius * self.scale + (gap + w) as f32;
+        let color = self.style.palette.accent;
+        self.overlay_list.push(Prim::Border { rect: ring, color, width: w, radius });
+    }
+
+    /// The accessibility tree is being built this frame.
+    pub fn a11y_on(&self) -> bool {
+        self.a11y.is_some()
+    }
+
+    /// Adds a node for `id` under the current parent, with the rect `id`
+    /// registered through `interact` this frame as its bounds. `None` while
+    /// no assistive technology is listening.
+    pub fn a11y_node(&mut self, id: Id, role: Role, name: &str) -> Option<&mut Node> {
+        let b = self.a11y.as_mut()?;
+        let mut node = Node::new(id, role, name);
+        if let Some(h) = self.hits.iter().rev().find(|h| h.id == id) {
+            node.bounds = h.rect;
+        }
+        node.focused = self.st.focus == Some(id);
+        Some(b.add(node))
+    }
+
+    /// Runs `f` with the nodes it adds placed under a new `role` node.
+    pub fn a11y_group<R>(&mut self, id: Id, role: Role, name: &str, f: impl FnOnce(&mut Ui) -> R) -> R {
+        if self.a11y_node(id, role, name).is_none() {
+            return f(self);
+        }
+        if let Some(b) = self.a11y.as_mut() {
+            b.push(id);
+        }
+        let r = f(self);
+        if let Some(b) = self.a11y.as_mut() {
+            b.pop();
+        }
+        r
+    }
+
+    /// The screen reader moves with `child` while `id` has keyboard focus
+    /// (a list announces its selected row).
+    pub fn a11y_focus_child(&mut self, id: Id, child: Id) {
+        if self.st.focus == Some(id) {
+            if let Some(b) = self.a11y.as_mut() {
+                b.focus_override = Some(child);
+            }
+        }
+    }
+
+    /// The screen reader's focus is `id` this frame, whatever has keyboard
+    /// focus (an open menu and its highlighted item).
+    pub fn a11y_focus(&mut self, id: Id) {
+        if let Some(b) = self.a11y.as_mut() {
+            b.focus_override = Some(id);
+        }
+    }
+
+    /// Takes a screen-reader action aimed at `id` this frame, if any.
+    pub fn take_a11y_action(&mut self, id: Id, pick: impl Fn(&A11yAction) -> bool) -> Option<A11yAction> {
+        let i = self.input.events.iter().position(|e| matches!(e, Event::A11y { target, action } if *target == id && pick(action)))?;
+        match self.input.events.remove(i) {
+            Event::A11y { action, .. } => Some(action),
+            _ => None,
+        }
+    }
+
+    /// A screen-reader Click on `id` arrived this frame.
+    pub fn a11y_clicked(&self, id: Id) -> bool {
+        self.input.events.iter().any(|e| matches!(e, Event::A11y { target, action: A11yAction::Click } if *target == id))
     }
 
     /// Registers `rect` for this frame and reports what happened to it.
@@ -472,6 +631,9 @@ impl<'a> Ui<'a> {
         self.hits.push(Hit { id, rect: area, layer: self.layer, sense });
         if sense.focus {
             self.focusables.push(id);
+            if let Some(&ri) = self.region_stack.last() {
+                self.regions[ri].1.push(id);
+            }
         }
         Response {
             rect,
@@ -727,6 +889,7 @@ pub mod testing {
         scale: f32,
         list: DisplayList,
         cache: GlyphCache,
+        tree: Tree,
     }
 
     impl Harness {
@@ -747,6 +910,7 @@ pub mod testing {
                 scale,
                 list: DisplayList::default(),
                 cache: GlyphCache::default(),
+                tree: Tree::default(),
             }
         }
 
@@ -767,8 +931,11 @@ pub mod testing {
                 background: Color::BLACK,
                 cursor: CursorIcon::Default,
                 replace_fonts: None,
+                a11y_active: true,
+                a11y_tree: None,
             };
             Ui::run(&mut self.state, &mut ctx, &self.style, |ui| f(ui));
+            self.tree = ctx.a11y_tree.take().unwrap_or_default();
             self.repaint_in = ctx.request_redraw_in;
             self.cursor = ctx.cursor;
             if let Some(fonts) = ctx.replace_fonts.take() {
@@ -779,6 +946,11 @@ pub mod testing {
 
         pub fn list(&self) -> &DisplayList {
             &self.list
+        }
+
+        /// The last frame's accessibility tree (always built offscreen).
+        pub fn tree(&self) -> &Tree {
+            &self.tree
         }
 
         pub fn scale(&self) -> f32 {

@@ -42,6 +42,7 @@ Options:
   -h, --help          show this help
   -V, --version       show the version
       --config-path   print the config file path
+      --plain         no borders or symbols in the host list (screen readers)
 
 Host names come from ~/.ssh/config and termax's own connections.
 ";

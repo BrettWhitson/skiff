@@ -133,7 +133,7 @@ pub fn find_theme(cfg: &Config) -> ThemeDef {
     cfg.themes
         .iter()
         .chain(builtin().iter())
-        .find(|t| t.name == cfg.settings.theme)
+        .find(|t| t.name == termax_core::theme::effective_name(&cfg.settings.theme, crate::os::high_contrast()))
         .cloned()
         .unwrap_or_else(|| builtin().remove(0))
 }
@@ -727,6 +727,17 @@ impl GuiApp {
                 self.geometry_changed();
             }
             Action::Settings => self.open_settings(),
+            Action::UiScaleUp | Action::UiScaleDown | Action::UiScaleReset => {
+                let cur = self.cfg.gui.ui_scale;
+                let next = match a {
+                    Action::UiScaleUp => cur + 0.1,
+                    Action::UiScaleDown => cur - 0.1,
+                    _ => 1.0,
+                };
+                self.cfg.gui.ui_scale = ((next * 10.0).round() / 10.0).clamp(0.5, 3.0);
+                self.style = style_for(&self.theme, &self.cfg);
+                self.save_config();
+            }
             Action::Copy | Action::Paste | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
                 self.view_actions.push(a)
             }
@@ -742,6 +753,9 @@ impl GuiApp {
             .events
             .iter()
             .filter_map(|e| match e {
+                // Ctrl+Alt that produces a character is AltGr typing (e.g. `}`
+                // on a German keyboard), never a shortcut.
+                Event::KeyDown { mods, text: Some(_), .. } if mods.ctrl && mods.alt => None,
                 Event::KeyDown { key, mods, .. } => {
                     self.keymap.match_key(key, *mods, in_term).map(|a| (key.clone(), *mods, a))
                 }
@@ -871,7 +885,8 @@ impl GuiApp {
                 self.geometry_changed();
             }
             let mut sb = std::mem::take(&mut self.sidebar);
-            let a = sidebar(ui, side, &mut sb, &self.sidebar_ctx());
+            let ctx = self.sidebar_ctx();
+            let a = ui.region(Id::new("region-hosts"), "Hosts", |ui| sidebar(ui, side, &mut sb, &ctx));
             self.sidebar = sb;
             if let Some(a) = a {
                 self.on_sidebar(a);
@@ -917,7 +932,8 @@ impl GuiApp {
         let (strip, content) = (parts[0], parts[1]);
         let titles: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
         let tt: Vec<TabTitle> = titles.iter().map(|t| TabTitle { text: t, closable: true }).collect();
-        let r = tabs(ui, Id::new("tabs"), strip, &tt, &mut self.active);
+        let active = &mut self.active;
+        let r = ui.region(Id::new("region-tabs"), "Tabs", |ui| tabs(ui, Id::new("tabs"), strip, &tt, active));
         if let Some((from, to)) = r.moved
             && from < self.tabs.len()
             && to < self.tabs.len()
@@ -937,7 +953,11 @@ impl GuiApp {
             self.switcher_open = true;
         }
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        ui.region(Id::new("region-content"), "Content", |ui| self.tab_content(ui, content));
+    }
 
+    /// The active tab's view.
+    fn tab_content(&mut self, ui: &mut Ui, content: Rect) {
         let p = self.theme.palette;
         ui.painter().rect(content, p.bg, 0.0);
         let Some(tab) = self.tabs.get_mut(self.active) else {
@@ -953,9 +973,15 @@ impl GuiApp {
         let mut show_forwards = false;
         match &mut tab.kind {
             TabKind::Terminal(t) => {
+                t.announce = self.cfg.gui.announce_output;
+                t.blink = self.cfg.gui.cursor_blink && crate::os::animations();
                 let id = Id::new(("term", tab.id));
                 if newly_shown {
-                    ui.request_focus(id);
+                    t.shown();
+                    // A tab chosen from the strip by keyboard leaves focus there.
+                    if !ui.has_focus(Id::new("tabs")) {
+                        ui.request_focus(id);
+                    }
                 }
                 crate::term::view(ui, id, content, t, &self.theme, &self.keymap, self.engine.wake_fn(), &mut self.view_actions);
             }
@@ -1067,6 +1093,9 @@ impl GuiApp {
         if let Some(h) = hovered {
             label(ui, parts[1], &h, Some(p.fg));
         } else if let Some(w) = self.warnings.last().cloned() {
+            if let Some(n) = ui.a11y_node(Id::new("status-warning"), termax_ui::a11y::Role::Status, &w) {
+                n.live = true;
+            }
             label(ui, parts[1], &w, Some(p.warning));
         }
         label(ui, parts[2], &right, Some(p.muted));

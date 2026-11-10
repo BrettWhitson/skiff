@@ -68,7 +68,7 @@ fn field_ui(field: &Field, password: bool) -> impl FnMut(&mut Ui) + '_ {
             Id::new("field"),
             Rect::new(10, 10, 200, 28),
             &mut field.value.borrow_mut(),
-            TextInputOpts { password, placeholder: "type here" },
+            TextInputOpts { password, placeholder: "type here", ..Default::default() },
         );
         field.changed.set(r.changed);
         field.submitted.set(r.submitted);

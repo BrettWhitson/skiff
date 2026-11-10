@@ -16,7 +16,7 @@ use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Sense, Ui};
 use termax_ui::widgets::{
-    Selection, TextInputOpts, button, checkbox, dropdown, elide, label, select_list, text_input,
+    Selection, TextInputOpts, button, checkbox, dropdown, elide, label, select_list_named, text_input,
 };
 
 use super::ops::{self, Op};
@@ -462,7 +462,7 @@ fn prompt_card(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane) {
                 ui.request_focus(iid);
                 pr.focus = false;
             }
-            let r = text_input(ui, iid, parts[0], &mut pr.input, TextInputOpts { password: true, placeholder: "Password" });
+            let r = text_input(ui, iid, parts[0], &mut pr.input, TextInputOpts { password: true, placeholder: "Password", ..Default::default() });
             if button(ui, id.with("prompt-ok"), parts[1], "OK").clicked || r.submitted {
                 answer = Some(Some(pr.input.clone()));
             }
@@ -503,7 +503,7 @@ fn path_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: 
             ui.request_focus(pid);
             pane.focus_input = false;
         }
-        let r = text_input(ui, pid, rect, &mut text, TextInputOpts { password: false, placeholder: "Go to path" });
+        let r = text_input(ui, pid, rect, &mut text, TextInputOpts { password: false, placeholder: "Go to path", ..Default::default() });
         if r.submitted {
             pane.navigate(text, ctx, side);
             return;
@@ -560,7 +560,7 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
                 ui.request_focus(iid);
                 pane.focus_input = false;
             }
-            let r = text_input(ui, iid, parts[0], &mut input, TextInputOpts { password: false, placeholder: "New name" });
+            let r = text_input(ui, iid, parts[0], &mut input, TextInputOpts { password: false, placeholder: "New name", ..Default::default() });
             let ok = button(ui, id.with("bar-ok"), parts[1], "Rename").clicked || r.submitted;
             if ok && is_safe_name(input.trim()) {
                 let to = pane.join(input.trim());
@@ -577,7 +577,7 @@ fn confirm_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ct
                 ui.request_focus(iid);
                 pane.focus_input = false;
             }
-            let r = text_input(ui, iid, parts[0], &mut input, TextInputOpts { password: false, placeholder: "New folder name" });
+            let r = text_input(ui, iid, parts[0], &mut input, TextInputOpts { password: false, placeholder: "New folder name", ..Default::default() });
             let ok = button(ui, id.with("bar-ok"), parts[1], "Create").clicked || r.submitted;
             if ok && is_safe_name(input.trim()) {
                 let path = pane.join(input.trim());
@@ -604,7 +604,16 @@ fn listing(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: &
     let lid = id.with("list");
     let vis: Vec<FileEntry> = pane.visible().into_iter().cloned().collect();
     let px = ui.font_px();
-    let r = select_list(ui, lid, rect, vis.len(), ROW_H, &mut pane.sel, |ui, row, i, _| {
+    let list_name = format!("{} files", pane.loc.label());
+    let row_name = |i: usize| {
+        let e = &vis[i];
+        let kind = if e.is_dir { "folder".to_string() } else { human_size(e.size) };
+        match e.modified {
+            Some(t) => format!("{}, {kind}, modified {}", e.name, format_time(t)),
+            None => format!("{}, {kind}", e.name),
+        }
+    };
+    let r = select_list_named(ui, lid, rect, &list_name, vis.len(), ROW_H, &mut pane.sel, row_name, |ui, row, i, _| {
         let e = &vis[i];
         let lh = ui.line_height(FontKind::Ui, px);
         let y = row.y + (row.h - lh) / 2;
