@@ -15,8 +15,9 @@ First release under the name Skiff (formerly termax).
 - **Config directory.** Settings live in the `skiff` folder
   (`%APPDATA%\skiff\config\`, `~/.config/skiff/`,
   `~/Library/Application Support/skiff/`). On first start the old termax
-  folder is copied over once and left as it was. A failed copy writes no
-  fresh config, so the next start tries again; an interrupted or concurrent
+  folder is copied over once and left as it was. After a failed copy that
+  session writes nothing into the new folder (history and window state stay
+  in memory, settings edits are refused), so the next start tries again; an interrupted or concurrent
   first start (TUI and GUI together) is handled. See
   [Coming from termax](docs/CONFIGURATION.md#coming-from-termax).
 - **`SKIFF_CONFIG`** sets the config file; `TERMAX_CONFIG` is still honoured

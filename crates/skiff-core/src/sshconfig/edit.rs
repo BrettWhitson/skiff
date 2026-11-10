@@ -587,10 +587,14 @@ impl ConfigSet {
     }
 }
 
-/// Creates `dir` (and parents) if missing, private (0700) on Unix.
+/// Creates `dir` (and parents) if missing, private (0700) on Unix; never
+/// inside a directory held after a failed migration.
 fn create_private_dir(dir: &Path) -> anyhow::Result<()> {
     if dir.is_dir() {
         return Ok(());
+    }
+    if crate::migrate::is_held(dir) {
+        anyhow::bail!(crate::migrate::HELD_REASON);
     }
     #[cfg(unix)]
     {

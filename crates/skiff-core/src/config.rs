@@ -334,8 +334,12 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("skiff.toml"))
     }
 
-    /// Loads the config, writing the commented template on first run.
+    /// Loads the config, writing the commented template on first run (not
+    /// into a folder held after a failed migration: defaults then).
     pub fn load_or_create(path: &Path) -> Result<Self> {
+        if !path.exists() && path.parent().is_some_and(crate::migrate::is_held) {
+            return Self::parse(TEMPLATE);
+        }
         if !path.exists() {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -362,6 +366,10 @@ impl Config {
     /// file — comments, unknown keys, and changes made meanwhile by another
     /// front-end — is kept.
     pub fn save(&self, baseline: &Config, path: &Path) -> Result<()> {
+        // After a failed migration the config folder must not appear (see `migrate::hold_dir`).
+        if path.parent().is_some_and(crate::migrate::is_held) {
+            anyhow::bail!(crate::migrate::HELD_REASON);
+        }
         // Diff via `toml::Value` (baseline vs. new) but edit `doc`, a format-preserving
         // parse of the file as it is now; `new_doc` supplies the formatted values.
         let existing = std::fs::read_to_string(path).unwrap_or_default();

@@ -51,7 +51,10 @@ exist yet and the old termax one does, Skiff copies everything in it
 (config, history, window state, ssh config backups) into its own folder and
 says so once. The old folder is left as it was and nothing that already
 exists is overwritten. This is skipped when `SKIFF_CONFIG` or
-`TERMAX_CONFIG` is set.
+`TERMAX_CONFIG` is set. If the copy fails, Skiff says so, runs that session
+on defaults without creating its folder (history and window state stay in
+memory; settings and ssh config edits are refused, since their backups live
+there), and tries again on the next start.
 
 | Old (termax) | New (Skiff) |
 |---|---|

@@ -55,6 +55,36 @@ pub enum CopyOutcome {
     ByOther,
 }
 
+/// New data directories that must not be created this run: their copy from
+/// the old name failed, and creating them would stop the next start retrying.
+static HELD: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Keeps `dir` from being created for the rest of this run (see [`ensure_dir`]).
+pub fn hold_dir(dir: &Path) {
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).push(dir.to_path_buf());
+}
+
+/// Whether `dir` is, or is inside, a held directory that doesn't exist yet.
+pub fn is_held(dir: &Path) -> bool {
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|h| dir.starts_with(h) && !h.exists())
+}
+
+/// Creates `dir` and its parents like `create_dir_all`, unless it lies in a
+/// held directory: then nothing is created and an error explains why.
+pub fn ensure_dir(dir: &Path) -> std::io::Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    if is_held(dir) {
+        return Err(std::io::Error::other(HELD_REASON));
+    }
+    std::fs::create_dir_all(dir)
+}
+
+/// Why a write into a held directory was refused.
+pub const HELD_REASON: &str =
+    "not saved: your settings from termax couldn't be copied yet, so nothing is written to the new folder until a restart copies them";
+
 /// Staging directories older than this are left over from a crashed run.
 const STALE_AFTER: Duration = Duration::from_secs(300);
 
@@ -85,7 +115,11 @@ pub fn migrate_legacy(config_path: &Path) -> Migration {
             Migration::Copied(note)
         }
         Ok(CopyOutcome::NotNeeded | CopyOutcome::ByOther) => Migration::None,
-        Err(e) => Migration::Failed(format!("could not copy your settings from {}: {e}; skiff will try again next start", old.display())),
+        Err(e) => Migration::Failed(format!(
+            "could not copy your settings from {}: {e}; skiff will try again next start. Until then this session saves nothing \
+             (history, window state, settings and ssh config edits are kept in memory or refused)",
+            old.display()
+        )),
     }
 }
 
@@ -96,11 +130,17 @@ pub fn load_config(config_path: &Path) -> anyhow::Result<(Config, Migration)> {
     Ok((load_after(config_path, &migration)?, migration))
 }
 
-/// Loads the config after `migration`: creates the template file unless
-/// the copy failed (a freshly created new directory would stop the retry).
+/// Loads the config after `migration`. After a failed copy it writes no
+/// template and holds the config directory (see [`hold_dir`]) so that no
+/// history, state, backup or settings write creates it and stops the retry.
 fn load_after(config_path: &Path, migration: &Migration) -> anyhow::Result<Config> {
     match migration {
-        Migration::Failed(_) => Config::load_or_default(config_path),
+        Migration::Failed(_) => {
+            if let Some(dir) = config_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                hold_dir(dir);
+            }
+            Config::load_or_default(config_path)
+        }
         _ => Config::load_or_create(config_path),
     }
 }
@@ -297,14 +337,27 @@ mod tests {
         assert_eq!(std::fs::metadata(new.join("backups")).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
-    /// A failed copy loads the defaults without writing a config, so the new
-    /// directory still doesn't exist and the next start retries.
+    /// A failed copy loads the defaults without writing a config, and the
+    /// session's history, state, settings and backup writes don't create the
+    /// new directory either, so the next start retries.
     #[test]
     fn failed_migration_writes_no_fresh_config() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("skiff").join("config.toml");
-        load_after(&path, &Migration::Failed("x".into())).unwrap();
+        let cfg = load_after(&path, &Migration::Failed("x".into())).unwrap();
+        let mut hist = crate::history::History::default();
+        hist.record("web", crate::history::ConnKind::Terminal, 1);
+        assert!(hist.save(&crate::history::History::path_for(&path)).is_err());
+        assert!(crate::state::UiState::default().save(&crate::state::UiState::path_for(&path)).is_err());
+        let mut changed = cfg.clone();
+        changed.settings.scrollback += 1;
+        assert!(changed.save(&cfg, &path).unwrap_err().to_string().contains("not saved"));
+        assert!(ensure_dir(&crate::sshconfig::edit::backups_dir(&path)).is_err());
+        Config::load_or_create(&path).unwrap(); // a reload
         assert!(!path.parent().unwrap().exists());
+        // Other directories are unaffected.
+        ensure_dir(&d.path().join("elsewhere")).unwrap();
+        let path = d.path().join("ok").join("config.toml");
         load_after(&path, &Migration::None).unwrap();
         assert!(path.exists());
     }

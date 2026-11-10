@@ -65,7 +65,7 @@ impl History {
     /// which keeps other processes' changes.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir)?;
+        crate::migrate::ensure_dir(dir)?;
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         // The temp name is hidden and unique per process so concurrent writers
         // don't clobber each other's temp file.

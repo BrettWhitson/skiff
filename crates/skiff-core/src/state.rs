@@ -72,7 +72,7 @@ impl UiState {
     /// Writes the state, creating the config directory if needed.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            crate::migrate::ensure_dir(dir)?;
         }
         std::fs::write(path, toml::to_string(self)?)?;
         Ok(())
