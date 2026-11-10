@@ -414,7 +414,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
     let Some(modal) = &app.modal else { return };
     match modal {
         Modal::Help => {
-            let r = centered(area, 72, 38);
+            let r = centered(area, 72, 40);
             f.render_widget(Clear, r);
             let k = |key: &str, desc: &str| {
                 Line::from(vec![Span::styled(format!("  {key:<22}"), t.accent()), Span::raw(desc.to_string())])
@@ -444,6 +444,8 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 k("Enter (Other options)", "add a line"),
                 h("Terminal"),
                 k("Shift+PgUp / PgDn", "scroll back"),
+                k("Alt+F", "find (Enter older · Shift+Enter newer)"),
+                k("Alt+S", "snippets"),
                 k("Enter (when closed)", "reconnect"),
                 h("File transfer"),
                 k("Tab / ← →", "switch pane"),
