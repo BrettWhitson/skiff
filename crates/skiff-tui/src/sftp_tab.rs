@@ -1,5 +1,6 @@
 //! Dual-pane SFTP browser for the TUI: a local pane and one remote pane.
-//! All SSH/SFTP work goes through `skiff_core::fs`.
+//! All SSH/SFTP work goes through `skiff_core::fs`; background results come
+//! back to the app as `Msg`s and are fed into the `on_*` methods here.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use skiff_core::fs::endpoint::Endpoint;
 use skiff_core::fs::transfer::{self, OverwritePolicy, TransferEvent, TransferHandle, TransferRequest, TransferSummary};
 pub use skiff_core::fs::{self, FileEntry, human_size};
 
+/// Which pane: this computer or the remote host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Local,
@@ -21,6 +23,7 @@ pub enum Side {
 }
 
 impl Side {
+    /// The opposite pane.
     pub fn other(self) -> Self {
         match self {
             Side::Local => Side::Remote,
@@ -29,21 +32,33 @@ impl Side {
     }
 }
 
+/// One directory listing pane.
 #[derive(Debug, Default)]
 pub struct Pane {
+    /// Directory shown (local paths in OS form, remote paths with `/`).
     pub path: String,
+    /// First visible row (scroll position), kept by the renderer.
     pub offset: usize,
+    /// Sorted entries, with `..` always first.
     pub entries: Vec<FileEntry>,
+    /// Index of the selected entry.
     pub selected: usize,
+    /// A listing request is in flight.
     pub loading: bool,
+    /// Last listing or file-operation error for this pane.
     pub error: Option<String>,
 }
 
 impl Pane {
+    /// The selected entry, if any.
     pub fn current(&self) -> Option<&FileEntry> {
         self.entries.get(self.selected)
     }
 
+    /// Shows a new listing of `path`: hides dotfiles unless `show_hidden`,
+    /// sorts directories first then by case-insensitive name, and adds `..`.
+    /// The selection goes to `keep` if given, else stays on the same name when
+    /// the directory did not change, else to the top.
     pub fn set_entries(&mut self, path: String, mut entries: Vec<FileEntry>, show_hidden: bool, keep: Option<&str>) {
         if !show_hidden {
             entries.retain(|e| !e.name.starts_with('.'));
@@ -59,6 +74,7 @@ impl Pane {
         self.error = None;
     }
 
+    /// Moves the selection by `delta` rows, clamped to the list.
     pub fn move_by(&mut self, delta: i64) {
         if self.entries.is_empty() {
             return;
@@ -68,43 +84,60 @@ impl Pane {
     }
 }
 
+/// Where a transfer stands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransferState {
     Running,
     Done,
     Cancelled,
+    /// Failed with this error message.
     Failed(String),
 }
 
+/// One copy between the panes, as shown in the transfers list.
 pub struct Transfer {
     pub id: u64,
+    /// `↑ name` for uploads, `↓ name` for downloads (the arrow also tells
+    /// which pane to refresh when it finishes).
     pub label: String,
+    /// Bytes copied so far.
     pub done: u64,
+    /// Total bytes when known up front (single files only).
     pub total: Option<u64>,
     /// Files left alone because they existed (or weren't safe to copy).
     pub skipped: u64,
     pub state: TransferState,
+    /// Used to cancel the running transfer.
     handle: TransferHandle,
     /// Cancel was asked for; it ends at its next step.
     cancelling: bool,
 }
 
+/// The tab's SFTP connection state.
 pub enum Status {
     Connecting,
     Connected,
+    /// Connecting failed with this error message.
     Failed(String),
 }
 
+/// An SFTP tab: both panes, the connection and its transfers.
 pub struct SftpTab {
+    /// The app's id for this tab, sent back in every `Msg`.
     pub tab_id: u64,
     pub host_name: String,
     pub status: Status,
+    /// The open SFTP connection, once connected.
     pub conn: Option<Arc<RemoteConn>>,
     pub local: Pane,
     pub remote: Pane,
+    /// The focused pane (copy source, target of file operations).
     pub focus: Side,
+    /// Transfers, oldest first.
     pub transfers: Vec<Transfer>,
+    /// Dotfiles are listed.
     pub show_hidden: bool,
+    /// How ssh was started last time, for [`reconnect`](Self::reconnect).
     launch: Option<SshLaunch>,
     /// Relays ssh's password and host-key questions (when skiff can prompt).
     askpass: Option<Arc<Broker>>,
@@ -112,12 +145,17 @@ pub struct SftpTab {
     attempt: u64,
     /// The newest remote listing request.
     listing: u64,
+    /// Id for the next transfer.
     next_transfer: u64,
+    /// Runtime that background work is spawned on.
     rt: Handle,
+    /// Sends background results to the app.
     tx: UnboundedSender<Msg>,
 }
 
 impl SftpTab {
+    /// A tab for `host_name` showing `local_dir` on the local side; the remote
+    /// side shows "loading" until [`connect`](Self::connect) succeeds.
     pub fn new(tab_id: u64, host_name: String, local_dir: PathBuf, show_hidden: bool, rt: Handle, tx: UnboundedSender<Msg>) -> Self {
         let mut tab = Self {
             tab_id,
@@ -164,6 +202,8 @@ impl SftpTab {
         self.status = Status::Connecting;
         self.conn = None;
         self.remote = Pane { loading: true, ..Default::default() };
+        // Questions from the previous attempt are moot; the new attempt gets a
+        // fresh tag so late answers to old questions cannot reach it.
         self.retire_questions();
         self.attempt += 1;
         let mut launch = launch;
@@ -177,12 +217,14 @@ impl SftpTab {
         });
     }
 
+    /// Connects again the way the last [`connect`](Self::connect) did (no-op if never connected).
     pub fn reconnect(&mut self) {
         if let Some(launch) = self.launch.clone() {
             self.connect(launch);
         }
     }
 
+    /// Handles `Msg::SftpConnected`: on success lists the remote home directory.
     pub fn on_connected(&mut self, result: Result<Arc<RemoteConn>, String>) {
         match result {
             Ok(conn) => {
@@ -200,6 +242,7 @@ impl SftpTab {
         }
     }
 
+    /// The filesystem behind `side`; the remote one only while connected.
     fn endpoint(&self, side: Side) -> Option<Endpoint> {
         match side {
             Side::Local => Some(Endpoint::Local),
@@ -207,6 +250,7 @@ impl SftpTab {
         }
     }
 
+    /// The pane for `side`.
     pub fn pane(&self, side: Side) -> &Pane {
         match side {
             Side::Local => &self.local,
@@ -214,6 +258,7 @@ impl SftpTab {
         }
     }
 
+    /// The pane for `side`, mutably.
     pub fn pane_mut(&mut self, side: Side) -> &mut Pane {
         match side {
             Side::Local => &mut self.local,
@@ -221,6 +266,8 @@ impl SftpTab {
         }
     }
 
+    /// Lists a local directory synchronously, showing its canonical path; on
+    /// error the pane keeps its old listing and shows the error.
     pub fn list_local(&mut self, path: String, keep: Option<String>) {
         match fs::path::list_local(Path::new(&path)) {
             Ok(entries) => {
@@ -237,6 +284,8 @@ impl SftpTab {
         self.listing
     }
 
+    /// Lists a remote directory in the background (`Msg::RemoteListing`);
+    /// does nothing while not connected.
     pub fn list_remote(&mut self, path: String, keep: Option<String>) {
         let Some(ep) = self.endpoint(Side::Remote) else { return };
         self.remote.loading = true;
@@ -262,6 +311,7 @@ impl SftpTab {
         }
     }
 
+    /// Lists `side`'s current directory again.
     pub fn refresh(&mut self, side: Side) {
         let path = self.pane(side).path.clone();
         match side {
@@ -270,6 +320,7 @@ impl SftpTab {
         }
     }
 
+    /// Shows `path` in `side`'s pane, selecting `keep` if it is there.
     pub fn navigate(&mut self, side: Side, path: String, keep: Option<String>) {
         match side {
             Side::Local => self.list_local(path, keep),
@@ -284,11 +335,13 @@ impl SftpTab {
         if entry.name == ".." {
             self.go_up();
         } else if entry.is_dir || entry.is_symlink {
+            // A symlink may point at a directory; listing it shows whether it does.
             let path = join(side, &self.pane(side).path, &entry.name);
             self.navigate(side, path, None);
         }
     }
 
+    /// Goes to the focused pane's parent directory, selecting the one just left.
     pub fn go_up(&mut self) {
         let side = self.focus;
         let cur = self.pane(side).path.clone();
@@ -297,6 +350,7 @@ impl SftpTab {
         }
     }
 
+    /// Full path and entry of the focused pane's selection (`None` for `..`).
     pub fn selected_path(&self) -> Option<(String, FileEntry)> {
         let pane = self.pane(self.focus);
         let e = pane.current()?.clone();
@@ -327,6 +381,7 @@ impl SftpTab {
             handle,
             cancelling: false,
         });
+        // Forward the transfer's events to the app as Msgs until it is done.
         let (tx, tab) = (self.tx.clone(), self.tab_id);
         self.rt.spawn(async move {
             while let Some(ev) = events.recv().await {
@@ -347,12 +402,15 @@ impl SftpTab {
         Ok(())
     }
 
+    /// Handles `Msg::TransferProgress`: records bytes copied so far.
     pub fn on_transfer_progress(&mut self, id: u64, done: u64) {
         if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
             t.done = done;
         }
     }
 
+    /// Handles `Msg::TransferDone`: sets the final state and refreshes the
+    /// destination pane so the copied entries show up.
     pub fn on_transfer_done(&mut self, id: u64, result: Result<TransferSummary, String>) {
         let mut target = None;
         if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
@@ -363,6 +421,7 @@ impl SftpTab {
                 }
                 Err(e) => TransferState::Failed(e),
             };
+            // Uploads (↑) land on the remote side, downloads on the local one.
             target = Some(if t.label.starts_with('↑') { Side::Remote } else { Side::Local });
         }
         if let Some(side) = target {
@@ -387,6 +446,7 @@ impl SftpTab {
         Some(t.label.clone())
     }
 
+    /// Removes every transfer that is no longer running from the list.
     pub fn clear_finished_transfers(&mut self) {
         self.transfers.retain(|t| t.state == TransferState::Running);
     }
@@ -407,6 +467,8 @@ impl SftpTab {
             };
             (r.map_err(|e| format!("{e:#}")), op.keep_name())
         };
+        // Local operations are quick and run inline; remote ones run in the
+        // background and report back with `Msg::RemoteOpDone`.
         match side {
             Side::Local => {
                 let (r, keep) = self.rt.block_on(task);
@@ -425,6 +487,8 @@ impl SftpTab {
         }
     }
 
+    /// Handles `Msg::RemoteOpDone`: shows any error and relists the remote
+    /// pane, selecting the new or renamed entry.
     pub fn on_remote_op(&mut self, result: Result<(), String>, keep: Option<String>) {
         if let Err(e) = result {
             self.remote.error = Some(e);
@@ -433,6 +497,7 @@ impl SftpTab {
         self.list_remote(path, keep);
     }
 
+    /// Shows or hides dotfiles in both panes.
     pub fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
         self.refresh(Side::Local);
@@ -450,6 +515,9 @@ impl Drop for SftpTab {
     }
 }
 
+/// A file operation on the focused pane; names are relative to its directory.
+/// `Mkdir` creates a directory; `Delete` with `is_dir` removes a directory
+/// and everything in it.
 #[derive(Debug, Clone)]
 pub enum FileOp {
     Mkdir(String),
@@ -458,6 +526,7 @@ pub enum FileOp {
 }
 
 impl FileOp {
+    /// The entry to select after the listing refreshes (the new or renamed one).
     fn keep_name(&self) -> Option<String> {
         match self {
             FileOp::Mkdir(n) => Some(n.clone()),
@@ -473,10 +542,13 @@ fn clean_local(p: &Path) -> String {
     s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
 }
 
+/// Joins `name` onto `base` using `side`'s path rules.
 pub fn join(side: Side, base: &str, name: &str) -> String {
     fs::join(side == Side::Remote, base, name)
 }
 
+/// Splits `path` into (parent, last component) using `side`'s path rules;
+/// `None` at the root.
 pub fn parent(side: Side, path: &str) -> Option<(String, String)> {
     fs::parent(side == Side::Remote, path)
 }
@@ -485,6 +557,8 @@ pub fn parent(side: Side, path: &str) -> Option<(String, String)> {
 mod tests {
     use super::*;
 
+    /// Dotfiles are hidden, `..` comes first, then directories, then files by
+    /// case-insensitive name.
     #[test]
     fn pane_sorting_and_hidden() {
         let mut p = Pane::default();
@@ -494,6 +568,7 @@ mod tests {
         assert_eq!(names, ["..", "A", "a", "b"]);
     }
 
+    /// A listing answer that arrives after a newer request's answer is dropped.
     #[test]
     fn late_listing_of_an_earlier_request_is_ignored() {
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();

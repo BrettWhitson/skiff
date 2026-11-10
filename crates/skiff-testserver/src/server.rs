@@ -1,3 +1,7 @@
+//! [`TestServer`]: an in-process russh SSH server on 127.0.0.1 with SFTP, an
+//! optional echo shell, trivial exec commands and loopback-only local forwards.
+//! It runs on its own thread and tokio runtime so sync and async tests can use it.
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -13,10 +17,12 @@ use tokio::sync::oneshot;
 
 use crate::sftp_fs::SftpFs;
 
+/// How a [`TestServer`] is set up.
 #[derive(Clone)]
 pub struct ServerOptions {
     /// Directory served as `/` over SFTP.
     pub root: PathBuf,
+    /// The only user name that may log in.
     pub user: String,
     /// If set, password auth with this password is offered (and keys are not).
     pub password: Option<String>,
@@ -24,24 +30,33 @@ pub struct ServerOptions {
     pub authorized_key: Option<PublicKey>,
     /// A `shell` request echoes input back (for terminal tests).
     pub shell_echo: bool,
+    /// The server's host key.
     pub host_key: PrivateKey,
 }
 
 /// A running server on `127.0.0.1:port`. Stops when dropped.
 pub struct TestServer {
+    /// The port picked by the OS when binding `127.0.0.1:0`.
     pub port: u16,
+    /// Host public key in OpenSSH form (`ssh-ed25519 AAAA… comment`).
     host_pub: String,
+    /// Fires to stop the accept loop; `None` once stopped.
     shutdown: Option<oneshot::Sender<()>>,
+    /// The thread that owns the server's runtime; `None` once joined.
     thread: Option<JoinHandle<()>>,
 }
 
 impl TestServer {
+    /// Binds a free port on 127.0.0.1 and starts serving on a background
+    /// thread. Returns once the socket is bound, so clients can connect at once.
     pub fn start(opts: ServerOptions) -> Result<Self> {
+        // Bind synchronously so the port is known (and listening) before returning.
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
         let host_pub = opts.host_key.public_key().to_openssh()?;
 
+        // Offer exactly one auth method; quick rejections keep failing tests fast.
         let methods: &[MethodKind] = if opts.password.is_some() { &[MethodKind::Password] } else { &[MethodKind::PublicKey] };
         let config = Arc::new(russh::server::Config {
             keys: vec![opts.host_key.clone()],
@@ -51,6 +66,8 @@ impl TestServer {
             ..Default::default()
         });
 
+        // The server gets a private runtime on its own thread, so it works from
+        // plain #[test]s and is unaffected by the test's own runtime.
         let (tx, rx) = oneshot::channel();
         let opts = Arc::new(opts);
         let thread = std::thread::spawn(move || {
@@ -59,6 +76,7 @@ impl TestServer {
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 let mut srv = Srv { opts };
                 let running = srv.run_on_socket(config, &listener);
+                // Serve until the accept loop ends or `kill` signals (or drops) the sender.
                 tokio::select! {
                     _ = running => {}
                     _ = rx => {}
@@ -89,11 +107,13 @@ impl TestServer {
 }
 
 impl Drop for TestServer {
+    /// Stops the server so no thread or port outlives the test.
     fn drop(&mut self) {
         self.kill();
     }
 }
 
+/// The russh server factory: hands each new connection the shared options.
 struct Srv {
     opts: Arc<ServerOptions>,
 }
@@ -101,21 +121,26 @@ struct Srv {
 impl russh::server::Server for Srv {
     type Handler = Conn;
 
+    /// Creates the handler for one incoming connection.
     fn new_client(&mut self, _: Option<SocketAddr>) -> Conn {
         Conn { opts: self.opts.clone(), channels: HashMap::new() }
     }
 }
 
+/// Per-connection handler.
 struct Conn {
     opts: Arc<ServerOptions>,
+    /// Session channels opened but not yet claimed by a subsystem request.
     channels: HashMap<ChannelId, Channel<Msg>>,
 }
 
+/// A plain auth rejection with no further methods suggested.
 fn reject() -> Auth {
     Auth::Reject { proceed_with_methods: None, partial_success: false }
 }
 
 impl Conn {
+    /// Accepts only the configured user with the configured authorized key.
     fn key_ok(&self, user: &str, key: &PublicKey) -> Auth {
         let ok = user == self.opts.user && self.opts.authorized_key.as_ref().is_some_and(|k| k.key_data() == key.key_data());
         if ok { Auth::Accept } else { reject() }
@@ -125,19 +150,23 @@ impl Conn {
 impl russh::server::Handler for Conn {
     type Error = anyhow::Error;
 
+    /// Accepts the configured user and password; anything else is rejected.
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth> {
         let ok = user == self.opts.user && self.opts.password.as_deref() == Some(password);
         Ok(if ok { Auth::Accept } else { reject() })
     }
 
+    /// Answers the client's "would this key be accepted?" probe.
     async fn auth_publickey_offered(&mut self, user: &str, offer: PublicKeyOffer<'_>) -> Result<Auth> {
         Ok(self.key_ok(user, offer.public_key))
     }
 
+    /// Final key check after the client has proved it holds the private key.
     async fn auth_publickey(&mut self, user: &str, key: VerifiedPublicKey<'_>) -> Result<Auth> {
         Ok(self.key_ok(user, key.public_key))
     }
 
+    /// Accepts every session channel and keeps it until a subsystem claims it.
     async fn channel_open_session(&mut self, channel: Channel<Msg>, reply: ChannelOpenHandle, _session: &mut Session) -> Result<()> {
         self.channels.insert(channel.id(), channel);
         reply.accept().await;
@@ -164,6 +193,8 @@ impl russh::server::Handler for Conn {
             reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
             return Ok(());
         }
+        // Connect first so an unreachable port is reported as an open failure,
+        // then pump bytes both ways until either side closes.
         match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
             Ok(mut tcp) => {
                 reply.accept().await;
@@ -177,6 +208,8 @@ impl russh::server::Handler for Conn {
         Ok(())
     }
 
+    /// Runs the SFTP server on the channel for `sftp`; any other subsystem
+    /// (or an unknown channel) is refused.
     async fn subsystem_request(&mut self, id: ChannelId, name: &str, session: &mut Session) -> Result<()> {
         match (name, self.channels.remove(&id)) {
             ("sftp", Some(channel)) => {
@@ -188,6 +221,7 @@ impl russh::server::Handler for Conn {
         Ok(())
     }
 
+    /// Accepts any PTY request; size and modes are ignored.
     #[allow(clippy::too_many_arguments)]
     async fn pty_request(
         &mut self,
@@ -218,6 +252,7 @@ impl russh::server::Handler for Conn {
         Ok(())
     }
 
+    /// With `shell_echo`, accepts and prints a banner; otherwise refuses.
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<()> {
         if self.opts.shell_echo {
             session.channel_success(channel)?;
@@ -228,6 +263,8 @@ impl russh::server::Handler for Conn {
         Ok(())
     }
 
+    /// In echo-shell mode, sends input straight back, turning each CR into
+    /// CR LF the way a terminal's line discipline would.
     async fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Result<()> {
         if self.opts.shell_echo {
             let mut out = Vec::with_capacity(data.len());
@@ -242,6 +279,7 @@ impl russh::server::Handler for Conn {
         Ok(())
     }
 
+    /// Closes the channel once the client signals end of input.
     async fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Result<()> {
         session.close(channel)?;
         Ok(())

@@ -1,4 +1,7 @@
 //! The host editor and the port-forward form (modal dialogs).
+//!
+//! Both hold their own [`TextInput`]s and turn key presses into an
+//! [`Outcome`]; the app decides what saving means and `ui` draws them.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use skiff_core::forward::{Forward, ForwardKind};
@@ -9,37 +12,53 @@ use crate::input::TextInput;
 
 /// What a key press did to a form.
 pub enum Outcome {
+    /// Still editing.
     Keep,
+    /// Esc: close without saving.
     Cancel,
+    /// Ctrl+S, or Enter on the last row: the caller should validate and save.
     Save,
 }
 
+/// One focusable row of the host editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
+    /// Where the host is saved (skiff config or one of the ssh config files).
     Dest,
+    /// A text field of the form.
     Field(Field),
+    /// The "hidden" toggle.
     Hidden,
+    /// Line `n` of the free-form "other options" (ssh config hosts only).
     Other(usize),
 }
 
+/// The new/edit host dialog.
 pub struct Editor {
+    /// The form being edited; inputs are copied into it by [`sync`](Self::sync).
     pub form: HostForm,
     /// The ssh config files (empty when ssh config editing is unavailable).
     pub set: ConfigSet,
+    /// One input per field the current destination supports.
     pub inputs: Vec<(Field, TextInput)>,
     /// "Other options", one input per line (ssh config hosts only).
     pub other: Vec<TextInput>,
+    /// Index into [`rows`](Self::rows) of the focused row.
     pub focus: usize,
+    /// Validation or save error shown in the dialog.
     pub error: Option<String>,
 }
 
 impl Editor {
+    /// Opens the editor on `form`, with inputs filled from it.
     pub fn new(form: HostForm, set: ConfigSet) -> Editor {
         let mut e = Editor { form, set, inputs: vec![], other: vec![], focus: 0, error: None };
         e.load();
         e
     }
 
+    /// Rebuilds the inputs from the form (the field list depends on the
+    /// destination); there is always at least one "other options" line.
     fn load(&mut self) {
         self.inputs = self.form.fields().into_iter().map(|f| (f, TextInput::new(self.form.get(f)))).collect();
         self.other = self.form.other.lines().map(TextInput::new).collect();
@@ -56,10 +75,13 @@ impl Editor {
         self.form.other = self.other.iter().map(|i| i.value.clone()).collect::<Vec<_>>().join("\n");
     }
 
+    /// True when the host is going to an ssh config file rather than skiff's config.
     fn ssh_dest(&self) -> bool {
         matches!(self.form.dest, Dest::SshConfig(_))
     }
 
+    /// The rows in display and focus order: destination (new hosts only, when
+    /// ssh config files exist), fields, hidden toggle, then other-option lines.
     pub fn rows(&self) -> Vec<Row> {
         let mut r = Vec::new();
         if self.form.can_change_dest() && !self.set.docs.is_empty() {
@@ -73,10 +95,12 @@ impl Editor {
         r
     }
 
+    /// Dialog title: "New host" while the destination can still change, else "Edit host".
     pub fn title(&self) -> &'static str {
         if self.form.can_change_dest() { " New host " } else { " Edit host " }
     }
 
+    /// Text for the destination row: "Skiff config" or the ssh config file's path.
     pub fn dest_label(&self) -> String {
         match self.form.dest {
             Dest::Skiff => "Skiff config".into(),
@@ -86,6 +110,7 @@ impl Editor {
 
     /// Cycles skiff config → each ssh config file → skiff config.
     fn next_dest(&mut self) {
+        // Keep what was typed: sync into the form before reloading the inputs.
         self.sync();
         self.form.dest = match self.form.dest {
             Dest::Skiff if !self.set.docs.is_empty() => Dest::SshConfig(0),
@@ -95,10 +120,12 @@ impl Editor {
         self.load();
     }
 
+    /// The input for field `f`, if the current destination has it.
     pub fn input(&self, f: Field) -> Option<&TextInput> {
         self.inputs.iter().find(|(g, _)| *g == f).map(|(_, i)| i)
     }
 
+    /// The text input on the focused row, if that row is editable text.
     pub fn focused_input(&mut self) -> Option<&mut TextInput> {
         match self.rows().get(self.focus).copied()? {
             Row::Field(f) => self.inputs.iter_mut().find(|(g, _)| *g == f).map(|(_, i)| i),
@@ -107,9 +134,12 @@ impl Editor {
         }
     }
 
+    /// Handles one key: navigation, toggles, adding/removing other-option
+    /// lines, saving, or editing the focused input.
     pub fn handle_key(&mut self, key: KeyEvent) -> Outcome {
         let rows = self.rows();
         let n = rows.len();
+        // The row count can shrink (e.g. after a destination change); clamp focus.
         self.focus = self.focus.min(n - 1);
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
             self.sync();
@@ -121,10 +151,12 @@ impl Editor {
             (KeyCode::BackTab | KeyCode::Up, _) => self.focus = (self.focus + n - 1) % n,
             (KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right | KeyCode::Enter, Row::Dest) => self.next_dest(),
             (KeyCode::Char(' ') | KeyCode::Enter, Row::Hidden) => self.form.hidden = !self.form.hidden,
+            // Enter in an other-option line opens a new line below it.
             (KeyCode::Enter, Row::Other(i)) => {
                 self.other.insert(i + 1, TextInput::default());
                 self.focus += 1;
             }
+            // Backspace in an empty other-option line removes it (keeping at least one).
             (KeyCode::Backspace, Row::Other(i)) if self.other[i].value.is_empty() && self.other.len() > 1 => {
                 self.other.remove(i);
                 self.focus -= 1;
@@ -144,29 +176,40 @@ impl Editor {
     }
 }
 
+/// One focusable row of the port-forward form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FwdRow {
+    /// Local / remote / dynamic, cycled with Space or arrows.
     Kind,
     Name,
     Bind,
     Listen,
+    /// `host:port` to forward to (absent for dynamic forwards).
     Target,
 }
 
+/// The new/edit port-forward dialog.
 pub struct ForwardForm {
+    /// The host the forward runs through.
     pub host: String,
     pub kind: ForwardKind,
+    /// Optional display name.
     pub name: TextInput,
+    /// Optional bind address for the listening side.
     pub bind: TextInput,
+    /// Listening port (1-65535).
     pub listen: TextInput,
     pub target: TextInput,
     /// Index into `Config::forwards` when editing.
     pub editing: Option<usize>,
+    /// Index into [`rows`](Self::rows) of the focused row.
     pub focus: usize,
+    /// Validation error shown in the dialog.
     pub error: Option<String>,
 }
 
 impl ForwardForm {
+    /// An empty local-forward form for `host`; the target starts as `localhost:`.
     pub fn new(host: &str) -> ForwardForm {
         ForwardForm {
             host: host.into(),
@@ -194,6 +237,7 @@ impl ForwardForm {
         }
     }
 
+    /// The rows in order; the target row is left out for dynamic forwards.
     pub fn rows(&self) -> Vec<FwdRow> {
         let mut r = vec![FwdRow::Kind, FwdRow::Name, FwdRow::Bind, FwdRow::Listen];
         if self.kind != ForwardKind::Dynamic {
@@ -202,6 +246,7 @@ impl ForwardForm {
         r
     }
 
+    /// The label shown beside `row`.
     pub fn label(row: FwdRow) -> &'static str {
         match row {
             FwdRow::Kind => "Kind",
@@ -212,6 +257,7 @@ impl ForwardForm {
         }
     }
 
+    /// The text input of `row` (`None` for the kind selector).
     pub fn input(&self, row: FwdRow) -> Option<&TextInput> {
         match row {
             FwdRow::Kind => None,
@@ -222,6 +268,7 @@ impl ForwardForm {
         }
     }
 
+    /// The text input on the focused row, if it has one.
     pub fn focused_input(&mut self) -> Option<&mut TextInput> {
         match self.rows().get(self.focus)? {
             FwdRow::Kind => None,
@@ -232,6 +279,8 @@ impl ForwardForm {
         }
     }
 
+    /// Builds and validates the forward: blank optional fields become `None`,
+    /// the port must be 1-65535, and dynamic forwards drop the target.
     pub fn to_forward(&self) -> Result<Forward, String> {
         let opt = |i: &TextInput| Some(i.value.trim().to_string()).filter(|s| !s.is_empty());
         let listen = self.listen.value.trim().parse::<u16>().ok().filter(|p| *p > 0).ok_or("Listen port must be 1–65535")?;
@@ -241,9 +290,12 @@ impl ForwardForm {
         Ok(f)
     }
 
+    /// Handles one key: navigation, cycling the kind, saving, or editing the
+    /// focused input. Validation happens later, in [`to_forward`](Self::to_forward).
     pub fn handle_key(&mut self, key: KeyEvent) -> Outcome {
         let rows = self.rows();
         let n = rows.len();
+        // Switching to dynamic removes the target row; clamp focus.
         self.focus = self.focus.min(n - 1);
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
             return Outcome::Save;
@@ -252,10 +304,12 @@ impl ForwardForm {
             (KeyCode::Esc, _) => return Outcome::Cancel,
             (KeyCode::Tab | KeyCode::Down, _) => self.focus = (self.focus + 1) % n,
             (KeyCode::BackTab | KeyCode::Up, _) => self.focus = (self.focus + n - 1) % n,
+            // Kind cycles forward through ForwardKind::ALL (wrapping)...
             (KeyCode::Char(' ') | KeyCode::Right | KeyCode::Enter, FwdRow::Kind) => {
                 let i = ForwardKind::ALL.iter().position(|k| *k == self.kind).unwrap_or(0);
                 self.kind = ForwardKind::ALL[(i + 1) % ForwardKind::ALL.len()];
             }
+            // ...and Left cycles it backward.
             (KeyCode::Left, FwdRow::Kind) => {
                 let i = ForwardKind::ALL.iter().position(|k| *k == self.kind).unwrap_or(0);
                 self.kind = ForwardKind::ALL[(i + ForwardKind::ALL.len() - 1) % ForwardKind::ALL.len()];

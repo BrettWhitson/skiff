@@ -1,3 +1,4 @@
+//! Smoke tests for the fixture driven through the system `ssh` client.
 //! These tests only ever talk to the in-process server on 127.0.0.1.
 
 use std::process::Stdio;
@@ -6,6 +7,8 @@ use russh_sftp::client::SftpSession;
 use skiff_testserver::{FixtureAuth, TestFixture};
 use tokio::process::Command;
 
+/// Builds `ssh ... -s 127.0.0.1 sftp` with piped stdio; `batch` adds
+/// `BatchMode=yes` so auth failures exit instead of prompting.
 fn sftp_command(fx: &TestFixture, batch: bool) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args(fx.ssh_options());
@@ -16,6 +19,8 @@ fn sftp_command(fx: &TestFixture, batch: bool) -> Command {
     cmd
 }
 
+/// Spawns the ssh sftp subsystem and runs an SFTP client over its stdio; the
+/// child is returned so it stays alive (and is killed on drop).
 async fn open_sftp(fx: &TestFixture) -> (SftpSession, tokio::process::Child) {
     let mut child = sftp_command(fx, true).spawn().unwrap();
     let stdin = child.stdin.take().unwrap();
@@ -24,6 +29,7 @@ async fn open_sftp(fx: &TestFixture) -> (SftpSession, tokio::process::Child) {
     (sftp, child)
 }
 
+/// The ssh options start with `-F <empty config>` and disable the agent.
 #[test]
 fn ssh_options_never_read_user_config() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -33,6 +39,7 @@ fn ssh_options_never_read_user_config() {
     assert_eq!(fx.destination(), "127.0.0.1");
 }
 
+/// A file written into the root shows up in an SFTP listing with its size.
 #[tokio::test]
 async fn sftp_lists_seeded_file_with_key_auth() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -43,6 +50,7 @@ async fn sftp_lists_seeded_file_with_key_auth() {
     assert_eq!(hello.metadata().len(), 5);
 }
 
+/// mkdir, a multi-chunk write and a read back all work and land on disk.
 #[tokio::test]
 async fn sftp_read_write_roundtrip() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -57,6 +65,7 @@ async fn sftp_read_write_roundtrip() {
     assert_eq!(std::fs::read(fx.root().join("d").join("f.bin")).unwrap().len(), 70_000);
 }
 
+/// A password-only server turns away a batch-mode client that has no password to give.
 #[tokio::test]
 async fn wrong_key_is_rejected() {
     let fx = TestFixture::new(FixtureAuth::Password("pw".into())).unwrap();
@@ -66,6 +75,7 @@ async fn wrong_key_is_rejected() {
     assert!(stderr.contains("Permission denied"), "{stderr}");
 }
 
+/// `..` cannot reach a file placed just outside the served root.
 #[tokio::test]
 async fn path_escape_denied() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();

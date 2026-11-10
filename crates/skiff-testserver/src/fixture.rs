@@ -1,3 +1,7 @@
+//! [`TestFixture`]: a throwaway directory plus a running [`TestServer`], with
+//! the `ssh` command-line options that point the system client at it and
+//! nowhere else.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -7,8 +11,11 @@ use tempfile::TempDir;
 
 use crate::server::{ServerOptions, TestServer};
 
+/// How the fixture's server lets the client log in.
 pub enum FixtureAuth {
+    /// Public-key auth with a key generated for the fixture (passed via `-i`).
     Key,
+    /// Password auth with this password; key auth is not offered.
     Password(String),
 }
 
@@ -17,11 +24,17 @@ pub enum FixtureAuth {
 /// this server and never read the user's own config, keys or agent.
 pub struct TestFixture {
     server: TestServer,
+    /// Client private key file, used only when `with_key` is set.
     key_path: PathBuf,
+    /// known_hosts holding just this server's host key.
     known_hosts: PathBuf,
+    /// Empty ssh config passed with `-F`.
     config: PathBuf,
+    /// Directory served as `/` over SFTP.
     root: PathBuf,
+    /// Whether the server accepts the generated client key (vs. a password).
     with_key: bool,
+    /// Owns the temp directory; deleted when the fixture is dropped.
     _dir: TempDir,
 }
 
@@ -42,6 +55,7 @@ pub fn generate_key(dir: &Path, name: &str) -> Result<(PrivateKey, PublicKey, Pa
 }
 
 impl TestFixture {
+    /// Starts a fixture whose server refuses shell requests.
     pub fn new(auth: FixtureAuth) -> Result<Self> {
         Self::with_options(auth, false)
     }
@@ -51,11 +65,14 @@ impl TestFixture {
         Self::with_options(auth, true)
     }
 
+    /// Builds the temp layout (root dir, host and client keys), starts the
+    /// server for user `tester`, then writes known_hosts and an empty config.
     fn with_options(auth: FixtureAuth, shell_echo: bool) -> Result<Self> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("root");
         std::fs::create_dir(&root)?;
         let (host_key, _, _) = generate_key(dir.path(), "host_key")?;
+        // The client key is always generated, but only authorized in Key mode.
         let (_, client_pub, key_path) = generate_key(dir.path(), "id_test")?;
         let (password, with_key) = match auth {
             FixtureAuth::Key => (None, true),
@@ -78,6 +95,8 @@ impl TestFixture {
 
     /// Options for the system `ssh`, placed before the destination.
     pub fn ssh_options(&self) -> Vec<String> {
+        // Empty config, private known_hosts with strict checking, no agent and
+        // no default identities: only this fixture's files are ever consulted.
         let mut v: Vec<String> = vec![
             "-F".into(),
             self.config.display().to_string(),
@@ -107,6 +126,7 @@ impl TestFixture {
         self.server.port
     }
 
+    /// The host to pass to `ssh` after [`ssh_options`](Self::ssh_options): always `127.0.0.1`.
     pub fn destination(&self) -> String {
         "127.0.0.1".into()
     }
@@ -116,10 +136,12 @@ impl TestFixture {
         &self.root
     }
 
+    /// Path of the fixture's known_hosts file (holds only this server's key).
     pub fn known_hosts_path(&self) -> &Path {
         &self.known_hosts
     }
 
+    /// Direct access to the server, e.g. to [`TestServer::kill`] it mid-test.
     pub fn server_mut(&mut self) -> &mut TestServer {
         &mut self.server
     }

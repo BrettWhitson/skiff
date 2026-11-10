@@ -1,3 +1,34 @@
+//! `skiff`: the terminal (ratatui) front end of Skiff, an SSH and SFTP client.
+//! The package is `skiff-ssh`; the binary is `skiff`.
+//!
+//! One executable plays three roles:
+//! - ssh's `SSH_ASKPASS` helper: when ssh runs it to ask for a password or a
+//!   host-key decision, it relays the question to the running skiff and exits.
+//! - A command-line tool: `list`, `info`, `completion`, `--config-path` and
+//!   `skiff <host> <cmd…>` (runs the command over the system `ssh` and exits
+//!   with its status) never start the UI.
+//! - The full-screen TUI: a host list plus tabs with terminal sessions (in
+//!   optional splits) and dual-pane SFTP browsers, port forwards, snippets and
+//!   modal dialogs.
+//!
+//! Modules:
+//! - `app`: all UI state and behavior: tabs, modals, the event and key
+//!   handling, and the background `Msg`s (connections, listings, transfers,
+//!   askpass questions) drained on each loop turn.
+//! - `ui`: draws the app each frame (tab bar, host list, terminals, SFTP
+//!   panes and transfers, status line, modals).
+//! - `keys`: the global shortcut actions, their default chords and the
+//!   `[tui_keys]` config section that remaps them.
+//! - `forms`: the host editor and port-forward dialogs.
+//! - `sftp_tab`: the SFTP browser tab's state and its background work.
+//! - `input`: the single-line text field used by filters, prompts and forms.
+//! - `tui_theme`: config themes resolved to ratatui colors and styles.
+//!
+//! Config, ssh_config parsing and editing, the terminal emulator, SFTP and
+//! transfers, askpass, history and forwards all live in `skiff-core`; this
+//! crate is the terminal UI over them. `skiff-gui` is the graphical
+//! counterpart built on the same core.
+
 mod app;
 mod forms;
 mod input;
@@ -18,6 +49,9 @@ use skiff_core::config::Config;
 use skiff_core::history::{self, ConnKind, History};
 use skiff_core::hosts;
 
+/// Entry point: askpass helper mode, then CLI parsing; commands that print
+/// or run something exit early, otherwise the TUI starts (optionally opening
+/// a host given on the command line) and runs until quit.
 fn main() -> Result<()> {
     // ssh runs this executable as SSH_ASKPASS (SFTP password and host-key
     // questions): relay the question to the running skiff and exit.
@@ -36,6 +70,8 @@ fn main() -> Result<()> {
         }
     };
     let cfg_path = Config::default_path();
+    // Commands that need no config return here; the rest load (and, the
+    // first time, migrate or create) the config.
     let cfg = match cmd {
         Cli::Help => {
             print!("{}", cli::HELP);
@@ -64,6 +100,7 @@ fn main() -> Result<()> {
     if let Some(w) = &warning {
         eprintln!("skiff: {w}");
     }
+    // Looks a host up by name; an unknown name is a usage error (exit 2).
     let found = |name: &str| match cli::resolve(&list, name) {
         Ok(h) => h.clone(),
         Err(e) => {
@@ -71,6 +108,8 @@ fn main() -> Result<()> {
             std::process::exit(2);
         }
     };
+    // Host commands; only `Cli::Tui` falls through, with an optional host
+    // (and whether to open it as files) to open on start.
     let open = match cmd {
         Cli::List { json, all } => {
             print!("{}", if json { cli::list_json(&list, all) } else { cli::list_text(&list, all) });
@@ -134,6 +173,9 @@ fn main() -> Result<()> {
     result
 }
 
+/// The UI loop: draw, sync mouse capture, wait up to 30 ms for input, handle
+/// it, flush any clipboard copy, then apply background messages. Turns mouse
+/// capture back off on the way out.
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     let mut mouse = false;
     let result = (|| loop {

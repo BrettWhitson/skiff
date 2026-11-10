@@ -6,6 +6,8 @@ use skiff_core::askpass::{AskKind, Broker};
 use skiff_core::fs::connect::{SshLaunch, connect_sftp};
 use skiff_testserver::{FixtureAuth, TestFixture};
 
+/// ssh, started with the broker's askpass env, runs the skiff binary as its
+/// helper; the password prompt reaches the broker and the reply logs in.
 #[tokio::test(flavor = "multi_thread")]
 async fn skiff_binary_relays_password_prompts() {
     let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();

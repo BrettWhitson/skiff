@@ -1,3 +1,6 @@
+//! A single-line text field with readline-style keys, used by the host
+//! filter, prompts and the forms.
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A single-line text field. `cursor` is a char index.
@@ -8,16 +11,20 @@ pub struct TextInput {
 }
 
 impl TextInput {
+    /// A field holding `value` with the cursor at the end.
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
         let cursor = value.chars().count();
         Self { value, cursor }
     }
 
+    /// Byte offset of char `char_idx` (the end of the string if past it).
     fn byte_idx(&self, char_idx: usize) -> usize {
         self.value.char_indices().nth(char_idx).map(|(i, _)| i).unwrap_or(self.value.len())
     }
 
+    /// Inserts pasted text at the cursor, dropping control characters
+    /// (so a pasted newline cannot end up in a one-line field).
     pub fn insert_str(&mut self, s: &str) {
         let s: String = s.chars().filter(|c| !c.is_control()).collect();
         let at = self.byte_idx(self.cursor);
@@ -30,11 +37,13 @@ impl TextInput {
         &self.value[..self.byte_idx(self.cursor)]
     }
 
-    /// Returns true if the value changed.
+    /// Applies one key (typing, Backspace/Delete, arrows, Home/End and the
+    /// Ctrl+U/A/E/W shortcuts). Returns true if the value changed.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let len = self.value.chars().count();
         match key.code {
+            // Ctrl+U: delete everything before the cursor.
             KeyCode::Char('u') if ctrl => {
                 let at = self.byte_idx(self.cursor);
                 self.value.drain(..at);
@@ -49,6 +58,8 @@ impl TextInput {
                 self.cursor = len;
                 false
             }
+            // Ctrl+W: delete the word before the cursor (trailing spaces first,
+            // then back to the previous space).
             KeyCode::Char('w') if ctrl => {
                 let before: Vec<char> = self.value.chars().take(self.cursor).collect();
                 let mut i = before.len();
@@ -105,10 +116,12 @@ impl TextInput {
 mod tests {
     use super::*;
 
+    /// A key press with no modifiers.
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
+    /// Editing keys work on multi-byte text and Ctrl+W clears a single word.
     #[test]
     fn edits() {
         let mut t = TextInput::new("héllo");

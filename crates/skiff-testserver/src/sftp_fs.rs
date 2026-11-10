@@ -18,14 +18,22 @@ use std::path::PathBuf;
 use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+/// What an open SFTP handle refers to.
 enum Open {
+    /// An open local file (from OPEN).
     File(tokio::fs::File),
+    /// A directory listing read in full at OPENDIR, handed out by READDIR.
     Dir(Vec<File>),
 }
 
+/// One SFTP session's state: the served root, its open handles and the
+/// emulated SETSTAT values. A new one is created per `sftp` subsystem request.
 pub struct SftpFs {
+    /// Local directory served as `/`.
     root: PathBuf,
+    /// Open handles by their wire name (`h1`, `h2`, ...).
     handles: HashMap<String, Open>,
+    /// Number used for the next handle name.
     next: u64,
     /// Emulated SETSTAT values by virtual path: (permission bits, uid, gid).
     emulated: HashMap<String, Emulated>,
@@ -34,8 +42,10 @@ pub struct SftpFs {
 /// Emulated permission bits, uid and gid of one path.
 type Emulated = (Option<u32>, Option<u32>, Option<u32>);
 
+/// uid and gid reported when none has been set.
 const DEFAULT_OWNER: u32 = 1000;
 
+/// An `Ok` status reply for request `id`.
 fn status(id: u32) -> Status {
     Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() }
 }
@@ -51,6 +61,7 @@ fn attrs_of(m: &std::fs::Metadata) -> FileAttributes {
     a
 }
 
+/// Maps a local I/O error to the closest SFTP status code.
 fn io_err(e: std::io::Error) -> StatusCode {
     match e.kind() {
         ErrorKind::NotFound => StatusCode::NoSuchFile,
@@ -60,6 +71,7 @@ fn io_err(e: std::io::Error) -> StatusCode {
 }
 
 impl SftpFs {
+    /// A handler serving `root` as `/`, with no open handles or emulated state.
     pub fn new(root: PathBuf) -> Self {
         Self { root, handles: HashMap::new(), next: 1, emulated: HashMap::new() }
     }
@@ -67,6 +79,7 @@ impl SftpFs {
     /// Normalizes a client path to `/a/b` form; `..` above `/` is refused.
     fn virt(path: &str) -> Result<String, StatusCode> {
         let mut parts: Vec<&str> = vec![];
+        // Both separators count, so a Windows-style `..\` cannot slip past.
         for seg in path.split(['/', '\\']) {
             match seg {
                 "" | "." => {}
@@ -79,6 +92,8 @@ impl SftpFs {
         Ok(format!("/{}", parts.join("/")))
     }
 
+    /// The local path for a client path: its normalized form joined under the
+    /// root, so it can never point outside it.
     fn real(&self, path: &str) -> Result<PathBuf, StatusCode> {
         let v = Self::virt(path)?;
         let mut p = self.root.clone();
@@ -91,6 +106,8 @@ impl SftpFs {
     /// Applies the emulated owner/permissions of `path` to `a`.
     fn patch(&self, path: &str, mut a: FileAttributes) -> FileAttributes {
         let (mode, uid, gid) = Self::virt(path).ok().and_then(|v| self.emulated.get(&v).copied()).unwrap_or_default();
+        // A mode with file type bits replaces the whole value (so the file
+        // reports that type); otherwise only the low 12 permission bits change.
         match mode {
             Some(mode) if mode & 0o170000 != 0 => a.permissions = Some(mode),
             Some(mode) => a.permissions = Some((a.permissions.unwrap_or(0) & !0o7777) | (mode & 0o7777)),
@@ -108,6 +125,7 @@ impl SftpFs {
         matches!(self.emulated.get(parent), Some((Some(mode), _, _)) if mode & 0o200 == 0)
     }
 
+    /// Stores an open handle under a fresh name and returns that name.
     fn add(&mut self, h: Open) -> String {
         let name = format!("h{}", self.next);
         self.next += 1;
@@ -115,6 +133,7 @@ impl SftpFs {
         name
     }
 
+    /// The open file behind `handle`; unknown or directory handles fail.
     fn file(&mut self, handle: &str) -> Result<&mut tokio::fs::File, StatusCode> {
         match self.handles.get_mut(handle) {
             Some(Open::File(f)) => Ok(f),
@@ -126,14 +145,18 @@ impl SftpFs {
 impl russh_sftp::server::Handler for SftpFs {
     type Error = StatusCode;
 
+    /// Requests without an override below are answered "operation unsupported".
     fn unimplemented(&self) -> Self::Error {
         StatusCode::OpUnsupported
     }
 
+    /// Accepts any client version and offers no extensions.
     async fn init(&mut self, _version: u32, _ext: HashMap<String, String>) -> Result<Version, Self::Error> {
         Ok(Version::new())
     }
 
+    /// Opens a file with the requested flags, honouring a read-only parent
+    /// and recording the permissions of a newly created file.
     async fn open(&mut self, id: u32, filename: String, pflags: OpenFlags, attrs: FileAttributes) -> Result<Handle, Self::Error> {
         let path = self.real(&filename)?;
         let created = pflags.contains(OpenFlags::CREATE) && !path.exists();
@@ -143,6 +166,7 @@ impl russh_sftp::server::Handler for SftpFs {
         if created && let Some(mode) = attrs.permissions {
             self.emulated.insert(Self::virt(&filename)?, (Some(mode & 0o7777), None, None));
         }
+        // Translate SFTP open flags; EXCLUDE means "create, fail if it exists".
         let mut o = tokio::fs::OpenOptions::new();
         o.read(pflags.contains(OpenFlags::READ))
             .write(pflags.contains(OpenFlags::WRITE) || pflags.contains(OpenFlags::APPEND))
@@ -156,11 +180,13 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(Handle { id, handle: self.add(Open::File(f)) })
     }
 
+    /// Drops the handle; closing an unknown handle still succeeds.
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
         self.handles.remove(&handle);
         Ok(status(id))
     }
 
+    /// Reads up to `len` bytes at `offset`; reading at or past the end is EOF.
     async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, Self::Error> {
         let f = self.file(&handle)?;
         f.seek(SeekFrom::Start(offset)).await.map_err(io_err)?;
@@ -173,6 +199,7 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(Data { id, data: buf })
     }
 
+    /// Writes all of `data` at `offset`.
     async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, Self::Error> {
         let f = self.file(&handle)?;
         f.seek(SeekFrom::Start(offset)).await.map_err(io_err)?;
@@ -180,21 +207,26 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(status(id))
     }
 
+    /// Attributes of `path` itself (a symlink is not followed), with emulated values applied.
     async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         let m = tokio::fs::symlink_metadata(self.real(&path)?).await.map_err(io_err)?;
         Ok(Attrs { id, attrs: self.patch(&path, attrs_of(&m)) })
     }
 
+    /// Attributes of `path`'s target (symlinks followed), with emulated values applied.
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         let m = tokio::fs::metadata(self.real(&path)?).await.map_err(io_err)?;
         Ok(Attrs { id, attrs: self.patch(&path, attrs_of(&m)) })
     }
 
+    /// Attributes of an open file; emulated values are not applied here.
     async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
         let m = self.file(&handle)?.metadata().await.map_err(io_err)?;
         Ok(Attrs { id, attrs: attrs_of(&m) })
     }
 
+    /// Applies a size for real (truncate/extend) and records permissions and
+    /// owner in the emulated table (see the module docs).
     async fn setstat(&mut self, id: u32, path: String, attrs: FileAttributes) -> Result<Status, Self::Error> {
         let real = self.real(&path)?;
         tokio::fs::symlink_metadata(&real).await.map_err(io_err)?;
@@ -202,6 +234,8 @@ impl russh_sftp::server::Handler for SftpFs {
             let f = tokio::fs::OpenOptions::new().write(true).open(&real).await.map_err(io_err)?;
             f.set_len(size).await.map_err(io_err)?;
         }
+        // Opt-in emulation of a server that silently ignores SETSTAT on
+        // skiff's temporary upload files.
         if path.ends_with(".skiff-part") && self.root.join(".ignore-temp-setstat").exists() {
             return Ok(status(id));
         }
@@ -215,10 +249,13 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(status(id))
     }
 
+    /// Accepted and ignored.
     async fn fsetstat(&mut self, id: u32, _handle: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
         Ok(status(id))
     }
 
+    /// Reads the whole directory up front; entries whose metadata cannot be
+    /// read are skipped. Emulated values are not applied to listings.
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
         let mut rd = tokio::fs::read_dir(self.real(&path)?).await.map_err(io_err)?;
         let mut files = vec![];
@@ -230,6 +267,7 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(Handle { id, handle: self.add(Open::Dir(files)) })
     }
 
+    /// Returns every remaining entry in one batch, then EOF on the next call.
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
         match self.handles.get_mut(&handle) {
             Some(Open::Dir(files)) if !files.is_empty() => Ok(Name { id, files: std::mem::take(files) }),
@@ -238,6 +276,7 @@ impl russh_sftp::server::Handler for SftpFs {
         }
     }
 
+    /// Deletes a file or symlink and forgets its emulated values.
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
         let path = self.real(&filename)?;
         if let Err(e) = tokio::fs::remove_file(&path).await {
@@ -253,16 +292,20 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(status(id))
     }
 
+    /// Creates one directory; requested attributes are ignored.
     async fn mkdir(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
         tokio::fs::create_dir(self.real(&path)?).await.map_err(io_err)?;
         Ok(status(id))
     }
 
+    /// Removes an empty directory.
     async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
         tokio::fs::remove_dir(self.real(&path)?).await.map_err(io_err)?;
         Ok(status(id))
     }
 
+    /// Renames without overwriting (fails if the target exists, as SFTP v3
+    /// RENAME does) and moves the emulated values with the file.
     async fn rename(&mut self, id: u32, oldpath: String, newpath: String) -> Result<Status, Self::Error> {
         let (from, to) = (self.real(&oldpath)?, self.real(&newpath)?);
         if tokio::fs::try_exists(&to).await.unwrap_or(false) {
@@ -275,6 +318,7 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(status(id))
     }
 
+    /// Canonicalizes lexically (no symlink resolution); `.` becomes `/`.
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
         Ok(Name { id, files: vec![File::dummy(Self::virt(&path)?)] })
     }
@@ -284,6 +328,7 @@ impl russh_sftp::server::Handler for SftpFs {
 mod tests {
     use super::*;
 
+    /// `.`/`..` are resolved lexically and climbing above `/` is an error.
     #[test]
     fn virt_normalizes_and_refuses_escape() {
         assert_eq!(SftpFs::virt(".").unwrap(), "/");

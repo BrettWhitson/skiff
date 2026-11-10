@@ -5,6 +5,8 @@
 
 use skiff_testserver::{FixtureAuth, TestFixture};
 
+/// Parses the flags, starts a [`TestFixture`], optionally seeds its root with
+/// the regular files of `--root DIR`, prints how to connect and waits for Enter.
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
@@ -13,6 +15,7 @@ fn main() -> anyhow::Result<()> {
         None => FixtureAuth::Key,
     };
     let fx = if args.iter().any(|a| a == "--shell") { TestFixture::with_shell(auth)? } else { TestFixture::new(auth)? };
+    // Copy only the top-level regular files of --root; subdirectories are skipped.
     if let Some(src) = value("--root") {
         for entry in std::fs::read_dir(&src)? {
             let entry = entry?;
@@ -29,6 +32,8 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Joins arguments into one printable command line, double-quoting any that
+/// contain a space (enough for temp paths; not a general shell quoter).
 fn shell_join(args: &[String]) -> String {
     args.iter().map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() }).collect::<Vec<_>>().join(" ")
 }
