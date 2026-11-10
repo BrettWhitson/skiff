@@ -294,8 +294,7 @@ chords and flags ones shared by two actions.
 `resize_pane_*` moves the divider next to the focused pane to the next snap
 point (25 / 33 / 50 / 67 / 75%); `equalize_panes` shares the space equally.
 When there is nothing to do (no pane that way, a single pane, not a terminal
-tab), a pane shortcut's key goes to the shell instead (`Alt+Shift+arrows`
-stay word selection there). An empty value unbinds an action, so its chord
+tab), a pane shortcut's key goes to the shell instead. An empty value unbinds an action, so its chord
 reaches the shell.
 
 ```toml

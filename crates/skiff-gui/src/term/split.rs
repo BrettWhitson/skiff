@@ -4,7 +4,7 @@
 //! Dividers drag with the mouse (snapping to 25 / 33 / 50 / 67 / 75%; Alt
 //! drags freely; a double-click equalizes) and, focused (F6 reaches them),
 //! move with the arrow keys from snap point to snap point. Panes keep at
-//! least `MIN_COLS` x `MIN_ROWS` cells. A pane's grip (top centre) or Alt+drag drags it
+//! least `MIN_COLS` x `MIN_ROWS` cells. A pane's grip (top centre) or Alt+Shift+drag drags it
 //! onto another pane's edge or centre (swap) or onto the tab strip (its own
 //! tab); a terminal tab dragged off the strip onto a pane joins this tab.
 //! Focus moves between panes by click, F6 and the `focus_next_pane`
@@ -740,10 +740,12 @@ pub fn view(
     drops(ui, tab, split, &rects, gap, min, theme)
 }
 
-/// Alt+press on a pane starts dragging it (instead of selecting text); the
-/// press event is removed so the terminal underneath never sees it.
+/// Alt+Shift+press on a pane starts dragging it (instead of selecting text);
+/// the press event is removed so the terminal underneath never sees it.
+/// Plain Alt+click stays the terminal's (programs reading the mouse get it).
 fn alt_drag(ui: &mut Ui, tab: u64, split: &TermSplit, rects: &[(u64, Rect)]) {
-    if !ui.input().mods.alt || ui.dragging() {
+    let mods = ui.input().mods;
+    if !(mods.alt && mods.shift) || ui.dragging() {
         return;
     }
     let Some((i, at)) = ui.input().events.iter().enumerate().find_map(|(i, e)| match e {

@@ -436,12 +436,16 @@ fn divider_drag_snaps_alt_frees_double_click_equalizes() {
 }
 
 #[test]
-/// Alt+drag of a pane onto another's centre swaps them without selecting text.
+/// Alt+Shift+drag of a pane onto another's centre swaps them without
+/// selecting text; a plain Alt+drag is left to the terminal.
 fn alt_drag_moves_a_pane_onto_another() {
     let (mut f, _) = three();
     let first = f.h.tree().find("Terminal: alpha, pane 1 of 3").unwrap().bounds.center();
     let last = f.h.tree().find("Terminal: alpha, pane 3 of 3").unwrap().bounds;
     f.frame(vec![Event::Modifiers(Modifiers { alt: true, ..Modifiers::NONE })]);
+    drag(&mut f, first, &[last.center()]);
+    assert_eq!(keys_of(&f), vec![0, 1, 2], "Alt alone: no pane drag");
+    f.frame(vec![Event::Modifiers(Modifiers { alt: true, shift: true, ..Modifiers::NONE })]);
     drag(&mut f, first, &[last.center()]);
     assert_eq!(keys_of(&f), vec![2, 1, 0], "centre: swapped");
     assert!(split_of(&f).panes.iter().all(|p| p.term.select.sel.is_none()), "no text selected");

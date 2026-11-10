@@ -134,8 +134,8 @@ Every key, the `[gui]` options, custom themes, key remapping (`[keys]`,
     `Alt` to place it freely). A pane keeps at least 10 columns by 3 rows.
   - *GUI*: split any pane as often as you like. Drag a divider (it snaps to
     the same shares, `Alt` places it freely, double-click equalizes). Drag a
-    pane by its grip (the dots at its top centre) or with `Alt`+drag onto
-    another pane: the left, right, top or bottom half splits that pane there,
+    pane by its grip (the dots at its top centre) or with `Alt+Shift`+drag
+    (plain `Alt`+click stays the terminal's) onto another pane: the left, right, top or bottom half splits that pane there,
     the centre swaps the two, and the tab strip gives it a tab of its own.
     Drag a terminal tab onto a pane's edge to join it into that tab. `Esc`
     cancels a drag.

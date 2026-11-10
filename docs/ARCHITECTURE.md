@@ -88,7 +88,8 @@ always the first (left / top) side's share.
     widget id is keyed by the first pane key of the split's second side,
     which is unique and survives restructuring, so keyboard focus stays on
     a divider while the tree changes around it.
-  - *Drag and drop*: a pane is dragged by its grip or with `Alt`+drag. Over
+  - *Drag and drop*: a pane is dragged by its grip or with `Alt+Shift`+drag
+    (plain `Alt`+click is left to programs reading the mouse). Over
     a target pane the middle third is the centre zone, elsewhere the nearest
     edge wins; an edge is offered only if both halves would keep the minimum
     size. Dropping on an edge removes the pane and re-inserts it beside the
