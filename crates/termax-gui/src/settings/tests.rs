@@ -274,3 +274,13 @@ fn settings_lists_and_dropdowns_are_named() {
     let t = f.h.tree();
     assert_eq!(t.find("Check host status").map(|n| n.role), Some(termax_ui::a11y::Role::ComboBox));
 }
+
+#[test]
+fn keybindings_scroll_to_the_focused_row() {
+    let mut f = settings("Keybindings");
+    let id = termax_ui::ui::Id::new(("settings-key", Action::ClosePane.config_name()));
+    f.frame(vec![Event::A11y { target: id, action: termax_ui::a11y::A11yAction::Focus }]);
+    f.frame(vec![]);
+    let b = f.h.tree().by_id(id).expect("close pane row").bounds;
+    assert!(b.h > 0 && b.bottom() <= 800 - 24, "fully above the status bar: {b:?}");
+}
