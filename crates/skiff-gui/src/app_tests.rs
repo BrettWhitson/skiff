@@ -631,10 +631,12 @@ fn notify_shows_toast_and_replaces_repeats() {
 /// a new problem still warns.
 #[test]
 fn keymap_warnings_not_repeated_on_save() {
-    let mut f = Fixture::with_config(&format!("{CONFIG}
+    let mut f = Fixture::with_config(&format!(
+        "{CONFIG}
 [keys]
 close_tab = \"ctrl+nosuchkey\"
-"));
+"
+    ));
     let n = f.app.warnings.len();
     assert!(n >= 1, "startup warns: {:?}", f.app.warnings);
     f.app.save_config();

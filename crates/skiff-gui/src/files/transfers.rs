@@ -19,7 +19,7 @@ use skiff_ui::style::{TextRole, tokens};
 use skiff_ui::ui::{Id, Sense, Ui};
 use skiff_ui::widgets::{
     Align, ButtonKind, ButtonOpts, Elide, TextOpts, ToastKind, button, button_width, button_with, checkbox, icon_button, progress_bar,
-    scroll_area, text,
+    scroll_area, scroll_into_view, text,
 };
 use tokio::sync::oneshot;
 
@@ -160,8 +160,12 @@ pub struct TransferList {
     pub rows: Vec<TransferRow>,
     /// The drawer shows only its header.
     pub collapsed: bool,
-    /// Finished copy actions to tell the user about (as toasts), oldest first.
+    /// Finished copy actions and new questions to tell the user about
+    /// (as toasts), oldest first.
     pub notices: Vec<(ToastKind, String)>,
+    /// A row (by transfer id) that just asked a question: the drawer
+    /// scrolls it into view when next drawn.
+    pub reveal: Option<u64>,
     /// Last transfer id handed out.
     next_id: u64,
     /// Last batch id handed out.
@@ -303,7 +307,15 @@ impl TransferList {
                     Some(d) => {
                         let _ = reply.send(*d);
                     }
-                    None => row.state = RowState::Waiting(Question { path, reply: Some(reply), apply_all: false }),
+                    None => {
+                        // The copy stalls until answered: open the drawer on
+                        // the question and announce it.
+                        let text = format!("{} already exists: choose Overwrite or Skip in Transfers", file_name(&path));
+                        row.state = RowState::Waiting(Question { path, reply: Some(reply), apply_all: false });
+                        self.collapsed = false;
+                        self.reveal = Some(id);
+                        self.notice(ToastKind::Warning, text);
+                    }
                 }
                 None
             }
@@ -350,11 +362,16 @@ impl TransferList {
             ([], n) => Some((ToastKind::Success, format!("Copied {n} items to {dst}"))),
             (f, _) => Some((ToastKind::Error, format!("{} of {} copies to {dst} failed", f.len(), f.len() + done))),
         };
-        if let Some(n) = notice {
-            self.notices.push(n);
-            if self.notices.len() > MAX_NOTICES {
-                self.notices.remove(0);
-            }
+        if let Some((kind, text)) = notice {
+            self.notice(kind, text);
+        }
+    }
+
+    /// Queues a notice for the app (dropping the oldest past `MAX_NOTICES`).
+    fn notice(&mut self, kind: ToastKind, text: String) {
+        self.notices.push((kind, text));
+        if self.notices.len() > MAX_NOTICES {
+            self.notices.remove(0);
         }
     }
 
@@ -412,15 +429,20 @@ fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
-/// The drawer header's summary: "2 active · 1 failed", or "3 done" when
-/// nothing is active or failed ("" when every row was cancelled).
+/// The drawer header's summary: "2 active · 1 waiting · 1 failed" (waiting:
+/// paused on an overwrite question), or "3 done" when nothing is active,
+/// waiting or failed ("" when every row was cancelled).
 pub fn summary(list: &TransferList) -> String {
-    let active = list.running();
+    let active = list.rows.iter().filter(|r| matches!(r.state, RowState::Queued | RowState::Running)).count();
+    let waiting = list.rows.iter().filter(|r| matches!(r.state, RowState::Waiting(_))).count();
     let failed = list.rows.iter().filter(|r| matches!(r.state, RowState::Failed(_))).count();
     let done = list.rows.iter().filter(|r| matches!(r.state, RowState::Done(_))).count();
     let mut parts = vec![];
     if active > 0 {
         parts.push(format!("{active} active"));
+    }
+    if waiting > 0 {
+        parts.push(format!("{waiting} waiting"));
     }
     if failed > 0 {
         parts.push(format!("{failed} failed"));
@@ -533,7 +555,13 @@ pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx, pa
         if k > 0 {
             x += text(ui, Rect::new(x, head.y, (toggle_r.right() - x).max(0), head.h), SEP, caption(p.muted));
         }
-        let c = if piece.ends_with("failed") { p.danger } else { p.muted };
+        let c = if piece.ends_with("failed") {
+            p.danger
+        } else if piece.ends_with("waiting") {
+            p.warning
+        } else {
+            p.muted
+        };
         x += text(ui, Rect::new(x, head.y, (toggle_r.right() - x).max(0), head.h), piece, caption(c));
     }
     let ghost = ButtonOpts { kind: ButtonKind::Ghost, enabled: finished, ..Default::default() };
@@ -548,6 +576,11 @@ pub fn view(ui: &mut Ui, rect: Rect, list: &mut TransferList, ctx: &FilesCtx, pa
 
     let row_h = ui.px(ROW_H);
     let content = row_h * list.rows.len() as i32;
+    // A row that just asked a question scrolls into view.
+    if let Some(i) = list.reveal.take().and_then(|t| list.rows.iter().position(|r| r.id == t)) {
+        let top = i as i32 * row_h;
+        scroll_into_view(ui, id.with("scroll"), top, top + row_h, body.h);
+    }
     // Button presses are collected while the rows are borrowed and applied after.
     let mut actions: Vec<(usize, &'static str)> = vec![];
     scroll_area(ui, id.with("scroll"), body, content, |ui, vis, off| {
@@ -680,5 +713,52 @@ fn row_view(ui: &mut Ui, rid: Id, r: Rect, row: &mut TransferRow, i: usize, acti
     }
     if let Some(n) = ui.a11y_node(rid, Role::Label, &format!("{name}, {route}: {status}")) {
         n.bounds = r;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A running local-to-local row with id `id` in batch 1.
+    fn row(id: u64) -> TransferRow {
+        let spec = Spec {
+            src: Endpoint::Local,
+            src_path: format!("/a/f{id}.txt"),
+            src_side: Some(0),
+            dst: Endpoint::Local,
+            dst_dir: "/b".into(),
+            dst_side: 1,
+            src_label: "Local".into(),
+            dst_host: "Local".into(),
+            dst_label: "Local:/b".into(),
+        };
+        TransferRow {
+            id,
+            batch: 1,
+            spec,
+            done: 0,
+            total: None,
+            current: String::new(),
+            speed: 0.0,
+            last: None,
+            state: RowState::Running,
+            handle: None,
+            cancelled: false,
+        }
+    }
+
+    /// An overwrite question opens a collapsed drawer, asks for its row to
+    /// be scrolled into view, is counted as waiting (not active) and is
+    /// announced with a notice.
+    #[test]
+    fn question_opens_drawer_and_is_announced() {
+        let mut list = TransferList { rows: (1..=6).map(row).collect(), collapsed: true, ..Default::default() };
+        let (tx, _rx) = oneshot::channel();
+        list.on_event(TransferEvent::NeedsDecision { id: 5, path: "/b/f5.txt".into(), reply: tx });
+        assert!(!list.collapsed);
+        assert_eq!(list.reveal, Some(5));
+        assert_eq!(summary(&list), "5 active \u{00B7} 1 waiting");
+        assert!(matches!(list.notices.as_slice(), [(ToastKind::Warning, t)] if t.contains("f5.txt")), "{:?}", list.notices);
     }
 }
