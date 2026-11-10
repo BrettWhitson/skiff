@@ -63,9 +63,12 @@ every key. Everywhere else, shortcuts start with `Alt+O` (then `1`…`9` for a
 tab, `w` to close it, `?` for help); `Alt+[` / `Alt+]` switch tabs.
 
 **GUI.** Run `skiff-gui`. Pick a host in the sidebar (right-click for file
-transfer, forwards and editing), or press `Ctrl+Shift+K` (`Cmd+K`) for the
-quick switcher. `Ctrl+Shift+,` (or the gear at the right end of the tab
-strip) opens Settings.
+transfer, forwards and editing), or press `Ctrl+Shift+P` (`Cmd+Shift+P`;
+`Ctrl+Shift+K` / `Cmd+K` work too) for the command palette: type to search
+hosts, tabs and commands, or start with `>` for commands, `@` for hosts,
+`:` for port forwards and `#` for snippets. `Ctrl+Shift+,` (or the gear at
+the right end of the tab strip) opens Settings. Notices and errors appear
+as toasts at the bottom right; errors stay until closed.
 
 **Command line.**
 
@@ -160,7 +163,7 @@ Every key, the `[gui]` options, custom themes, key remapping (`[keys]`,
   `tui_mouse = "always"` gives Skiff the mouse for tab clicks, wheel
   scrollback and selection (copied with OSC 52).
 - **Snippets** (`[[snippet]]`) are listed under `Alt+O s` in the TUI and in the
-  GUI quick switcher; a snippet with `host` only appears in that host's
+  GUI command palette (`#`); a snippet with `host` only appears in that host's
   terminals.
 
 **File transfer.** Two panes: in the TUI local and remote, in the GUI each
@@ -260,7 +263,7 @@ them back.
 
 | Action | Windows / Linux | macOS |
 |---|---|---|
-| Quick switcher (hosts, tabs, themes, snippets, commands) | `Ctrl+Shift+K`, `Ctrl+K`* | `Cmd+K` |
+| Command palette (hosts, tabs, commands, forwards, snippets, themes) | `Ctrl+Shift+P`, `Ctrl+Shift+K`, `Ctrl+K`* | `Cmd+Shift+P`, `Cmd+K` |
 | New tab / close tab | `Ctrl+Shift+T` / `Ctrl+Shift+W` | `Cmd+T` / `Cmd+W` |
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+PgDn` / `Ctrl+PgUp` | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Cmd+Shift+]` / `Cmd+Shift+[` |
 | Copy / paste in a terminal | `Ctrl+Shift+C` / `Ctrl+Shift+V` | `Cmd+C` / `Cmd+V` |
@@ -277,7 +280,7 @@ them back.
 | Equalize panes | `Alt+Shift+=` | `Cmd+Ctrl+=` |
 
 \* Plain `Ctrl`+letter belongs to the shell inside a terminal, so `Ctrl+K`
-opens the switcher only outside terminals. All of these can be changed in
+opens the palette only outside terminals. All of these can be changed in
 Settings → Keybindings or `[keys]`.
 
 Keyboard navigation (no mouse needed):

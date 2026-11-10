@@ -21,7 +21,7 @@ Next to `config.toml` Skiff also keeps:
 | File | Contents |
 |---|---|
 | `state.toml` | GUI window size, sidebar width and collapsed state, host sort mode, "show hidden hosts". Kept apart so dragging a splitter never rewrites your config. |
-| `history.toml` | When each host was last connected, how often and how (terminal, files, forward). Drives "Recent" sorting and the switcher's recent hosts. Settings → General → Clear history empties it. |
+| `history.toml` | When each host was last connected, how often and how (terminal, files, forward). Drives "Recent" sorting and the command palette's recent hosts. Settings → General → Clear history empties it. |
 | `backups/` | Copies of ssh config files taken before each edit (see [ssh config editing](#ssh-config-editing)). |
 
 Saving from the app rewrites only the keys you changed: comments,
@@ -123,6 +123,7 @@ Read only by `skiff-gui`; the TUI ignores this section.
 | `ui_scale` | `1.0` | Interface scale (clamped to 0.5–3). Windows' text-size setting is applied on top. |
 | `announce_output` | `true` | New terminal output read by screen readers: `true` (all terminals), `"focused"` (only the focused one) or `false`. |
 | `cursor_blink` | `true` | Blinking text and terminal cursors. Windows' "animation effects" off also stops blinking. |
+| `dim_inactive_panes` | `true` | Split panes without keyboard focus are dimmed a little, so the one you type into stands out. Never applied in the high-contrast themes. |
 | `font_family` | — | Retired: older configs may have it; it is accepted and ignored. Use `font_path` / `ui_font_path`. |
 
 ```toml
@@ -133,6 +134,7 @@ font_size = 14.0
 ui_scale = 1.0
 announce_output = true
 cursor_blink = true
+dim_inactive_panes = true
 ```
 
 ## `[[connection]]`
@@ -175,7 +177,7 @@ a comment inside their block instead; see [ssh config editing](#ssh-config-editi
 
 ## `[[snippet]]`
 
-Saved commands, sent to a terminal from the GUI quick switcher
+Saved commands, sent to a terminal from the GUI command palette (`#`)
 ("Snippet: …") or the TUI's `Alt+O s` list. GUI: Settings → Snippets.
 
 | Key | Default | Meaning |
@@ -290,7 +292,7 @@ finds any setting, host or snippet by name.
 
 | Action | Windows / Linux default | macOS default |
 |---|---|---|
-| `quick_switcher` | `ctrl+shift+k, ctrl+k` | `cmd+k` |
+| `quick_switcher` (the command palette) | `ctrl+shift+p, ctrl+shift+k, ctrl+k` | `cmd+shift+p, cmd+k` |
 | `new_tab` | `ctrl+shift+t` | `cmd+t` |
 | `close_tab` | `ctrl+shift+w` | `cmd+w` |
 | `next_tab` | `ctrl+tab, ctrl+pagedown` | `ctrl+tab, cmd+shift+]` |
@@ -320,7 +322,7 @@ reaches the shell.
 ```toml
 [keys]
 close_tab = "ctrl+shift+q"
-quick_switcher = "ctrl+shift+p, f1"
+quick_switcher = "f1, ctrl+shift+p"
 resize_pane_up = ""   # unbound: Alt+Shift+Up goes to the shell
 ```
 

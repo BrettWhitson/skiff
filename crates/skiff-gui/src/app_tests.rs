@@ -1,7 +1,7 @@
 //! App-level tests driven through the toolkit Harness. No network: the
 //! config disables `~/.ssh/config` and names a non-existent ssh binary; the
 //! only real ssh session goes to the local test server
-//! (`switcher_runs_snippet`). `Fixture` is shared with other test modules.
+//! (`palette_runs_snippet`). `Fixture` is shared with other test modules.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -140,7 +140,8 @@ fn double_click_host_opens_tab() {
     assert_eq!(f.app.tabs.len(), 1);
     assert!(f.app.tab_title(0).contains("alpha"));
     assert!(matches!(f.app.tabs[0].kind, TabKind::Terminal(_)));
-    assert!(f.texts().iter().any(|t| t.contains("alpha") && t.contains('\u{25CF}')), "tab strip shows it");
+    let tab = f.h.tree().nodes.iter().find(|n| n.role == skiff_ui::a11y::Role::Tab).map(|n| n.name.clone());
+    assert!(tab.as_deref().is_some_and(|t| t.starts_with("alpha, ")), "the tab names its host and state: {tab:?}");
 }
 
 /// "Open file transfer" in the host menu opens a Local / host files tab.
@@ -317,8 +318,9 @@ fn close_with_running_transfer_asks_first() {
     f.app.request_close_tab(id);
     f.frame(vec![]);
     assert_eq!(f.app.tabs.len(), 1, "not closed yet");
-    assert!(f.texts().iter().any(|t| t.contains("1 transfer running")), "{:?}", f.texts());
-    assert_eq!(f.h.state.focused(), Some(Id::new("close-keep")), "the question takes focus, on its safe answer");
+    assert!(f.texts().iter().any(|t| t.contains("1 transfer still running")), "{:?}", f.texts());
+    let keep = Id::new("close-confirm").with(("button", 0usize));
+    assert_eq!(f.h.state.focused(), Some(keep), "the dialog takes focus, on its safe answer");
     f.click_text("Keep");
     assert_eq!(f.app.tabs.len(), 1);
     f.app.request_close_tab(id);
@@ -511,9 +513,9 @@ fn ui_scale_shortcuts_persist() {
     assert_eq!(f.app.cfg.gui.ui_scale, 1.0);
 }
 
-/// Choosing a snippet in the quick switcher types it into the active terminal.
+/// Choosing a snippet in the command palette types it into the active terminal.
 #[test]
-fn switcher_runs_snippet() {
+fn palette_runs_snippet() {
     let cfg = CONFIG.replace("[[connection]]", "[[snippet]]\nname = \"greet\"\ncommand = \"echo snippet-ran\"\n\n[[connection]]");
     let mut f = Fixture::with_config(&cfg);
     // A terminal on the local test server (never a real host).
@@ -539,27 +541,41 @@ fn switcher_runs_snippet() {
     wait(&mut f, "skiff-testserver shell");
     f.app.do_action(Action::QuickSwitcher);
     f.frame(vec![]);
-    f.frame(vec![Event::Text("snippet gr".into())]);
+    f.frame(vec![Event::Text("#gr".into())]);
     f.frame(vec![]);
-    assert!(f.try_find("Snippet: greet").is_some(), "{:?}", f.texts());
+    assert!(f.h.tree().find("greet, Snippet").is_some(), "{:?}", f.texts());
     f.frame(vec![Event::KeyDown { key: Key::Enter, mods: Modifiers::NONE, text: None }]);
     f.frame(vec![]);
     wait(&mut f, "echo snippet-ran");
 }
 
-/// The same warning twice changes the live status text so it is announced again.
+/// `notify` shows a toast (a live status node); the same message again
+/// replaces it (a new node, so it is read out again) instead of stacking,
+/// and warnings are also logged.
 #[test]
-fn repeated_warning_is_announced_again() {
+fn notify_shows_toast_and_replaces_repeats() {
     let mut f = Fixture::new();
-    let status = |f: &Fixture| f.h.tree().nodes.iter().find(|n| n.role == skiff_ui::a11y::Role::Status && n.live).map(|n| n.name.clone());
-    f.app.warn("disk full");
+    let live = |f: &Fixture| {
+        f.h.tree()
+            .nodes
+            .iter()
+            .filter(|n| n.role == skiff_ui::a11y::Role::Status && n.live)
+            .map(|n| (n.id, n.name.clone()))
+            .collect::<Vec<_>>()
+    };
+    f.app.notify(ToastKind::Warning, "disk full");
     f.frame(vec![]);
-    let first = status(&f).expect("live status");
-    f.app.warn("disk full");
+    let first = live(&f);
+    assert_eq!(first.iter().map(|n| n.1.as_str()).collect::<Vec<_>>(), ["disk full"]);
+    assert!(f.try_find("disk full").is_some(), "{:?}", f.texts());
+    f.app.notify(ToastKind::Warning, "disk full");
     f.frame(vec![]);
-    let second = status(&f).expect("live status");
-    assert_ne!(first, second, "the same warning twice still changes the live text");
-    assert_eq!(second.trim_end_matches(skiff_ui::a11y::REPEAT_MARK), "disk full");
+    let second = live(&f);
+    assert_eq!(second.len(), 1, "a repeat replaces the toast");
+    assert_ne!(first[0].0, second[0].0, "as a new live node");
+    f.app.notify(ToastKind::Success, "saved");
+    assert_eq!(f.app.toasts.visible().count(), 2);
+    assert_eq!(f.app.warnings, ["disk full", "disk full"]);
 }
 
 /// UI scale grows sidebar rows with the text but leaves terminal text size alone.
@@ -620,6 +636,10 @@ fn settings_gear_opens_settings_even_with_sidebar_collapsed() {
     assert_eq!(gear.role, skiff_ui::a11y::Role::Button);
     let at = gear.bounds.center();
     f.frame(vec![Event::MouseMove(at)]);
+    // The tooltip shows after the hover delay.
+    f.h.set_clock(Some(std::time::Instant::now() + std::time::Duration::from_secs(2)));
+    f.frame(vec![]);
+    f.h.set_clock(None);
     assert!(f.try_find("Settings (Ctrl+Shift+,)").is_some(), "tooltip names the shortcut: {:?}", f.texts());
     f.frame(vec![Event::MouseDown(MouseButton::Left, at), Event::MouseUp(MouseButton::Left, at)]);
     f.frame(vec![]);
@@ -627,7 +647,7 @@ fn settings_gear_opens_settings_even_with_sidebar_collapsed() {
 
     // Keyboard: focus it, Enter focuses the existing Settings tab again.
     f.app.do_action(Action::NewTab);
-    f.app.switcher_open = false;
+    f.app.palette_open = false;
     f.app.open_terminal(&f.app.hosts[0].clone());
     f.frame(vec![]);
     let id = crate::gear::id();
@@ -636,4 +656,23 @@ fn settings_gear_opens_settings_even_with_sidebar_collapsed() {
     f.frame(vec![]);
     assert_eq!(f.app.tabs.iter().filter(|t| matches!(t.kind, TabKind::Settings)).count(), 1);
     assert!(matches!(f.app.tabs[f.app.active].kind, TabKind::Settings));
+}
+
+/// With no hosts at all the sidebar shows an empty state whose "Import
+/// ~/.ssh/config" turns on reading the ssh config (saved) and lists its hosts.
+#[test]
+fn empty_sidebar_imports_ssh_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = dir.path().join("ssh_config");
+    std::fs::write(&ssh, "Host gamma\n  HostName 127.0.0.3\n  Port 1\n").unwrap();
+    let cfg = format!(
+        "[settings]\nload_ssh_config = false\nssh_config_path = \"{}\"\nssh_binary = \"skiff-test-no-such-ssh\"\n",
+        ssh.display().to_string().replace('\\', "/")
+    );
+    let mut f = Fixture::with_config_in(dir, &cfg);
+    assert!(f.try_find("No hosts yet").is_some(), "{:?}", f.texts());
+    f.click_text("Import ~/.ssh/config");
+    assert_eq!(f.app.hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["gamma"]);
+    assert!(std::fs::read_to_string(&f.path).unwrap().contains("load_ssh_config = true"));
+    assert!(f.try_find("gamma").is_some());
 }

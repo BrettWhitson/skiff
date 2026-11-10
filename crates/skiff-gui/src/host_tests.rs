@@ -260,7 +260,8 @@ fn sidebar_delete_key_focuses_cancel_and_esc_cancels() {
     f.frame(vec![Event::KeyDown { key: Key::Delete, mods: Modifiers::NONE, text: None }]);
     f.frame(vec![]);
     assert!(f.try_find("Delete beta?").is_some(), "{:?}", f.texts());
-    assert_eq!(f.h.state.focused(), Some(skiff_ui::ui::Id::new("sidebar-del-no")), "a reflexive Enter keeps the host");
+    let cancel = skiff_ui::ui::Id::new("sidebar-delete-dialog").with(("button", 0usize));
+    assert_eq!(f.h.state.focused(), Some(cancel), "a reflexive Enter keeps the host");
     f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
     f.frame(vec![]);
     assert!(f.try_find("Delete beta?").is_none());

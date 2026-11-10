@@ -24,7 +24,7 @@ exactly as on the command line.
 |---|---|---|
 | `skiff-core` | `crates/skiff-core` | Everything that isn't drawing: `config.toml`, `state.toml`, `history.toml`, themes, the host list, reading and editing ssh config files, the CLI parser, terminal sessions (pty + `vt100`), terminal helpers (search, paste rules, mouse reporting), split-pane divider rules, the SFTP engine and transfers, the askpass broker, port forwards and reachability probes. No UI code. |
 | `skiff-ssh` | `crates/skiff-tui` | The `skiff` binary: CLI commands (`list`, `info`, `completion`, `skiff host cmd`), and the full-screen TUI built with `ratatui` + `crossterm`; terminals are drawn with `tui-term`. |
-| `skiff-gui` | `crates/skiff-gui` | The `skiff-gui` binary: sidebar, tabs (terminals with nested, draggable split panes, file transfer, forwards, settings), a Settings gear on the tab strip, quick switcher. Draws a cell grid for terminals itself. |
+| `skiff-gui` | `crates/skiff-gui` | The `skiff-gui` binary: sidebar, tabs (terminals with nested, draggable split panes, file transfer, forwards, settings), a Settings gear on the tab strip, a command palette, toasts. Draws a cell grid for terminals itself. |
 | `skiff-ui` | `crates/skiff-ui` | A from-scratch GUI toolkit: window shell (`winit` + `softbuffer`), CPU renderer with tile damage tracking, text (`fontdue` behind a trait), layout, focus, widgets and an accessibility tree bridged to AccessKit. Knows nothing about SSH. |
 | `skiff-testserver` | `crates/skiff-testserver` | A `russh` server bound to 127.0.0.1 with SFTP, an optional echo shell, exec and local forwards, plus a fixture that generates keys and an isolated ssh config. Used by tests only; never shipped. |
 
@@ -281,7 +281,7 @@ notices also go out through `SettingsState::take_notices`.
 | Askpass | `skiff-core/src/{askpass,sshver}.rs`, `skiff-core/src/bin/askpass-shim.rs` (tests) |
 | Forwards, status | `skiff-core/src/{forward,status}.rs` |
 | TUI | `skiff-tui/src/{main,app,ui,widgets,keys,forms,input,sftp_tab}.rs` |
-| GUI app | `skiff-gui/src/{main,app,engine,sidebar,switcher,forwards,keys,gear,os}.rs` |
+| GUI app | `skiff-gui/src/{main,app,engine,sidebar,palette,forwards,keys,gear,os}.rs` |
 | GUI terminals | `skiff-gui/src/term/` (render, input, mouse, select, search, split, announce) |
 | GUI files, settings | `skiff-gui/src/files/`, `skiff-gui/src/settings/` |
 | Toolkit core | `skiff-ui/src/{ui,shell,display,canvas,layout,input}.rs` |
