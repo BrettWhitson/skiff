@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,8 +8,15 @@ use termax_core::fs::connect::RemoteConn;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use termax_core::config::{Config, Connection};
+use termax_core::config::{Config, StatusChecks};
+use termax_core::forward::Forward;
+use termax_core::history::{self, ConnKind, History};
+use termax_core::hostform::{self, Dest, HostForm, Saved};
 use termax_core::hosts::{self, HostEntry, Source};
+use termax_core::sshconfig::edit::{ConfigSet, backups_dir, display_path};
+use termax_core::state::UiState;
+use termax_core::status::{self, Status as HostStatus};
+use crate::forms::{Editor, ForwardForm, Outcome};
 use crate::input::TextInput;
 use crate::sftp_tab::{FileEntry, FileOp, SftpTab, Side, Status};
 use termax_core::sshconfig;
@@ -23,6 +31,7 @@ pub enum Msg {
     TransferProgress { tab: u64, id: u64, done: u64 },
     TransferDone { tab: u64, id: u64, result: Result<(), String> },
     RemoteOpDone { tab: u64, result: Result<(), String>, keep: Option<String> },
+    Status { host: String, status: HostStatus },
 }
 
 pub enum TabKind {
@@ -35,28 +44,8 @@ pub struct Tab {
     pub id: u64,
     pub title: String,
     pub kind: TabKind,
-}
-
-pub use termax_core::config::CONNECTION_LABELS as EDITOR_LABELS;
-
-pub struct Editor {
-    pub fields: Vec<TextInput>,
-    pub focus: usize,
-    /// Index of the custom connection being edited, `None` when creating.
-    pub editing: Option<usize>,
-    pub error: Option<String>,
-}
-
-impl Editor {
-    fn new(c: &Connection, editing: Option<usize>) -> Self {
-        let fields = c.to_fields();
-        Self { fields: fields.into_iter().map(TextInput::new).collect(), focus: 0, editing, error: None }
-    }
-
-    fn to_connection(&self) -> Result<Connection, String> {
-        let fields: [String; termax_core::config::CONNECTION_FIELDS] = std::array::from_fn(|i| self.fields[i].value.clone());
-        Connection::from_fields(&fields)
-    }
+    /// History to record once the session proves it connected.
+    pub record: Option<(String, ConnKind, Instant)>,
 }
 
 pub enum PromptAction {
@@ -72,7 +61,8 @@ pub struct Prompt {
 }
 
 pub enum ConfirmAction {
-    DeleteConnection(usize),
+    DeleteHost(String),
+    DeleteForward(usize),
     DeleteFile { name: String, is_dir: bool },
     Quit,
 }
@@ -81,6 +71,8 @@ pub enum Modal {
     Help,
     ThemePicker { selected: usize, original: String },
     Editor(Editor),
+    Forward(ForwardForm),
+    Forwards { selected: usize },
     Prompt(Prompt),
     Confirm { text: String, action: ConfirmAction },
 }
@@ -104,6 +96,12 @@ pub struct App {
     pub should_quit: bool,
     /// Last known size of the terminal content area, used for new sessions.
     pub term_area: (u16, u16),
+    /// Reachability per host name.
+    pub statuses: HashMap<String, HostStatus>,
+    pub history: History,
+    history_path: PathBuf,
+    /// Sort order and hidden-host toggle (state.toml).
+    pub ui_state: UiState,
     next_id: u64,
     rt: Handle,
     tx: UnboundedSender<Msg>,
@@ -113,7 +111,13 @@ pub struct App {
 impl App {
     pub fn new(cfg: Config, cfg_path: PathBuf, rt: Handle) -> Self {
         let (tx, rx) = unbounded_channel();
+        let history_path = History::path_for(&cfg_path);
+        let ui_state = UiState::load(&UiState::path_for(&cfg_path));
         let mut app = Self {
+            statuses: HashMap::new(),
+            history: History::load(&history_path),
+            history_path,
+            ui_state,
             theme: Theme::from_def(&theme::builtin()[0]).expect("builtin theme"),
             cfg_saved: cfg.clone(),
             cfg,
@@ -124,7 +128,7 @@ impl App {
             host_offset: 0,
             filter: TextInput::default(),
             filtering: false,
-            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts }],
+            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts, record: None }],
             active: 0,
             modal: None,
             status: None,
@@ -137,6 +141,9 @@ impl App {
         };
         app.apply_theme_name(&app.cfg.settings.theme.clone());
         app.reload_hosts();
+        if app.cfg.settings.status_checks == StatusChecks::OnStart {
+            app.check_status();
+        }
         app
     }
 
@@ -177,16 +184,16 @@ impl App {
 
     fn refilter(&mut self) {
         let q = self.filter.value.trim().to_string();
-        let mut scored: Vec<(i64, usize)> = self
-            .hosts
-            .iter()
-            .enumerate()
-            .filter_map(|(i, h)| hosts::fuzzy_score(&q, h).map(|s| (s, i)))
-            .collect();
-        if !q.is_empty() {
+        let mut shown = hosts::visible(&self.hosts, self.ui_state.show_hidden);
+        if q.is_empty() {
+            history::order(&self.hosts, &mut shown, self.ui_state.sort, &self.history);
+            self.filtered = shown;
+        } else {
+            let mut scored: Vec<(i64, usize)> =
+                shown.into_iter().filter_map(|i| hosts::fuzzy_score(&q, &self.hosts[i]).map(|s| (s, i))).collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            self.filtered = scored.into_iter().map(|(_, i)| i).collect();
         }
-        self.filtered = scored.into_iter().map(|(_, i)| i).collect();
         self.host_selected = self.host_selected.min(self.filtered.len().saturating_sub(1));
     }
 
@@ -235,7 +242,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let title = self.unique_title(title);
-        self.tabs.push(Tab { id, title, kind });
+        self.tabs.push(Tab { id, title, kind, record: None });
         self.active = self.tabs.len() - 1;
     }
 
@@ -256,8 +263,101 @@ impl App {
     fn open_terminal_with(&mut self, host: HostEntry) {
         let (rows, cols) = self.term_area;
         match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &host.shell_args(), rows, cols, self.cfg.settings.scrollback) {
-            Ok(s) => self.push_tab(host.name.clone(), TabKind::Terminal(Box::new(s))),
+            Ok(s) => {
+                self.push_tab(host.name.clone(), TabKind::Terminal(Box::new(s)));
+                self.tabs.last_mut().expect("pushed").record = Some((host.name.clone(), ConnKind::Terminal, Instant::now()));
+            }
             Err(e) => self.set_error(format!("{e:#}")),
+        }
+    }
+
+    // ----- status, history, ordering -----
+
+    /// The ssh config files, or an empty set when ssh config is off or unreadable.
+    fn load_set(&mut self) -> ConfigSet {
+        match hosts::ssh_config_path(&self.cfg) {
+            Some(p) => ConfigSet::load(&p).unwrap_or_else(|e| {
+                self.set_error(format!("{e:#}"));
+                ConfigSet { docs: vec![] }
+            }),
+            None => ConfigSet { docs: vec![] },
+        }
+    }
+
+    /// Checks every listed host (opt-in: never runs unless asked or `on_start`).
+    pub fn check_status(&mut self) {
+        let set = self.load_set();
+        let set = (!set.docs.is_empty()).then_some(set);
+        let items: Vec<(String, hosts::Probe)> =
+            self.filtered.iter().map(|&i| (self.hosts[i].name.clone(), self.hosts[i].probe(set.as_ref()))).collect();
+        for (n, _) in &items {
+            self.statuses.insert(n.clone(), HostStatus::Checking);
+        }
+        let tx = self.tx.clone();
+        status::check_all(&self.rt, items, Arc::new(move |host, status| {
+            let _ = tx.send(Msg::Status { host, status });
+        }));
+    }
+
+    fn record(&mut self, name: &str, kind: ConnKind) {
+        self.history.record(name, kind, history::now());
+        if let Err(e) = self.history.save(&self.history_path) {
+            self.set_error(format!("saving history: {e:#}"));
+        }
+    }
+
+    fn save_ui_state(&mut self) {
+        if let Err(e) = self.ui_state.save(&UiState::path_for(&self.cfg_path)) {
+            self.set_error(format!("saving state: {e:#}"));
+        }
+    }
+
+    fn cycle_sort(&mut self) {
+        self.ui_state.sort = self.ui_state.sort.next();
+        self.save_ui_state();
+        self.refilter();
+        self.set_info(format!("Sort: {}", self.ui_state.sort.label()));
+    }
+
+    fn toggle_hidden(&mut self) {
+        self.ui_state.show_hidden = !self.ui_state.show_hidden;
+        self.save_ui_state();
+        self.refilter();
+        self.set_info(if self.ui_state.show_hidden { "Showing hidden hosts" } else { "Hiding hidden hosts" });
+    }
+
+    // ----- forwards -----
+
+    pub fn start_forward(&mut self, f: &Forward) {
+        let Some(host) = self.hosts.iter().find(|h| h.name == f.host).cloned() else {
+            self.set_error(format!("unknown host: {}", f.host));
+            return;
+        };
+        let (rows, cols) = self.term_area;
+        match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &f.ssh_args(&host), rows, cols, self.cfg.settings.scrollback) {
+            Ok(s) => {
+                self.push_tab(f.title(), TabKind::Terminal(Box::new(s)));
+                self.record(&host.name, ConnKind::Forward);
+            }
+            Err(e) => self.set_error(format!("{e:#}")),
+        }
+    }
+
+    fn save_forward_form(&mut self, mut form: ForwardForm) -> Option<Modal> {
+        match form.to_forward() {
+            Err(e) => {
+                form.error = Some(e);
+                Some(Modal::Forward(form))
+            }
+            Ok(f) => {
+                match form.editing {
+                    Some(i) if i < self.cfg.forwards.len() => self.cfg.forwards[i] = f.clone(),
+                    _ => self.cfg.forwards.push(f.clone()),
+                }
+                self.save_config();
+                self.start_forward(&f);
+                None
+            }
         }
     }
 
@@ -310,25 +410,52 @@ impl App {
     // ----- background messages -----
 
     pub fn drain_messages(&mut self) {
+        let mut connected: Vec<String> = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
+            if let Msg::Status { host, status } = msg {
+                self.statuses.insert(host, status);
+                continue;
+            }
             let tab_id = match &msg {
                 Msg::SftpConnected { tab, .. }
                 | Msg::RemoteListing { tab, .. }
                 | Msg::TransferProgress { tab, .. }
                 | Msg::TransferDone { tab, .. }
                 | Msg::RemoteOpDone { tab, .. } => *tab,
+                Msg::Status { .. } => unreachable!("handled above"),
             };
             // Messages for tabs that have since been closed are dropped.
             let Some(TabKind::Sftp(s)) = self.tabs.iter_mut().find(|t| t.id == tab_id).map(|t| &mut t.kind) else {
                 continue;
             };
+            if matches!(&msg, Msg::SftpConnected { result: Ok(_), .. }) {
+                connected.push(s.host_name.clone());
+            }
             match msg {
+                Msg::Status { .. } => {}
                 Msg::SftpConnected { result, .. } => s.on_connected(result),
                 Msg::RemoteListing { result, .. } => s.on_remote_listing(result),
                 Msg::TransferProgress { id, done, .. } => s.on_transfer_progress(id, done),
                 Msg::TransferDone { id, result, .. } => s.on_transfer_done(id, result),
                 Msg::RemoteOpDone { result, keep, .. } => s.on_remote_op(result, keep),
             }
+        }
+        for name in connected {
+            self.record(&name, ConnKind::Files);
+        }
+        // A terminal counts as connected once it has shown output and is
+        // still running two seconds in.
+        let mut done = Vec::new();
+        for tab in &mut self.tabs {
+            if let (Some((_, _, at)), TabKind::Terminal(s)) = (&tab.record, &mut tab.kind) {
+                if at.elapsed() >= Duration::from_secs(2) && s.generation() > 0 && s.is_alive() {
+                    let (name, kind, _) = tab.record.take().expect("checked");
+                    done.push((name, kind));
+                }
+            }
+        }
+        for (name, kind) in done {
+            self.record(&name, kind);
         }
         if let Some((_, _, at)) = &self.status {
             if at.elapsed() > Duration::from_secs(6) {
@@ -351,8 +478,15 @@ impl App {
         let line = text.lines().next().unwrap_or("");
         match &mut self.modal {
             Some(Modal::Editor(ed)) => {
-                let f = ed.focus;
-                ed.fields[f].insert_str(line);
+                if let Some(i) = ed.focused_input() {
+                    i.insert_str(line);
+                }
+                return;
+            }
+            Some(Modal::Forward(f)) => {
+                if let Some(i) = f.focused_input() {
+                    i.insert_str(line);
+                }
                 return;
             }
             Some(Modal::Prompt(p)) => {
@@ -449,7 +583,7 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => self.move_host(i64::MAX / 2),
             KeyCode::Enter => self.open_terminal(),
             KeyCode::Char('s') => self.open_sftp(),
-            KeyCode::Char('n') => self.modal = Some(Modal::Editor(Editor::new(&Connection::default(), None))),
+            KeyCode::Char('n') => self.new_host(),
             KeyCode::Char('e') => self.edit_selected(),
             KeyCode::Char('d') | KeyCode::Delete => self.delete_selected(),
             KeyCode::Char('r') => {
@@ -457,8 +591,23 @@ impl App {
             }
             KeyCode::Char('t') => self.open_theme_picker(),
             KeyCode::Char('?') => self.modal = Some(Modal::Help),
+            KeyCode::Char('p') => self.check_status(),
+            KeyCode::Char('o') => self.cycle_sort(),
+            KeyCode::Char('H') => self.toggle_hidden(),
+            KeyCode::Char('f') => {
+                if let Some(h) = self.selected_host() {
+                    self.modal = Some(Modal::Forward(ForwardForm::new(&h.name.clone())));
+                }
+            }
+            KeyCode::Char('F') => self.modal = Some(Modal::Forwards { selected: 0 }),
             _ => {}
         }
+    }
+
+    fn new_host(&mut self) {
+        let set = self.load_set();
+        let dest = if set.docs.is_empty() { Dest::Termax } else { Dest::SshConfig(0) };
+        self.modal = Some(Modal::Editor(Editor::new(HostForm::new_host(dest), set)));
     }
 
     fn reload_config(&mut self) {
@@ -476,39 +625,37 @@ impl App {
 
     fn edit_selected(&mut self) {
         let Some(h) = self.selected_host().cloned() else { return };
-        let ed = match h.source {
-            Source::Custom(i) => Editor::new(&self.cfg.connections[i], Some(i)),
-            // OpenSSH hosts are read-only: editing makes a termax copy.
-            Source::SshConfig => {
-                self.set_info("ssh_config hosts are read-only — saving creates a termax connection");
-                Editor::new(
-                    &Connection {
-                        name: format!("{} (copy)", h.name),
-                        host: h.hostname.clone(),
-                        user: h.user.clone(),
-                        port: h.port,
-                        identity_file: h.identity_file.clone(),
-                        proxy_jump: h.proxy_jump.clone(),
-                        ..Default::default()
-                    },
-                    None,
-                )
-            }
-        };
-        self.modal = Some(Modal::Editor(ed));
+        let set = self.load_set();
+        match HostForm::for_entry(&h, &self.cfg, &set) {
+            Ok(form) => self.modal = Some(Modal::Editor(Editor::new(form, set))),
+            Err(why) => self.set_error(why),
+        }
     }
 
     fn delete_selected(&mut self) {
-        let Some(h) = self.selected_host() else { return };
-        match h.source {
-            Source::Custom(i) => {
-                self.modal = Some(Modal::Confirm {
-                    text: format!("Delete connection '{}'?", h.name),
-                    action: ConfirmAction::DeleteConnection(i),
-                })
+        let Some(h) = self.selected_host().cloned() else { return };
+        let text = match (&h.source, &h.source_file) {
+            (Source::SshConfig, Some(file)) => {
+                if let termax_core::sshconfig::edit::Locate::ReadOnly(why) = self.load_set().locate(&h.name) {
+                    self.set_error(why);
+                    return;
+                }
+                format!("Delete '{}' from {}? A backup is kept.", h.name, display_path(file))
             }
-            Source::SshConfig => self.set_error("Hosts from ssh_config can only be removed by editing that file"),
+            _ => format!("Delete connection '{}'?", h.name),
+        };
+        self.modal = Some(Modal::Confirm { text, action: ConfirmAction::DeleteHost(h.name) });
+    }
+
+    /// Writes what a host change touched, then refreshes the list.
+    fn after_host_change(&mut self, saved: Saved, set: &mut ConfigSet) -> Result<(), String> {
+        if let Saved::Ssh(_) = saved {
+            set.save(&backups_dir(&self.cfg_path)).map_err(|e| format!("{e:#}"))?;
+        } else {
+            self.save_config();
         }
+        self.reload_hosts();
+        Ok(())
     }
 
     fn terminal_key(&mut self, key: KeyEvent) {
@@ -655,25 +802,34 @@ impl App {
                     Some(Modal::Prompt(p))
                 }
             },
-            Modal::Editor(mut ed) => {
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                let n = ed.fields.len();
+            Modal::Editor(mut ed) => match ed.handle_key(key) {
+                Outcome::Keep => Some(Modal::Editor(ed)),
+                Outcome::Cancel => None,
+                Outcome::Save => self.save_editor(ed),
+            },
+            Modal::Forward(mut f) => match f.handle_key(key) {
+                Outcome::Keep => Some(Modal::Forward(f)),
+                Outcome::Cancel => None,
+                Outcome::Save => self.save_forward_form(f),
+            },
+            Modal::Forwards { mut selected } => {
+                let n = self.cfg.forwards.len();
                 match key.code {
-                    KeyCode::Esc => None,
-                    KeyCode::Char('s') if ctrl => self.save_editor(ed),
-                    KeyCode::Enter if ed.focus == n - 1 => self.save_editor(ed),
-                    KeyCode::Enter | KeyCode::Tab | KeyCode::Down => {
-                        ed.focus = (ed.focus + 1) % n;
-                        Some(Modal::Editor(ed))
+                    KeyCode::Esc | KeyCode::Char('q') => None,
+                    KeyCode::Down | KeyCode::Char('j') if n > 0 => Some(Modal::Forwards { selected: (selected + 1) % n }),
+                    KeyCode::Up | KeyCode::Char('k') if n > 0 => Some(Modal::Forwards { selected: (selected + n - 1) % n }),
+                    KeyCode::Enter if selected < n => {
+                        let f = self.cfg.forwards[selected].clone();
+                        self.start_forward(&f);
+                        None
                     }
-                    KeyCode::BackTab | KeyCode::Up => {
-                        ed.focus = (ed.focus + n - 1) % n;
-                        Some(Modal::Editor(ed))
-                    }
+                    KeyCode::Char('d') | KeyCode::Delete if selected < n => Some(Modal::Confirm {
+                        text: format!("Delete forward '{}'?", self.cfg.forwards[selected].title()),
+                        action: ConfirmAction::DeleteForward(selected),
+                    }),
                     _ => {
-                        let f = ed.focus;
-                        ed.fields[f].handle_key(key);
-                        Some(Modal::Editor(ed))
+                        selected = selected.min(n.saturating_sub(1));
+                        Some(Modal::Forwards { selected })
                     }
                 }
             }
@@ -682,26 +838,20 @@ impl App {
 
     /// Returns the modal to keep showing (with an error) or `None` on success.
     fn save_editor(&mut self, mut ed: Editor) -> Option<Modal> {
-        let conn = match ed.to_connection() {
-            Ok(c) => c,
+        let taken = hostform::taken_names(&self.hosts);
+        let saved = match ed.form.save(&mut self.cfg, &mut ed.set, &taken) {
+            Ok(s) => s,
             Err(e) => {
                 ed.error = Some(e);
                 return Some(Modal::Editor(ed));
             }
         };
-        let dup = self.cfg.connections.iter().enumerate().any(|(i, c)| c.name == conn.name && Some(i) != ed.editing);
-        if dup {
-            ed.error = Some(format!("A connection named '{}' already exists", conn.name));
+        let name = saved.name().to_string();
+        if let Err(e) = self.after_host_change(saved, &mut ed.set) {
+            ed.error = Some(e);
             return Some(Modal::Editor(ed));
         }
-        let name = conn.name.clone();
-        match ed.editing {
-            Some(i) => self.cfg.connections[i] = conn,
-            None => self.cfg.connections.push(conn),
-        }
-        self.save_config();
-        self.reload_hosts();
-        if let Some(pos) = self.filtered.iter().position(|&i| self.hosts[i].name == name && matches!(self.hosts[i].source, Source::Custom(_))) {
+        if let Some(pos) = self.filtered.iter().position(|&i| self.hosts[i].name == name) {
             self.host_selected = pos;
         }
         self.set_info(format!("Saved '{name}'"));
@@ -711,11 +861,21 @@ impl App {
     fn run_confirm(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::Quit => self.should_quit = true,
-            ConfirmAction::DeleteConnection(i) => {
-                let c = self.cfg.connections.remove(i);
-                self.save_config();
-                self.reload_hosts();
-                self.set_info(format!("Deleted '{}'", c.name));
+            ConfirmAction::DeleteHost(name) => {
+                let Some(h) = self.hosts.iter().find(|h| h.name == name).cloned() else { return };
+                let mut set = self.load_set();
+                let res = hostform::delete(&h, &mut self.cfg, &mut set).and_then(|s| self.after_host_change(s, &mut set));
+                match res {
+                    Ok(()) => self.set_info(format!("Deleted '{name}'")),
+                    Err(e) => self.set_error(e),
+                }
+            }
+            ConfirmAction::DeleteForward(i) => {
+                if i < self.cfg.forwards.len() {
+                    self.cfg.forwards.remove(i);
+                    self.save_config();
+                }
+                self.modal = Some(Modal::Forwards { selected: i.saturating_sub(1) });
             }
             ConfirmAction::DeleteFile { name, is_dir } => {
                 if let TabKind::Sftp(s) = &mut self.tabs[self.active].kind {
@@ -743,3 +903,7 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod tests;

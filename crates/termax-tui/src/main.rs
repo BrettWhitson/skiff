@@ -1,4 +1,5 @@
 mod app;
+mod forms;
 mod input;
 mod sftp_tab;
 mod tui_theme;

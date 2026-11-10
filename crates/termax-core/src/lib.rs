@@ -7,6 +7,7 @@ pub mod config;
 pub mod forward;
 pub mod fs;
 pub mod history;
+pub mod hostform;
 pub mod hosts;
 pub mod sshconfig;
 pub mod sshver;
