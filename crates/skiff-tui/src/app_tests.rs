@@ -940,6 +940,14 @@ fn split_panes_swap_resize_equalize_and_drag() {
     assert_eq!(split(&t).1, 0.25, "a tab switch ends the drag");
 }
 
+/// The settings-copy note is the TUI's first status line; a failure shows as an error.
+#[test]
+fn migration_note_is_the_first_status_line() {
+    let mut t = T::new("");
+    t.app.show_migration(&skiff_core::migrate::Migration::Failed("could not copy".into()));
+    assert!(t.app.status.as_ref().is_some_and(|s| s.0 == "could not copy" && s.1));
+}
+
 /// Readline / emacs Alt keys aren't taken as shortcuts; Alt+/ still opens find.
 #[test]
 fn readline_alt_keys_reach_the_shell() {

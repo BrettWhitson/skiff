@@ -34,8 +34,8 @@ fn main() -> anyhow::Result<()> {
         }
     };
     // One-time copy of the old (termax) config dir; its note shows in the app.
-    let migrated = skiff_core::migrate::migrate_legacy(&cfg_path);
-    let cfg = Config::load_or_create(&cfg_path)?;
+    // A failed copy loads defaults without writing a config, so the next start retries.
+    let (cfg, migration) = skiff_core::migrate::load_config(&cfg_path)?;
     let ui_font = cfg.gui.ui_font_path.as_deref().map(Path::new);
     let mono = cfg.gui.font_path.as_deref().map(Path::new);
     // A configured font file that fails to load falls back to system fonts.
@@ -46,8 +46,8 @@ fn main() -> anyhow::Result<()> {
         move |waker| {
             let mut app = GuiApp::new(cfg, cfg_path, Some(waker));
             app.open = open;
-            if let Some(note) = migrated {
-                app.warn(note);
+            if let Some(note) = migration.note() {
+                app.warn(note.to_string());
             }
             app
         },

@@ -72,7 +72,7 @@ fn main() -> Result<()> {
     let cfg_path = Config::default_path();
     // Commands that need no config return here; the rest load (and, the
     // first time, migrate or create) the config.
-    let cfg = match cmd {
+    let (cfg, migration) = match cmd {
         Cli::Help => {
             print!("{}", cli::HELP);
             return Ok(());
@@ -90,10 +90,11 @@ fn main() -> Result<()> {
             return Ok(());
         }
         _ => {
-            if let Some(note) = skiff_core::migrate::migrate_legacy(&cfg_path) {
+            let (cfg, m) = skiff_core::migrate::load_config(&cfg_path)?;
+            if let Some(note) = m.note() {
                 eprintln!("skiff: {note}");
             }
-            Config::load_or_create(&cfg_path)?
+            (cfg, m)
         }
     };
     let (list, warning) = hosts::collect(&cfg);
@@ -149,6 +150,8 @@ fn main() -> Result<()> {
     if let Ok(exe) = std::env::current_exe() {
         app.enable_askpass(exe);
     }
+    // The migration note (also printed above) is the TUI's first status line.
+    app.show_migration(&migration);
     if let Some((name, files)) = open {
         app.open_named(&name, files);
     }

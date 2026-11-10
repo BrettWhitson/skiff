@@ -557,6 +557,16 @@ impl App {
         self.status = Some((s.into(), true, Instant::now()));
     }
 
+    /// Shows the note from the one-time settings copy (if any) on the
+    /// status line: an error when the copy failed.
+    pub fn show_migration(&mut self, migration: &skiff_core::migrate::Migration) {
+        match migration {
+            skiff_core::migrate::Migration::None => {}
+            skiff_core::migrate::Migration::Copied(note) => self.set_info(note.clone()),
+            skiff_core::migrate::Migration::Failed(note) => self.set_error(note.clone()),
+        }
+    }
+
     // ----- tabs -----
 
     /// `base`, or `base (2)`, `base (3)`… if an open tab already has that title.

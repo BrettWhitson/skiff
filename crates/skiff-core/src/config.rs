@@ -346,6 +346,12 @@ impl Config {
         Self::parse(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
+    /// Loads the config when the file exists, else the template's defaults,
+    /// writing nothing (used after a failed migration so the next start retries).
+    pub fn load_or_default(path: &Path) -> Result<Self> {
+        if path.exists() { Self::load_or_create(path) } else { Self::parse(TEMPLATE) }
+    }
+
     /// Parses config text; unknown keys are ignored, missing ones defaulted.
     pub fn parse(text: &str) -> Result<Self> {
         Ok(toml::from_str(text)?)
