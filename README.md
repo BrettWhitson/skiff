@@ -140,8 +140,11 @@ Every key, the `[gui]` options, custom themes, key remapping (`[keys]`,
   sessions keep running through every move.
   - *TUI*: two panes per tab. `Alt+O` then an arrow moves the divider between
     25 / 33 / 50 / 67 / 75%, `Alt+O =` equalizes, `Alt+O x` swaps. With
-    `tui_mouse = "always"` drag the border; it snaps to those shares (hold
-    `Alt` to place it freely). A pane keeps at least 10 columns by 3 rows.
+    `tui_mouse = "always"` drag the divider line (or, stacked, the lower
+    pane's title rule); it snaps to those shares (hold `Alt` to place it
+    freely). A pane keeps at least 10 columns by 3 rows. A lone terminal has
+    no frame at all; split panes get a one-line title rule, heavy and in the
+    accent color on the focused pane.
   - *GUI*: split any pane as often as you like. Drag a divider (it snaps to
     the same shares, `Alt` places it freely, double-click equalizes). Drag a
     pane by its grip (the dots at its top centre) or with `Alt+Shift`+drag
@@ -193,10 +196,13 @@ General → Clear history forgets it.
 
 Shortcuts are two presses: `Alt+O`, then a key (written `Alt+O, w`; Alt
 may stay held). Bash's readline binds nearly every other Alt key, so they
-stay the shell's. The footer always shows the keys (`Alt+O then: 1…9 tab ·
-w close …`), and after `Alt+O` it lists what can follow. `Alt+O` twice sends
-`Alt+O` itself; `Esc` cancels. On the host list and in file tabs, `?` shows
-all keys and `q` quits / closes the tab.
+stay the shell's. The footer shows the tab's own keys on the left and the
+keys after the prefix on the right, behind an `Alt+O ▸` badge (`Alt+O ▸ 1…9
+tab  w close …`); on a narrow screen the less used hints drop first, `? help`
+never. After `Alt+O` a `PREFIX` badge appears at once, and after a short
+pause (`which_key_delay_ms`, 300 ms) a box lists every key that can follow.
+`Alt+O` twice sends `Alt+O` itself; `Esc` cancels. On the host list and in
+file tabs, `?` shows all keys and `q` quits / closes the tab.
 
 | Where | Key | Action |
 |---|---|---|
@@ -299,9 +305,11 @@ Keyboard navigation (no mouse needed):
   interface, with Windows' text size applied on top; `cursor_blink = false`
   or Windows' animation setting stops blinking.
 - **TUI.** The terminal cursor sits on the selected row so screen readers
-  that follow it read the selection; messages start with `Error:` or
-  `Info:`. `skiff --plain` (or `tui_plain = true`) drops borders and turns
-  symbols into words.
+  that follow it read the selection; messages start with `Error:` (or, in
+  plain mode, `Info:`). `skiff --plain` (or `tui_plain = true`) drops
+  borders and turns symbols into words. With `NO_COLOR` set the TUI uses no colors (bold and reverse
+  video only), and `tui_ascii_borders = true` draws `+ - |` boxes for fonts
+  without box-drawing characters.
 
 Please report anything a screen reader gets wrong.
 
