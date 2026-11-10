@@ -72,6 +72,10 @@ pub struct GuiApp {
     pub view_actions: Vec<Action>,
     /// Connection the settings screen should open for editing.
     pub edit_target: Option<usize>,
+    /// Where Local file panes start.
+    pub start_dir: String,
+    /// Relays ssh password / host-key prompts into file panes.
+    pub askpass: Option<termax_core::askpass::Broker>,
     /// The tab shown last frame (focus moves into a newly shown terminal).
     shown_tab: Option<u64>,
     ui_state: UiState,
@@ -85,6 +89,17 @@ pub fn find_theme(cfg: &Config) -> ThemeDef {
         .find(|t| t.name == cfg.settings.theme)
         .cloned()
         .unwrap_or_else(|| builtin().remove(0))
+}
+
+/// The configured local start directory, else the home directory.
+pub fn local_start_dir(configured: &Option<String>) -> String {
+    configured
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(termax_core::sshconfig::expand_tilde)
+        .or_else(termax_core::sshconfig::home_dir)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| ".".into())
 }
 
 pub fn style_for(theme: &GuiTheme, cfg: &Config) -> Style {
@@ -104,6 +119,7 @@ impl GuiApp {
         let (keymap, mut warnings) = Keymap::platform(&cfg.keys);
         warnings.extend(host_warning);
         let geometry_path = state::UiState::path_for(&cfg_path);
+        let cfg_start = cfg.settings.local_start_dir.clone();
         let geometry = state::UiState::load(&geometry_path);
         GuiApp {
             baseline: cfg.clone(),
@@ -129,6 +145,8 @@ impl GuiApp {
             new_connection: false,
             view_actions: vec![],
             edit_target: None,
+            start_dir: local_start_dir(&cfg_start),
+            askpass: None,
             shown_tab: None,
             ui_state: UiState::default(),
         }
@@ -180,7 +198,7 @@ impl GuiApp {
     pub fn tab_title(&self, i: usize) -> String {
         match &self.tabs[i].kind {
             TabKind::Terminal(t) => format!("\u{25CF} {}", t.host.name),
-            TabKind::Files(f) => format!("\u{21C5} {} \u{2194} {}", f.locations[0].label(), f.locations[1].label()),
+            TabKind::Files(f) => f.title(),
             TabKind::Settings => "Settings".into(),
         }
     }
@@ -414,8 +432,10 @@ impl GuiApp {
         }
     }
 
-    fn handle_messages(&mut self) {
-        for m in self.engine.drain() {
+    fn handle_messages(&mut self) -> bool {
+        let msgs = self.engine.drain();
+        let any = !msgs.is_empty();
+        for m in msgs {
             if let Some(tab) = m.tab()
                 && !self.tabs.iter().any(|t| t.id == tab)
             {
@@ -423,15 +443,34 @@ impl GuiApp {
             }
             match m {
                 Msg::Notice { text, .. } => self.warn(text),
+                Msg::Files { tab, side, ev } => {
+                    let ctx = crate::files::FilesCtx {
+                        tab_id: tab,
+                        engine: &self.engine,
+                        start_dir: &self.start_dir,
+                        hosts: &self.hosts,
+                        askpass: self.askpass.as_ref(),
+                        ssh_binary: &self.cfg.settings.ssh_binary,
+                    };
+                    if let Some(TabKind::Files(f)) = self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.kind) {
+                        f.on_event(side, ev, &ctx);
+                    }
+                }
             }
         }
+        any
     }
 
     // ----- frame ------------------------------------------------------
 
     /// Builds one frame.
     pub fn ui(&mut self, ui: &mut Ui) {
-        self.handle_messages();
+        // Immediate mode shows a state change made late in a frame on the
+        // next one: after any input or engine message, run one more frame.
+        let had_messages = self.handle_messages();
+        if had_messages || !ui.input().events.is_empty() {
+            ui.request_repaint_in(Duration::ZERO);
+        }
         self.handle_shortcuts(ui);
         self.track_window_size(ui);
 
@@ -531,7 +570,16 @@ impl GuiApp {
                 crate::term::view(ui, id, content, t, &self.theme, &self.keymap, self.engine.wake_fn(), &mut self.view_actions);
             }
             TabKind::Files(f) => {
-                label(ui, line, &format!("Files: {} \u{2194} {}", f.locations[0].label(), f.locations[1].label()), None);
+                let _ = line;
+                let ctx = crate::files::FilesCtx {
+                    tab_id: tab.id,
+                    engine: &self.engine,
+                    start_dir: &self.start_dir,
+                    hosts: &self.hosts,
+                    askpass: self.askpass.as_ref(),
+                    ssh_binary: &self.cfg.settings.ssh_binary,
+                };
+                crate::files::view(ui, content.inset(ui.px(6)), f, &ctx);
             }
             TabKind::Settings => {
                 label(ui, line, "Settings", None);
@@ -545,7 +593,7 @@ impl GuiApp {
         let px = ui.font_px();
         let left = match self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
             Some(TabKind::Terminal(t)) => t.status(),
-            Some(TabKind::Files(f)) => format!("files: {} \u{2194} {}", f.locations[0].label(), f.locations[1].label()),
+            Some(TabKind::Files(f)) => format!("files: {} \u{2194} {}", f.panes[0].loc.label(), f.panes[1].loc.label()),
             Some(TabKind::Settings) => "settings".into(),
             None => "no tabs".into(),
         };

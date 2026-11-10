@@ -14,12 +14,15 @@ pub type WakeFn = Arc<dyn Fn() + Send + Sync>;
 pub enum Msg {
     /// A status-bar notice (`tab: None` = app-wide).
     Notice { tab: Option<u64>, text: String },
+    /// Background file work for pane `side` of a file tab.
+    Files { tab: u64, side: usize, ev: crate::files::FilesEvent },
 }
 
 impl Msg {
     pub fn tab(&self) -> Option<u64> {
         match self {
             Msg::Notice { tab, .. } => *tab,
+            Msg::Files { tab, .. } => Some(*tab),
         }
     }
 }

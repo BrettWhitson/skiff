@@ -115,8 +115,8 @@ fn context_menu_open_file_transfer() {
     f.click_text("Open file transfer");
     assert_eq!(f.app.tabs.len(), 1);
     let TabKind::Files(ft) = &f.app.tabs[0].kind else { panic!("not a files tab") };
-    assert!(matches!(ft.locations[0], Location::Local));
-    assert!(matches!(&ft.locations[1], Location::Host(h) if h.name == "beta"));
+    assert!(matches!(ft.panes[0].loc, Location::Local));
+    assert!(matches!(&ft.panes[1].loc, Location::Host(h) if h.name == "beta"));
 }
 
 #[test]
