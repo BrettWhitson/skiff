@@ -7,8 +7,9 @@
 use std::path::{Path, PathBuf};
 
 pub mod doc;
+pub mod edit;
 
-const MAX_INCLUDE_DEPTH: usize = 16;
+pub(crate) const MAX_INCLUDE_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SshHost {
@@ -172,7 +173,7 @@ pub(crate) fn unquote(s: &str) -> &str {
     s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s)
 }
 
-fn resolve_include(pattern: &str) -> Vec<PathBuf> {
+pub(crate) fn resolve_include(pattern: &str) -> Vec<PathBuf> {
     let mut path = expand_tilde(pattern);
     if path.is_relative() {
         if let Some(home) = home_dir() {
