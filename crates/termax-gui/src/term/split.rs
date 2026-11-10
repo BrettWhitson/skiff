@@ -51,6 +51,10 @@ pub enum Layout {
 pub struct Divider {
     /// The split it belongs to: turns from the root (`false` = into `a`).
     pub path: Vec<bool>,
+    /// A key that survives restructuring (unlike `path`): the pane right
+    /// after the divider, the first one of the split's second side. Each
+    /// pane starts at most one split's second side, so it is unique.
+    pub key: u64,
     pub dir: Dir,
     pub ratio: f32,
     /// The draggable strip between the two sides.
@@ -108,7 +112,7 @@ impl Layout {
             Layout::Pane(k) => panes.push((*k, rect)),
             Layout::Split { dir, ratio, a, b } => {
                 let (ra, handle, rb) = split_rect(rect, *dir, *ratio, gap);
-                dividers.push(Divider { path: path.clone(), dir: *dir, ratio: *ratio, handle, area: rect });
+                dividers.push(Divider { path: path.clone(), key: b.first_key(), dir: *dir, ratio: *ratio, handle, area: rect });
                 path.push(false);
                 a.arrange_into(ra, gap, path, panes, dividers);
                 path.pop();
@@ -322,7 +326,7 @@ pub fn view(
     run_requests(ui, split);
     ui.region(Id::new(("pane-dividers", tab)), "Pane dividers", |ui| {
         for d in &dividers {
-            divider(ui, Id::new(("pane-divider", tab)).with(&d.path), d, gap, &mut split.layout);
+            divider(ui, Id::new(("pane-divider", tab)).with(d.key), d, gap, &mut split.layout);
         }
     });
     // Accent line around the focused pane, so it shows which one types.

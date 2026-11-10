@@ -44,6 +44,18 @@ fn layout_math() {
     assert_eq!(l.remove(0), None, "the last pane stays");
 }
 
+#[test]
+fn divider_keys_survive_restructure() {
+    let mut l = Layout::Pane(0);
+    l.split(0, Dir::Right, 1);
+    l.split(1, Dir::Down, 2);
+    l.split(2, Dir::Right, 3);
+    let keys = |l: &Layout| l.arrange(Rect::new(0, 0, 800, 600), 5).1.iter().map(|d| d.key).collect::<Vec<_>>();
+    assert_eq!(keys(&l), vec![1, 2, 3], "one per split, unique");
+    l.remove(1); // the 2|3 split moves up the tree
+    assert_eq!(keys(&l), vec![2, 3]);
+}
+
 fn key(key: Key, mods: Modifiers) -> Event {
     Event::KeyDown { key, mods, text: None }
 }
