@@ -48,8 +48,9 @@ copied over on first start (see [Coming from termax](docs/CONFIGURATION.md#comin
 ## Quick start
 
 **TUI.** Run `skiff`. Your ssh config hosts are listed; `Enter` opens a
-terminal, `s` a file browser, `/` filters, `n` adds a host. `Alt+H` shows
-every key.
+terminal, `s` a file browser, `/` filters, `n` adds a host, `?` shows
+every key. Everywhere else, shortcuts start with `Alt+O` (then `1`…`9` for a
+tab, `w` to close it, `?` for help); `Alt+[` / `Alt+]` switch tabs.
 
 **GUI.** Run `skiff-gui`. Pick a host in the sidebar (right-click for file
 transfer, forwards and editing), or press `Ctrl+Shift+K` (`Cmd+K`) for the
@@ -121,14 +122,14 @@ Every key, the `[gui]` options, custom themes, key remapping (`[keys]`,
 ## Using Skiff
 
 **Terminals.** All keys go to the remote shell except the app's shortcuts
-(by default `Alt+` chords in the TUI, `Ctrl+Shift+` chords in the GUI).
+(by default `Alt+O` and a key in the TUI, `Ctrl+Shift+` chords in the GUI).
 
 - **Find** searches scrollback and screen as you type; case-insensitive
   unless the query has a capital. Matches stay on their text as output scrolls.
 - **Split panes**: each pane is its own session to the same host, and
   sessions keep running through every move.
-  - *TUI*: two panes per tab. `Alt+Shift+arrows` move the divider between
-    25 / 33 / 50 / 67 / 75%, `Alt+=` equalizes, `Alt+Shift+X` swaps. With
+  - *TUI*: two panes per tab. `Alt+O` then an arrow moves the divider between
+    25 / 33 / 50 / 67 / 75%, `Alt+O =` equalizes, `Alt+O x` swaps. With
     `tui_mouse = "always"` drag the border; it snaps to those shares (hold
     `Alt` to place it freely). A pane keeps at least 10 columns by 3 rows.
   - *GUI*: split any pane as often as you like. Drag a divider (it snaps to
@@ -145,7 +146,7 @@ Every key, the `[gui]` options, custom themes, key remapping (`[keys]`,
   clicks and the wheel; hold `Shift` to select text instead. In the TUI,
   `tui_mouse = "always"` gives Skiff the mouse for tab clicks, wheel
   scrollback and selection (copied with OSC 52).
-- **Snippets** (`[[snippet]]`) are listed under `Alt+S` in the TUI and in the
+- **Snippets** (`[[snippet]]`) are listed under `Alt+O s` in the TUI and in the
   GUI quick switcher; a snippet with `host` only appears in that host's
   terminals.
 
@@ -180,12 +181,16 @@ General → Clear history forgets it.
 
 ### TUI
 
+Shortcuts are `Alt+O` followed by a key (Alt may stay held): bash's
+readline binds nearly every other Alt key, so they stay the shell's.
+`Alt+O` twice sends `Alt+O` itself; `Esc` cancels.
+
 | Where | Key | Action |
 |---|---|---|
-| Everywhere | `Alt+1`…`Alt+9` | Switch tab |
-| | `Alt+←` / `Alt+→` (or `Alt+[` / `Alt+]`) | Previous / next tab |
-| | `Alt+W` | Close tab (in a split tab: the focused pane) |
-| | `Alt+'` / `Alt+H` / `Alt+Q` | Theme picker / help / quit |
+| Everywhere | `Alt+O` `1`…`9` | Switch tab |
+| | `Alt+[` / `Alt+]` (or `Alt+O` `p` / `n`) | Previous / next tab |
+| | `Alt+O` `w` | Close tab (in a split tab: the focused pane) |
+| | `Alt+O` `t` / `?` (or `h`) / `q` | Theme picker / help / quit |
 | Hosts | `Enter` / `s` | Open terminal / SFTP browser |
 | | `/` | Fuzzy filter (name, host, user, tags) |
 | | `n` / `e` / `d` | New / edit / delete host (ssh config hosts too) |
@@ -198,13 +203,13 @@ General → Clear history forgets it.
 | | `Space` | Toggle "Save to" / Hidden |
 | | `Enter` in Other options | Add a line |
 | Terminal | `Shift+PgUp` / `Shift+PgDn` | Scrollback |
-| | `Alt+/` | Find (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
-| | `Alt+S` | Snippets (`Enter` sends) |
-| | `Alt+\|` / `Alt+-` | Split side by side / one above the other |
-| | `Alt+O` | Focus the other pane |
-| | `Alt+Shift+X` | Swap the two panes |
-| | `Alt+Shift+←` `→` `↑` `↓` | Move the divider to the next of 25 / 33 / 50 / 67 / 75% |
-| | `Alt+=` | Make the panes equal |
+| | `Alt+O` `/` | Find (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
+| | `Alt+O` `s` | Snippets (`Enter` sends) |
+| | `Alt+O` `\|` / `-` | Split side by side / one above the other |
+| | `Alt+O` `o` | Focus the other pane |
+| | `Alt+O` `x` | Swap the two panes |
+| | `Alt+O` `←` `→` `↑` `↓` | Move the divider to the next of 25 / 33 / 50 / 67 / 75% |
+| | `Alt+O` `=` | Make the panes equal |
 | | `Enter` after disconnect | Reconnect |
 | SFTP | `Tab` / `←` `→` | Switch pane |
 | | `Enter` / `Backspace` | Open directory / go up |
@@ -218,10 +223,11 @@ General → Clear history forgets it.
 | File exists | `o` / `s` / `a` / `S` | Overwrite / skip / overwrite all / skip all |
 | | `c` or `Esc` | Cancel the transfer |
 
-The global shortcuts can be remapped in `[tui_keys]`; every other key goes to
-the shell. `Alt+F`, `Alt+T` and `Alt+\` used to be skiff's and now reach the
-shell (readline word movement and editing); see
-[Coming from termax](docs/CONFIGURATION.md#coming-from-termax) to put them back.
+The global shortcuts can be remapped in `[tui_keys]`, including back to
+single Alt chords; every other key goes to the shell. termax's `Alt+` chords
+now reach the shell (readline word movement, digit arguments, completion);
+see [Coming from termax](docs/CONFIGURATION.md#coming-from-termax) to put
+them back.
 
 ### GUI
 

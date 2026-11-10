@@ -273,6 +273,17 @@ fn alt(t: &mut T, c: char) {
     t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)));
 }
 
+/// Presses the prefix (Alt+O), then `code` on its own.
+fn prefixed(t: &mut T, code: KeyCode) {
+    alt(t, 'o');
+    t.key(code);
+}
+
+/// Presses the prefix (Alt+O), then the key `c`.
+fn cmd(t: &mut T, c: char) {
+    prefixed(t, KeyCode::Char(c));
+}
+
 /// A terminal tab on the local test server (never a real host).
 fn fixture_terminal(t: &mut T) -> skiff_testserver::TestFixture {
     let fx = skiff_testserver::TestFixture::with_shell(skiff_testserver::FixtureAuth::Key).unwrap();
@@ -322,7 +333,7 @@ fn tui_search_scrolls_and_counts() {
         s.write(text.as_bytes());
     }
     wait_screen(&t, "row59");
-    alt(&mut t, '/');
+    cmd(&mut t, '/');
     t.typed("needle");
     t.key(KeyCode::Enter);
     assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"));
@@ -348,7 +359,7 @@ fn tui_snippet_picker_sends() {
     let mut t = T::new("");
     t.app.cfg.snippets.push(skiff_core::termx::Snippet { name: "greet".into(), command: "echo hi-snippet".into(), host: None, run: false });
     let _fx = fixture_terminal(&mut t);
-    alt(&mut t, 's');
+    cmd(&mut t, 's');
     assert!(matches!(t.app.modal, Some(Modal::Snippets { .. })));
     t.key(KeyCode::Enter);
     assert!(t.app.modal.is_none());
@@ -406,14 +417,21 @@ fn mouse(t: &mut T, kind: crossterm::event::MouseEventKind, column: u16, row: u1
     t.app.handle_event(Event::Mouse(crossterm::event::MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }));
 }
 
-/// Alt shortcuts match an uppercase letter (Caps Lock), but Alt+Shift chords aren't shortcuts.
+/// A key after the prefix matches with Alt still held and with Caps Lock on;
+/// Shift+letter, Esc or an unbound key just cancel the prefix.
 #[test]
-fn alt_shortcuts_ignore_case_but_leave_alt_shift_to_the_shell() {
+fn prefix_keys_allow_alt_held_and_caps_lock() {
     let mut t = T::new("");
-    t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT | KeyModifiers::SHIFT)));
-    assert!(t.app.modal.is_none(), "Alt+Shift+H isn't a shortcut");
+    for (code, mods) in [(KeyCode::Char('H'), KeyModifiers::ALT | KeyModifiers::SHIFT), (KeyCode::Esc, KeyModifiers::NONE)] {
+        alt(&mut t, 'o');
+        t.app.handle_event(Event::Key(KeyEvent::new(code, mods)));
+        assert!(t.app.modal.is_none() && !t.app.prefix_pending, "{code:?} cancels");
+    }
+    t.key(KeyCode::Char('h'));
+    assert!(t.app.modal.is_none(), "without the prefix, h is the host list's");
+    alt(&mut t, 'o');
     t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT)));
-    assert!(matches!(t.app.modal, Some(Modal::Help { .. })), "Alt+H with Caps Lock on");
+    assert!(matches!(t.app.modal, Some(Modal::Help { .. })), "Alt+O, Alt+H with Caps Lock on");
 }
 
 /// Find takes a pasted query, highlights the current match and picks up matches in new output.
@@ -425,7 +443,7 @@ fn tui_search_highlights_and_follows_new_output() {
     wait_screen(&t, "needle\n");
     t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT | KeyModifiers::SHIFT)));
     assert!(t.app.modal.is_none(), "Alt+Shift+F goes to the shell");
-    alt(&mut t, '/');
+    cmd(&mut t, '/');
     t.app.handle_event(Event::Paste("needle".into()));
     assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"), "a paste goes into the query");
     let term = draw(&mut t);
@@ -463,11 +481,11 @@ fn tui_mouse_release_outside_reaches_the_program() {
     assert_eq!(t.app.mouse_held, None, "the release is reported at the terminal's edge");
     // A dialog opening, or a tab change by keyboard, mid-drag releases it.
     mouse(&mut t, K::Down(B::Left), 5, 5);
-    alt(&mut t, 'h');
+    cmd(&mut t, 'h');
     assert_eq!(t.app.mouse_held, None, "released when a dialog opens");
     t.key(KeyCode::Esc);
     mouse(&mut t, K::Down(B::Left), 5, 5);
-    alt(&mut t, '1');
+    cmd(&mut t, '1');
     assert_eq!(t.app.mouse_held, None, "released when the tab changes");
 }
 
@@ -534,8 +552,8 @@ fn tui_keys_remap_end_to_end() {
     });
     let (msg, is_err, _) = t.app.status.clone().expect("the bad entry is reported");
     assert!(is_err && msg.contains("[tui_keys] bogus: unknown action"), "{msg}");
-    alt(&mut t, 'h');
-    assert!(t.app.modal.is_none(), "Alt+H no longer opens help");
+    cmd(&mut t, 'h');
+    assert!(t.app.modal.is_none(), "Alt+O h no longer opens help");
     t.key(KeyCode::F(1));
     assert!(matches!(t.app.modal, Some(Modal::Help { .. })));
     let term = draw(&mut t);
@@ -764,7 +782,7 @@ fn transfers_ask_before_overwriting_and_cancel() {
 
     // Closing the tab cancels its transfers.
     t.key(KeyCode::Char('c'));
-    alt(&mut t, 'w');
+    cmd(&mut t, 'w');
     for _ in 0..10 {
         t._rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(20)).await });
     }
@@ -809,7 +827,7 @@ fn wait_pane(t: &T, focused: bool, s: &str) {
 fn split_panes_size_and_route_input() {
     let mut t = T::new("");
     local_shell(&mut t);
-    alt(&mut t, '|');
+    cmd(&mut t, '|');
     let sp = t.app.tabs[t.app.active].split.as_ref().expect("split");
     assert!(!sp.focus_first, "the new (right) pane has the focus");
     draw(&mut t); // 80x26: the body is 80x24 at row 1
@@ -826,7 +844,7 @@ fn split_panes_size_and_route_input() {
     t.key(KeyCode::Enter);
     wait_pane(&t, true, "right-pane-mark");
     assert!(!pane_text(panes(&t).1).contains("right-pane-mark"));
-    alt(&mut t, 'o');
+    cmd(&mut t, 'o');
     t.typed("echo left-pane-mark");
     t.key(KeyCode::Enter);
     wait_pane(&t, true, "left-pane-mark");
@@ -840,13 +858,13 @@ fn split_panes_size_and_route_input() {
     assert!(!t.app.tabs[t.app.active].split.as_ref().unwrap().focus_first, "the click focused the right pane");
 
     // Stacked: halves of the height.
-    alt(&mut t, '-');
+    cmd(&mut t, '-');
     draw(&mut t);
     let (f, o) = panes(&t);
     assert_eq!((size(f), size(o)), ((10, 78), (10, 78)));
 
     let tabs = t.app.tabs.len();
-    alt(&mut t, 'w');
+    cmd(&mut t, 'w');
     assert!(t.app.tabs[t.app.active].split.is_none());
     assert_eq!(t.app.tabs.len(), tabs, "Alt+W closed only the focused pane");
     let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else { panic!() };
@@ -887,15 +905,15 @@ fn split_divider_math() {
     assert_eq!(divider_ratio(area, SplitDir::Right, 49, 5, true), 50.0 / 80.0);
 }
 
-/// Alt+Shift+X swaps panes (Alt+X stays the shell's), Alt+Shift+arrows step
-/// the divider, Alt+= equalizes, and a mouse drag snaps it.
+/// Alt+O x swaps panes (Alt+X stays the shell's), Alt+O arrows step the
+/// divider, Alt+O = equalizes, and a mouse drag snaps it.
 #[test]
 fn split_panes_swap_resize_equalize_and_drag() {
     use crossterm::event::{MouseButton as B, MouseEventKind as K};
     let mut t = T::new("");
     t.app.cfg.settings.tui_mouse = skiff_core::config::TuiMouse::Always;
     local_shell(&mut t);
-    alt(&mut t, '|');
+    cmd(&mut t, '|');
     draw(&mut t);
     let split = |t: &T| {
         let sp = t.app.tabs[t.app.active].split.as_ref().unwrap();
@@ -905,14 +923,15 @@ fn split_panes_swap_resize_equalize_and_drag() {
     let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
     assert_eq!(split(&t), (false, 0.5));
     alt(&mut t, 'x');
-    assert_eq!(split(&t), (false, 0.5), "Alt+X is the shell's (M-x)");
     key(&mut t, KeyCode::Char('X'), alt_shift);
+    assert_eq!(split(&t), (false, 0.5), "Alt+X and Alt+Shift+X are the shell's (M-x)");
+    cmd(&mut t, 'x');
     assert_eq!(split(&t), (true, 0.5), "swapped: the focused pane is now on the left");
-    key(&mut t, KeyCode::Right, alt_shift);
+    prefixed(&mut t, KeyCode::Right);
     assert_eq!(split(&t).1, 2.0 / 3.0, "the next snap point");
-    key(&mut t, KeyCode::Up, alt_shift);
+    prefixed(&mut t, KeyCode::Up);
     assert_eq!(split(&t).1, 2.0 / 3.0, "a side-by-side split has no up");
-    alt(&mut t, '=');
+    cmd(&mut t, '=');
     assert_eq!(split(&t).1, 0.5);
 
     // Drag the divider (column 39/40 of 80) to near a quarter: it snaps.
@@ -948,15 +967,19 @@ fn migration_note_is_the_first_status_line() {
     assert!(t.app.status.as_ref().is_some_and(|s| s.0 == "could not copy" && s.1));
 }
 
-/// Readline / emacs Alt keys aren't taken as shortcuts; Alt+/ still opens find.
+/// Readline / emacs Alt keys aren't taken as shortcuts, the prefix pressed
+/// twice goes to the shell, and Alt+O / still opens find.
 #[test]
 fn readline_alt_keys_reach_the_shell() {
     let mut t = T::new("");
     local_shell(&mut t);
-    for c in ['f', 't', 'b', 'd', '.', '\\'] {
+    for c in ['f', 't', 'b', 'd', '.', '\\', '/', '=', '1', '-'] {
         alt(&mut t, c);
         assert!(t.app.modal.is_none() && t.app.tabs[t.app.active].split.is_none(), "Alt+{c} is the shell's");
     }
-    alt(&mut t, '/');
-    assert!(matches!(t.app.modal, Some(Modal::Search { .. })), "Alt+/ finds");
+    alt(&mut t, 'o');
+    alt(&mut t, 'o');
+    assert!(!t.app.prefix_pending, "the second Alt+O went to the shell");
+    cmd(&mut t, '/');
+    assert!(matches!(t.app.modal, Some(Modal::Search { .. })), "Alt+O / finds");
 }

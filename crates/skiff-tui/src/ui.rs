@@ -121,7 +121,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     }
     let waiting = app.waiting_tabs();
     let notice = app.notices.first().map(|(host, req)| Span::styled(format!(" {host}: {}", req.prompt.trim()), Style::new().fg(t.warning)));
-    let line = if let Some((msg, true, _)) = &app.status {
+    let line = if app.prefix_pending {
+        // Between the prefix and its key: say what happens next.
+        let help = app.keys.show(Action::Help);
+        Line::styled(format!(" {}: press a shortcut key (Esc cancels; help: {help})", app.keys.show(Action::Prefix)), t.accent())
+    } else if let Some((msg, true, _)) = &app.status {
         // An error first, with a pending security-key notice after it.
         let mut spans = vec![Span::styled(format!(" Error: {msg}"), Style::new().fg(t.error))];
         if let Some(n) = notice {
@@ -626,6 +630,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             let mut lines: Vec<Line> = app.key_errors.iter().map(|e| Line::styled(format!("  {e}"), Style::new().fg(t.error))).collect();
             lines.extend([
                 h("Everywhere ([tui_keys] in the config remaps these)"),
+                a(Action::Prefix),
                 k(&app.keys.show_tabs(), "switch to tab"),
                 a(Action::PrevTab),
                 a(Action::NextTab),

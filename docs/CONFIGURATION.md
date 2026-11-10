@@ -61,7 +61,7 @@ exists is overwritten. This is skipped when `SKIFF_CONFIG` or
 | `TERMAX_CONFIG` | `SKIFF_CONFIG` (`TERMAX_CONFIG` still works in this release) |
 | `# termax:` comments in ssh config | `# skiff:` (old ones are read, and rewritten when the host is edited) |
 | `*.termax-part` leftovers | `*.skiff-part` (both are skipped when copying folders) |
-| TUI `Alt+F` find, `Alt+T` theme, `Alt+\` split side by side | `Alt+/`, `Alt+'`, `Alt+\|`. `Alt+F`, `Alt+T` and `Alt+\` now reach the shell (readline / emacs forward-word, transpose-words, delete-horizontal-space). Put the old keys back with `find = "alt+f"`, `theme = "alt+t"`, `split_right = "alt+\\"` in `[tui_keys]`. |
+| TUI `Alt+` chords: `Alt+1`…`9`, `Alt+←` / `→`, `Alt+W`, `Alt+T`, `Alt+H`, `Alt+Q`, `Alt+F`, `Alt+S`, `Alt+\`, `Alt+-`, `Alt+O`, `Alt+Shift+X`, `Alt+Shift+arrows`, `Alt+=` | `Alt+O` then `1`…`9`, `p` / `n` (`Alt+[` / `Alt+]` stay), `w`, `t`, `?` or `h`, `q`, `/`, `s`, `\|`, `-`, `o`, `x`, arrows, `=`. Bash's readline binds the old chords (word movement, digit arguments, completion), so they now reach the shell. To put them back, see the example under [`[tui_keys]`](#tui_keys-tui-shortcuts). |
 
 ## `[settings]`
 
@@ -163,7 +163,7 @@ a comment inside their block instead; see [ssh config editing](#ssh-config-editi
 ## `[[snippet]]`
 
 Saved commands, sent to a terminal from the GUI quick switcher
-("Snippet: …") or the TUI's `Alt+S` list. GUI: Settings → Snippets.
+("Snippet: …") or the TUI's `Alt+O s` list. GUI: Settings → Snippets.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -309,7 +309,12 @@ Same idea for the TUI's global shortcuts. A chord is modifiers (`ctrl`,
 `down`, `home`, `end`, `pageup`, `pagedown`, `tab`, `enter`, `esc`, `space`,
 `backspace`, `delete`, `insert`, `plus`, `minus` or `f1`–`f12`.
 
-- Every chord needs `ctrl` or `alt`, except the F-keys.
+- A chord with `ctrl` or `alt`, or an F-key, works on its own. A key
+  without them (`w`, `?`, `left`, `shift+left`) is pressed after the
+  `prefix` chord (Alt may stay held, so `Alt+O` `Alt+W` works too). The
+  prefix twice sends it to the shell; `Esc` or an unbound key cancels.
+- The defaults avoid every Alt key bash's readline binds (and emacs' Alt
+  keys): only `Alt+O` (the prefix) and `Alt+[` / `Alt+]` are taken.
 - `Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, `Ctrl+\` and `Ctrl+[` belong to the shell
   and are refused (`ctrl+shift+c` and the like are fine).
 - For symbols such as `alt+?` or `alt++`, `Shift` is ignored, since many
@@ -317,30 +322,64 @@ Same idea for the TUI's global shortcuts. A chord is modifiers (`ctrl`,
 - An empty value unbinds the action.
 - An unknown action, a chord that doesn't parse, or a chord already bound to
   another action is reported at start (and at the top of the help); that
-  entry keeps its default. The help (`Alt+H`) and status line always show
+  entry keeps its default. The help (`Alt+O ?`) and status line always show
   the keys in effect.
 
 | Action | Default |
 |---|---|
-| `tab_1` … `tab_9` | `alt+1` … `alt+9` |
-| `next_tab` / `prev_tab` | `alt+right, alt+]` / `alt+left, alt+[` |
-| `close_tab` | `alt+w` (in a split tab: the focused pane) |
-| `theme` | `alt+'` |
-| `help` | `alt+h` |
-| `quit` | `alt+q` |
-| `find` | `alt+/` (terminal tabs) |
-| `snippets` | `alt+s` (terminal tabs) |
-| `split_right` / `split_down` | `alt+\|` / `alt+-` (terminal tabs) |
-| `focus_next_pane` | `alt+o` (terminal tabs) |
-| `swap_panes` | `alt+shift+x` (split tabs) |
-| `resize_pane_left` / `_right` / `_up` / `_down` | `alt+shift+left` / `right` / `up` / `down` (split tabs; an arrow across the split goes to the shell) |
-| `equalize_panes` | `alt+=` (split tabs) |
+| `prefix` | `alt+o` (must have `ctrl` or `alt`, or be an F-key) |
+| `tab_1` … `tab_9` | `1` … `9` (after the prefix) |
+| `next_tab` / `prev_tab` | `alt+], n` / `alt+[, p` |
+| `close_tab` | `w` (in a split tab: the focused pane) |
+| `theme` | `t` |
+| `help` | `?, h` |
+| `quit` | `q` |
+| `find` | `/` (terminal tabs) |
+| `snippets` | `s` (terminal tabs) |
+| `split_right` / `split_down` | `\|` / `-` (terminal tabs) |
+| `focus_next_pane` | `o` (terminal tabs) |
+| `swap_panes` | `x` (split tabs) |
+| `resize_pane_left` / `_right` / `_up` / `_down` | `left` / `right` / `up` / `down` (split tabs) |
+| `equalize_panes` | `=` (split tabs) |
 
 ```toml
 [tui_keys]
+prefix = "f12"
 close_tab = "alt+x"
-split_right = "alt+v"
-help = "f1, alt+h"
+help = "f1, ?"
+```
+
+The termax keys, for shells where you don't need those Alt keys:
+
+```toml
+[tui_keys]
+prefix = "f12"   # frees Alt+O for focus_next_pane
+tab_1 = "alt+1"
+tab_2 = "alt+2"
+tab_3 = "alt+3"
+tab_4 = "alt+4"
+tab_5 = "alt+5"
+tab_6 = "alt+6"
+tab_7 = "alt+7"
+tab_8 = "alt+8"
+tab_9 = "alt+9"
+next_tab = "alt+right, alt+]"
+prev_tab = "alt+left, alt+["
+close_tab = "alt+w"
+theme = "alt+t"
+help = "alt+h"
+quit = "alt+q"
+find = "alt+f"
+snippets = "alt+s"
+split_right = "alt+\\"
+split_down = "alt+-"
+focus_next_pane = "alt+o"
+swap_panes = "alt+shift+x"
+resize_pane_left = "alt+shift+left"
+resize_pane_right = "alt+shift+right"
+resize_pane_up = "alt+shift+up"
+resize_pane_down = "alt+shift+down"
+equalize_panes = "alt+="
 ```
 
 ## ssh config editing

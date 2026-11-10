@@ -328,6 +328,8 @@ pub struct App {
     pub ui_state: UiState,
     /// Global shortcuts (`[tui_keys]` over the defaults).
     pub keys: Keymap,
+    /// The prefix chord was pressed: the next key picks a shortcut.
+    pub prefix_pending: bool,
     /// Problems in `[tui_keys]` (shown in the help).
     pub key_errors: Vec<String>,
     /// Answers ssh's questions for SFTP connections (see `enable_askpass`).
@@ -394,6 +396,7 @@ impl App {
             clipboard_out: None,
             paste_bursts: cfg!(windows),
             keys: Keymap::default(),
+            prefix_pending: false,
             key_errors: vec![],
             askpass: None,
             ssh_version: None,
@@ -1490,6 +1493,7 @@ impl App {
     /// then the active tab's own keys.
     fn handle_key(&mut self, key: KeyEvent) {
         if self.modal.is_some() {
+            self.prefix_pending = false; // a dialog that opened meanwhile takes the key
             self.handle_modal_key(key);
             return;
         }
@@ -1504,14 +1508,35 @@ impl App {
     }
 
     /// Shortcuts from the keymap work everywhere, including inside terminal
-    /// tabs (the defaults are Alt chords; letters match in either case for
-    /// Caps Lock, and Alt+Shift letter chords are left for the shell except
-    /// `swap_panes`; the defaults avoid readline / emacs Alt keys). Terminal-only
-    /// actions elsewhere let the key through. True when the key was used.
+    /// tabs. Most defaults are a key after the prefix (`Alt+O`, which the
+    /// shell's readline and emacs leave free); the prefix pressed twice goes
+    /// through. A key after the prefix is always used up; a chord of its own
+    /// for an action that doesn't apply lets the key through. True when the
+    /// key was used.
     fn handle_global_key(&mut self, key: KeyEvent) -> bool {
-        let Some(action) = self.keys.match_key(&key) else {
-            return false;
-        };
+        if std::mem::take(&mut self.prefix_pending) {
+            // The prefix again: let the tab have it (e.g. Alt+O for the shell).
+            if self.keys.match_key(&key) == Some(Action::Prefix) {
+                return false;
+            }
+            if let Some(action) = self.keys.match_after_prefix(&key) {
+                self.run_action(action);
+            }
+            return true; // Esc or an unbound key just cancels
+        }
+        match self.keys.match_key(&key) {
+            Some(Action::Prefix) => {
+                self.prefix_pending = true;
+                true
+            }
+            Some(action) => self.run_action(action),
+            None => false,
+        }
+    }
+
+    /// Runs a shortcut's action. False when it doesn't apply here (a
+    /// terminal action outside a terminal, a pane action without a split).
+    fn run_action(&mut self, action: Action) -> bool {
         let terminal = matches!(self.tabs[self.active].kind, TabKind::Terminal(_));
         let split = terminal && self.tabs[self.active].split.is_some();
         match action {

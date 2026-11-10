@@ -37,11 +37,14 @@ pub enum Action {
     ResizePaneDown,
     /// Give the two panes of a split the same size.
     EqualizePanes,
+    /// Starts a two-key shortcut: the next key picks one of the bare-key
+    /// bindings (pressed twice, it goes to the shell itself).
+    Prefix,
 }
 
 impl Action {
     /// Every action, including each of the nine tab slots.
-    pub const ALL: [Action; 26] = [
+    pub const ALL: [Action; 27] = [
         Action::Tab(1),
         Action::Tab(2),
         Action::Tab(3),
@@ -68,6 +71,7 @@ impl Action {
         Action::ResizePaneUp,
         Action::ResizePaneDown,
         Action::EqualizePanes,
+        Action::Prefix,
     ];
 
     /// The name used in the `[tui_keys]` table.
@@ -91,6 +95,7 @@ impl Action {
             Action::ResizePaneUp => "resize_pane_up".into(),
             Action::ResizePaneDown => "resize_pane_down".into(),
             Action::EqualizePanes => "equalize_panes".into(),
+            Action::Prefix => "prefix".into(),
         }
     }
 
@@ -120,35 +125,38 @@ impl Action {
             Action::ResizePaneUp => "move a top / bottom divider up",
             Action::ResizePaneDown => "move a top / bottom divider down",
             Action::EqualizePanes => "split panes the same size",
+            Action::Prefix => "then a key below (twice: send it to the shell)",
         }
     }
 
-    /// The built-in chords, in `[tui_keys]` syntax. All use Alt, chosen to
-    /// avoid the readline / emacs Alt keys a shell needs.
+    /// The built-in chords, in `[tui_keys]` syntax. Bash's readline binds
+    /// almost every Alt key and emacs the rest, so only three Alt chords are
+    /// taken: `Alt+O` as the prefix and `Alt+[` / `Alt+]` for the tabs. Every
+    /// other action is a bare key pressed after the prefix (tmux style).
     pub fn defaults(self) -> &'static [&'static str] {
         match self {
             Action::Tab(n) => {
-                const D: [&[&str]; 9] =
-                    [&["alt+1"], &["alt+2"], &["alt+3"], &["alt+4"], &["alt+5"], &["alt+6"], &["alt+7"], &["alt+8"], &["alt+9"]];
+                const D: [&[&str]; 9] = [&["1"], &["2"], &["3"], &["4"], &["5"], &["6"], &["7"], &["8"], &["9"]];
                 D[(n as usize).clamp(1, 9) - 1]
             }
-            Action::NextTab => &["alt+right", "alt+]"],
-            Action::PrevTab => &["alt+left", "alt+["],
-            Action::CloseTab => &["alt+w"],
-            Action::Theme => &["alt+'"],
-            Action::Help => &["alt+h"],
-            Action::Quit => &["alt+q"],
-            Action::Find => &["alt+/"],
-            Action::Snippets => &["alt+s"],
-            Action::SplitRight => &["alt+|"],
-            Action::SplitDown => &["alt+-"],
-            Action::FocusNextPane => &["alt+o"],
-            Action::SwapPanes => &["alt+shift+x"],
-            Action::ResizePaneLeft => &["alt+shift+left"],
-            Action::ResizePaneRight => &["alt+shift+right"],
-            Action::ResizePaneUp => &["alt+shift+up"],
-            Action::ResizePaneDown => &["alt+shift+down"],
-            Action::EqualizePanes => &["alt+="],
+            Action::NextTab => &["alt+]", "n"],
+            Action::PrevTab => &["alt+[", "p"],
+            Action::CloseTab => &["w"],
+            Action::Theme => &["t"],
+            Action::Help => &["?", "h"],
+            Action::Quit => &["q"],
+            Action::Find => &["/"],
+            Action::Snippets => &["s"],
+            Action::SplitRight => &["|"],
+            Action::SplitDown => &["-"],
+            Action::FocusNextPane => &["o"],
+            Action::SwapPanes => &["x"],
+            Action::ResizePaneLeft => &["left"],
+            Action::ResizePaneRight => &["right"],
+            Action::ResizePaneUp => &["up"],
+            Action::ResizePaneDown => &["down"],
+            Action::EqualizePanes => &["="],
+            Action::Prefix => &["alt+o"],
         }
     }
 }
@@ -160,6 +168,9 @@ pub struct Chord {
     pub code: KeyCode,
     /// Ctrl / Alt / Shift that must be held.
     pub mods: KeyModifiers,
+    /// A bare key (no Ctrl or Alt, not an F-key): it acts only right after
+    /// the prefix chord.
+    pub after_prefix: bool,
 }
 
 /// The modifiers a chord compares; others (Super, Hyper, ...) are ignored.
@@ -167,7 +178,8 @@ const MODS: KeyModifiers = KeyModifiers::CONTROL.union(KeyModifiers::ALT).union(
 
 impl Chord {
     /// Parses config text like `alt+w`, `ctrl+shift+x` or `f4`
-    /// (case-insensitive). Rejects chords without Ctrl or Alt unless an F-key.
+    /// (case-insensitive). A key without Ctrl or Alt (other than an F-key),
+    /// like `w` or `shift+left`, is one pressed after the prefix.
     pub fn parse(s: &str) -> Result<Chord, String> {
         let t = s.trim().to_ascii_lowercase();
         let mut parts: Vec<&str> = t.split('+').map(str::trim).collect();
@@ -214,17 +226,16 @@ impl Chord {
             }
             other => return Err(format!("unknown key \"{other}\" in \"{s}\"")),
         };
-        let chord = Chord { code, mods };
         // Without Ctrl or Alt the key would be taken from the shell and from
-        // every list and form (F-keys excepted: skiff's own lists use few).
-        if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) && !matches!(code, KeyCode::F(_)) {
-            return Err(format!("\"{s}\" needs Ctrl or Alt (or use F1-F12)"));
-        }
-        Ok(chord)
+        // every list and form, so it only counts after the prefix (F-keys
+        // excepted: skiff's own lists use few).
+        let after_prefix = !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) && !matches!(code, KeyCode::F(_));
+        Ok(Chord { code, mods, after_prefix })
     }
 
     /// Whether a key press triggers this chord. Letters match regardless of
-    /// case (Caps Lock); Shift is ignored for symbols.
+    /// case (Caps Lock); Shift is ignored for symbols, and Alt for a key
+    /// after the prefix (so Alt can stay held).
     pub fn matches(&self, key: &KeyEvent) -> bool {
         let code = match key.code {
             KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
@@ -236,6 +247,7 @@ impl Chord {
             KeyCode::Char(c) if !c.is_alphabetic() => MODS - KeyModifiers::SHIFT,
             _ => MODS,
         };
+        let mods = if self.after_prefix { mods - KeyModifiers::ALT } else { mods };
         code == self.code && (key.modifiers & mods) == (self.mods & mods)
     }
 
@@ -272,6 +284,8 @@ impl fmt::Display for Chord {
         }
         match self.code {
             KeyCode::Char(' ') => write!(f, "Space"),
+            // After the prefix a letter is shown as typed (`Alt+O w`, not Shift+W).
+            KeyCode::Char(c) if self.after_prefix => write!(f, "{c}"),
             KeyCode::Char(c) => write!(f, "{}", c.to_ascii_uppercase()),
             KeyCode::Left => write!(f, "←"),
             KeyCode::Right => write!(f, "→"),
@@ -319,6 +333,12 @@ impl Keymap {
                 continue;
             };
             let parsed: Result<Vec<Chord>, String> = value.split(',').filter(|s| !s.trim().is_empty()).map(Chord::parse).collect();
+            if action == Action::Prefix
+                && let Ok(Some(c)) = parsed.as_ref().map(|cs| cs.iter().find(|c| c.after_prefix))
+            {
+                errors.push(format!("[tui_keys] {name}: {c} needs Ctrl or Alt (or use F1-F12), keeping the default"));
+                continue;
+            }
             let stolen = parsed.as_ref().ok().and_then(|cs| cs.iter().find_map(|c| c.shell_key().map(|what| (*c, what))));
             if let Some((c, what)) = stolen {
                 errors.push(format!("[tui_keys] {name}: {c} belongs to the shell ({what}), keeping the default"));
@@ -352,10 +372,20 @@ impl Keymap {
         self.binds.get(&a).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// The chords for `a` as text (`Alt+W`, or `Alt+← / Alt+[`); "unbound" if none.
+    /// The chords for `a` as text (`Alt+O W`, or `Alt+] / Alt+O N`);
+    /// "unbound" if none (a key after the prefix needs a bound prefix).
     pub fn show(&self, a: Action) -> String {
-        let c = self.chords(a);
-        if c.is_empty() { "unbound".into() } else { c.iter().map(Chord::to_string).collect::<Vec<_>>().join(" / ") }
+        let c: Vec<String> = self.chords(a).iter().filter_map(|c| self.show_chord(c)).collect();
+        if c.is_empty() { "unbound".into() } else { c.join(" / ") }
+    }
+
+    /// One chord as text, with the prefix in front of a key after it;
+    /// `None` for such a key when no prefix is bound.
+    fn show_chord(&self, c: &Chord) -> Option<String> {
+        if !c.after_prefix {
+            return Some(c.to_string());
+        }
+        self.chords(Action::Prefix).first().map(|p| format!("{p} {c}"))
     }
 
     /// The tab-switching keys, compact when they follow one pattern (`Alt+1…9`).
@@ -367,14 +397,20 @@ impl Keymap {
             })
         });
         match first {
+            Some(f) if pattern && f.after_prefix => self.show_chord(&f).map_or_else(|| "unbound".into(), |s| format!("{s}…9")),
             Some(f) if pattern => format!("{f} … {}", self.chords(Action::Tab(9))[0]),
             _ => (1..=9).map(|n| self.show(Action::Tab(n))).collect::<Vec<_>>().join(" "),
         }
     }
 
-    /// The action a key press triggers, if any.
+    /// The action a key press triggers on its own, if any.
     pub fn match_key(&self, key: &KeyEvent) -> Option<Action> {
-        self.binds.iter().find_map(|(a, chords)| chords.iter().any(|c| c.matches(key)).then_some(*a))
+        self.binds.iter().find_map(|(a, chords)| chords.iter().any(|c| !c.after_prefix && c.matches(key)).then_some(*a))
+    }
+
+    /// The action a key pressed right after the prefix triggers, if any.
+    pub fn match_after_prefix(&self, key: &KeyEvent) -> Option<Action> {
+        self.binds.iter().find_map(|(a, chords)| chords.iter().any(|c| c.after_prefix && c.matches(key)).then_some(*a))
     }
 }
 
@@ -397,14 +433,17 @@ mod tests {
     fn defaults_are_current_bindings() {
         let (k, errors) = Keymap::new(&BTreeMap::new());
         assert!(errors.is_empty());
-        assert_eq!(k.match_key(&key(KeyCode::Char('w'), KeyModifiers::ALT)), Some(Action::CloseTab));
-        // Caps Lock: Alt+H arrives upper case without Shift.
-        assert_eq!(k.match_key(&key(KeyCode::Char('H'), KeyModifiers::ALT)), Some(Action::Help));
-        assert_eq!(k.match_key(&key(KeyCode::Char('H'), KeyModifiers::ALT | KeyModifiers::SHIFT)), None, "Alt+Shift is the shell's");
-        assert_eq!(k.match_key(&key(KeyCode::Char('3'), KeyModifiers::ALT)), Some(Action::Tab(3)));
-        assert_eq!(k.match_key(&key(KeyCode::Left, KeyModifiers::ALT)), Some(Action::PrevTab));
-        assert_eq!(k.show_tabs(), "Alt+1 … Alt+9");
-        assert_eq!(k.show(Action::NextTab), "Alt+→ / Alt+]");
+        assert_eq!(k.match_key(&key(KeyCode::Char('o'), KeyModifiers::ALT)), Some(Action::Prefix));
+        assert_eq!(k.match_key(&key(KeyCode::Char(']'), KeyModifiers::ALT)), Some(Action::NextTab));
+        assert_eq!(k.match_key(&key(KeyCode::Char('w'), KeyModifiers::NONE)), None, "bare keys only count after the prefix");
+        assert_eq!(k.match_after_prefix(&key(KeyCode::Char('w'), KeyModifiers::NONE)), Some(Action::CloseTab));
+        // Alt may stay held, and Caps Lock sends an upper-case letter without Shift.
+        assert_eq!(k.match_after_prefix(&key(KeyCode::Char('W'), KeyModifiers::ALT)), Some(Action::CloseTab));
+        assert_eq!(k.match_after_prefix(&key(KeyCode::Char('3'), KeyModifiers::NONE)), Some(Action::Tab(3)));
+        assert_eq!(k.match_after_prefix(&key(KeyCode::Left, KeyModifiers::NONE)), Some(Action::ResizePaneLeft));
+        assert_eq!(k.show_tabs(), "Alt+O 1…9");
+        assert_eq!(k.show(Action::NextTab), "Alt+] / Alt+O n");
+        assert_eq!(k.show(Action::Help), "Alt+O ? / Alt+O h");
     }
 
     /// Overrides replace defaults; bad names, chords and clashes are reported
@@ -415,23 +454,25 @@ mod tests {
             ("close_tab", "ctrl+shift+x, f4"),
             ("nope", "alt+z"),
             ("help", "alt+banana"),
-            ("theme", "x"),
-            ("quit", "alt+/"), // taken by find
+            ("theme", "x"),     // taken by swap_panes
+            ("quit", "alt+]"),  // taken by next_tab
+            ("prefix", "w"),    // the prefix itself needs Ctrl or Alt
         ]));
         assert_eq!(
             errors,
             [
                 "[tui_keys] help: unknown key \"banana\" in \"alt+banana\"",
                 "[tui_keys] nope: unknown action",
-                "[tui_keys] theme: \"x\" needs Ctrl or Alt (or use F1-F12)",
-                "[tui_keys] quit: Alt+/ is already bound to find",
+                "[tui_keys] prefix: w needs Ctrl or Alt (or use F1-F12), keeping the default",
+                "[tui_keys] quit: Alt+] is already bound to next_tab",
+                "[tui_keys] theme: x is already bound to swap_panes",
             ]
         );
         assert_eq!(k.match_key(&key(KeyCode::Char('X'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)), Some(Action::CloseTab));
         assert_eq!(k.match_key(&key(KeyCode::F(4), KeyModifiers::NONE)), Some(Action::CloseTab));
         assert_eq!(k.match_key(&key(KeyCode::Char('w'), KeyModifiers::ALT)), None, "the default is replaced");
-        assert_eq!(k.show(Action::Help), "Alt+H", "a bad entry keeps the default");
-        assert_eq!(k.show(Action::Quit), "Alt+Q", "a clashing entry keeps the default");
+        assert_eq!(k.show(Action::Help), "Alt+O ? / Alt+O h", "a bad entry keeps the default");
+        assert_eq!(k.show(Action::Quit), "Alt+O q", "a clashing entry keeps the default");
         // Swapping two actions is fine.
         let (k, errors) = Keymap::new(&map(&[("find", "alt+q"), ("quit", "alt+f")]));
         assert!(errors.is_empty(), "{errors:?}");
@@ -460,23 +501,54 @@ mod tests {
         assert_eq!(k.match_key(&key(KeyCode::Char('?'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::Help));
         assert_eq!(k.match_key(&key(KeyCode::Char('+'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::Theme));
         assert_eq!(k.match_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)), None);
-        assert_eq!(k.show(Action::Quit), "Alt+Q");
+        assert_eq!(k.show(Action::Quit), "Alt+O q");
         assert_eq!(k.show(Action::Snippets), "Ctrl+Alt+C");
         assert_eq!(k.show(Action::CloseTab), "Ctrl+Shift+C", "Shift tells letters apart");
     }
 
-    /// No default binding takes a readline / emacs Alt key.
+    /// Every Alt key that bash's default (emacs-mode) readline binds, from
+    /// `bind -p` in bash 5.2 on Ubuntu 24.04: `\eX` for each X below
+    /// (`\eA`-`\eZ` are do-lowercase-version; `\eO` is left out as the start
+    /// of SS3 key codes), `\e\C-X` for the Ctrl letters, and Alt+←/→
+    /// (`\e[1;3D` / `\e[1;3C`, backward / forward-word).
+    const BASH_META: &str = " !#$&*-./0123456789<=>?@ABCDEFGHIJKLMNPQRSTUVWXYZ\\^_bcdfglnprtuy{~";
+    /// The `\e\C-X` bindings: abort, backward-kill-word, character-search-backward,
+    /// clear-display, dynamic-complete-history, revert-line, shell-backward-word,
+    /// shell-expand-line, shell-forward-word, shell-kill-word,
+    /// shell-transpose-words, yank-nth-arg.
+    const BASH_CTRL_META: &str = "gh]lirbefdty";
+
+    /// No default binding takes a key bash's readline binds; the only
+    /// defaults of their own are the prefix and the tab keys.
     #[test]
     fn defaults_leave_readline_and_emacs_alt_keys_to_the_shell() {
         let k = Keymap::default();
-        let mut keys: Vec<KeyCode> = "bfdulct.y<>\\".chars().map(KeyCode::Char).collect();
-        keys.push(KeyCode::Backspace);
-        for code in keys {
-            assert_eq!(k.match_key(&key(code, KeyModifiers::ALT)), None, "Alt+{code:?}");
+        let shift = |c: char| if c.is_ascii_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE };
+        let mut taken: Vec<KeyEvent> = BASH_META.chars().map(|c| key(KeyCode::Char(c), KeyModifiers::ALT | shift(c))).collect();
+        taken.extend(BASH_CTRL_META.chars().map(|c| key(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::CONTROL)));
+        taken.extend([KeyCode::Backspace, KeyCode::Left, KeyCode::Right].map(|c| key(c, KeyModifiers::ALT)));
+        for ev in taken {
+            assert_eq!(k.match_key(&ev), None, "{:?} {:?} is bash's", ev.modifiers, ev.code);
         }
-        assert_eq!(k.match_key(&key(KeyCode::Char('/'), KeyModifiers::ALT)), Some(Action::Find));
-        assert_eq!(k.match_key(&key(KeyCode::Char('|'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::SplitRight));
-        assert_eq!(k.match_key(&key(KeyCode::Char('\''), KeyModifiers::ALT)), Some(Action::Theme));
+        let own: Vec<Action> = Action::ALL.into_iter().filter(|&a| k.chords(a).iter().any(|c| !c.after_prefix)).collect();
+        assert_eq!(own, [Action::NextTab, Action::PrevTab, Action::Prefix]);
+    }
+    /// The documented `[tui_keys]` block that restores the termax Alt keys loads cleanly.
+    #[test]
+    fn termax_keys_can_be_restored() {
+        let doc = include_str!("../../../docs/CONFIGURATION.md");
+        let block = doc.split("The termax keys").nth(1).and_then(|b| b.split("```toml").nth(1)).and_then(|b| b.split("```").next()).unwrap();
+        // `name = "value"  # comment` lines; the only escape used is `\\`.
+        let pairs: BTreeMap<String, String> = block
+            .lines()
+            .filter_map(|l| l.split_once(" = "))
+            .map(|(k, v)| (k.trim().to_string(), v.split('"').nth(1).unwrap().replace("\\\\", "\\")))
+            .collect();
+        assert_eq!(pairs.len(), Action::ALL.len(), "every action");
+        let (k, errors) = Keymap::new(&pairs);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(k.match_key(&key(KeyCode::Char('o'), KeyModifiers::ALT)), Some(Action::FocusNextPane));
+        assert_eq!(k.match_key(&key(KeyCode::Char('\\'), KeyModifiers::ALT)), Some(Action::SplitRight));
     }
 
     /// Config names are unique and round-trip through `from_config_name`.
