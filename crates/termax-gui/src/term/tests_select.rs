@@ -169,6 +169,7 @@ fn copy_and_paste_through_clipboard() {
 #[test]
 fn wheel_scrolls_and_key_snaps_back() {
     let mut l = Live::new();
+    l.tab.confirm_paste = false; // the multi-line paste is just test setup
     let lines: String = (0..60).map(|i| format!("line{i}\r")).collect();
     l.h.clipboard.text = Some(lines);
     l.frame(vec![], vec![Action::Paste]);
