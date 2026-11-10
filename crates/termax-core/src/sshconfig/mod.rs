@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub mod doc;
 pub mod edit;
+pub mod resolve;
 
 pub(crate) const MAX_INCLUDE_DEPTH: usize = 16;
 

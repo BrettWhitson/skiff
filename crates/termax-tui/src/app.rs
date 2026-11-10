@@ -54,7 +54,7 @@ impl Editor {
     }
 
     fn to_connection(&self) -> Result<Connection, String> {
-        let fields: [String; 9] = std::array::from_fn(|i| self.fields[i].value.clone());
+        let fields: [String; termax_core::config::CONNECTION_FIELDS] = std::array::from_fn(|i| self.fields[i].value.clone());
         Connection::from_fields(&fields)
     }
 }

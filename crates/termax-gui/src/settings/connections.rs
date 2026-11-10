@@ -13,7 +13,7 @@ pub struct Form {
     /// Name of the connection being edited (as saved); `None` for a new
     /// one. Looked up on use: the list can change under an open form.
     pub editing: Option<String>,
-    pub fields: [String; 9],
+    pub fields: [String; termax_core::config::CONNECTION_FIELDS],
     pub dirty: bool,
 }
 

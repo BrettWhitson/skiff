@@ -1,6 +1,11 @@
 //! A unified host list built from `~/.ssh/config` and termax's own connections.
 
+use std::path::PathBuf;
+
 use crate::config::{Config, Connection};
+use crate::sshconfig::edit::ConfigSet;
+pub use crate::sshconfig::resolve::Probe;
+use crate::sshconfig::resolve::{VIA_PROXY, probe_target};
 use crate::sshconfig::{self, SshHost};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,10 +23,14 @@ pub struct HostEntry {
     pub port: Option<u16>,
     pub identity_file: Option<String>,
     pub proxy_jump: Option<String>,
+    pub proxy_command: Option<String>,
     pub remote_dir: Option<String>,
     pub tags: Vec<String>,
+    pub hidden: bool,
     pub source: Source,
     pub source_label: String,
+    /// The ssh config file that first defines this host.
+    pub source_file: Option<PathBuf>,
     /// `ssh` options placed before the destination.
     options: Vec<String>,
     destination: String,
@@ -36,10 +45,13 @@ impl HostEntry {
             port: h.port,
             identity_file: h.identity_file.clone(),
             proxy_jump: h.proxy_jump.clone(),
-            remote_dir: None,
-            tags: vec![],
+            proxy_command: h.proxy_command.clone(),
+            remote_dir: h.remote_dir.clone(),
+            tags: h.tags.clone(),
+            hidden: h.hidden,
             source: Source::SshConfig,
             source_label: h.source.display().to_string(),
+            source_file: Some(h.source.clone()),
             // OpenSSH resolves everything else from its own config.
             options: vec![],
             destination: h.alias.clone(),
@@ -60,6 +72,9 @@ impl HostEntry {
         if let Some(j) = c.proxy_jump.as_deref().filter(|s| !s.is_empty()) {
             options.extend(["-J".into(), j.to_string()]);
         }
+        if let Some(pc) = c.proxy_command.as_deref().filter(|s| !s.is_empty()) {
+            options.extend(["-o".into(), format!("ProxyCommand={pc}")]);
+        }
         options.extend(c.extra_args.iter().cloned());
         Self {
             name: c.name.clone(),
@@ -68,10 +83,13 @@ impl HostEntry {
             port: c.port,
             identity_file: c.identity_file.clone(),
             proxy_jump: c.proxy_jump.clone(),
+            proxy_command: c.proxy_command.clone(),
             remote_dir: c.remote_dir.clone(),
             tags: c.tags.clone(),
+            hidden: c.hidden,
             source: Source::Custom(idx),
             source_label: "termax config".into(),
+            source_file: None,
             options,
             destination: c.host.clone(),
         }
@@ -105,6 +123,29 @@ impl HostEntry {
         }
     }
 
+    /// Where a status check connects. `set` is the loaded ssh config, which
+    /// also applies to custom connections (ssh reads it for every host).
+    pub fn probe(&self, set: Option<&ConfigSet>) -> Probe {
+        let proxy_opt = |a: &String| {
+            let a = a.to_ascii_lowercase();
+            a == "-j" || a.contains("proxyjump") || a.contains("proxycommand")
+        };
+        let has = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
+        if has(&self.proxy_jump) || has(&self.proxy_command) || self.options.iter().any(proxy_opt) {
+            return Probe::Unknown(VIA_PROXY.into());
+        }
+        let dest = self.destination.rsplit('@').next().unwrap_or(&self.destination);
+        let probe = match set {
+            Some(set) => probe_target(set, dest),
+            None => Probe::Direct { host: self.hostname.clone(), port: self.port.unwrap_or(22) },
+        };
+        match (probe, &self.source) {
+            // `-p` on the command line beats the config.
+            (Probe::Direct { host, port }, Source::Custom(_)) => Probe::Direct { host, port: self.port.unwrap_or(port) },
+            (p, _) => p,
+        }
+    }
+
     /// `user@host:port` for display.
     pub fn target(&self) -> String {
         let mut s = String::new();
@@ -131,24 +172,29 @@ impl HostEntry {
     }
 }
 
+/// Indices of the hosts a list shows.
+pub fn visible(hosts: &[HostEntry], show_hidden: bool) -> Vec<usize> {
+    (0..hosts.len()).filter(|&i| show_hidden || !hosts[i].hidden).collect()
+}
+
+/// The OpenSSH config file in use, if loading it is on.
+pub fn ssh_config_path(cfg: &Config) -> Option<PathBuf> {
+    if !cfg.settings.load_ssh_config {
+        return None;
+    }
+    cfg.settings.ssh_config_path.as_deref().map(sshconfig::expand_tilde).or_else(sshconfig::default_path)
+}
+
 /// Builds the combined list: custom connections first, then OpenSSH hosts.
 /// Returns the list plus a warning if the OpenSSH config couldn't be read.
 pub fn collect(cfg: &Config) -> (Vec<HostEntry>, Option<String>) {
     let mut hosts: Vec<HostEntry> =
         cfg.connections.iter().enumerate().map(|(i, c)| HostEntry::from_custom(i, c)).collect();
     let mut warning = None;
-    if cfg.settings.load_ssh_config {
-        let path = cfg
-            .settings
-            .ssh_config_path
-            .as_deref()
-            .map(sshconfig::expand_tilde)
-            .or_else(sshconfig::default_path);
-        if let Some(path) = path {
-            match sshconfig::parse_file(&path) {
-                Ok(list) => hosts.extend(list.iter().map(HostEntry::from_ssh)),
-                Err(e) => warning = Some(format!("could not read {}: {e}", path.display())),
-            }
+    if let Some(path) = ssh_config_path(cfg) {
+        match sshconfig::parse_file(&path) {
+            Ok(list) => hosts.extend(list.iter().map(HostEntry::from_ssh)),
+            Err(e) => warning = Some(format!("could not read {}: {e}", path.display())),
         }
     }
     (hosts, warning)
@@ -226,6 +272,28 @@ mod tests {
         let h = HostEntry::from_ssh(&SshHost { alias: "web".into(), hostname: Some("1.2.3.4".into()), ..Default::default() });
         assert_eq!(h.shell_args(), ["web"]);
         assert_eq!(h.sftp_args(false), ["-s", "web", "sftp"]);
+    }
+
+    #[test]
+    fn custom_proxy_command_arg_and_probe() {
+        let c = Connection { name: "p".into(), host: "10.0.0.9".into(), proxy_command: Some("nc %h %p".into()), ..Default::default() };
+        let h = HostEntry::from_custom(0, &c);
+        assert_eq!(h.shell_args(), ["-o", "ProxyCommand=nc %h %p", "10.0.0.9"]);
+        assert!(matches!(h.probe(None), Probe::Unknown(_)));
+        let c = Connection { name: "d".into(), host: "10.0.0.9".into(), port: Some(2222), ..Default::default() };
+        assert_eq!(HostEntry::from_custom(0, &c).probe(None), Probe::Direct { host: "10.0.0.9".into(), port: 2222 });
+        let c = Connection { extra_args: vec!["-J".into(), "b".into()], ..c };
+        assert!(matches!(HostEntry::from_custom(0, &c).probe(None), Probe::Unknown(_)));
+    }
+
+    #[test]
+    fn hidden_filtered_unless_shown() {
+        let a = custom();
+        let mut b = custom();
+        b.hidden = true;
+        let hosts = [a, b];
+        assert_eq!(visible(&hosts, false), [0]);
+        assert_eq!(visible(&hosts, true), [0, 1]);
     }
 
     #[test]
