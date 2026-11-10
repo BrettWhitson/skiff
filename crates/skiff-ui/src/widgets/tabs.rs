@@ -21,6 +21,10 @@ pub struct TabsResponse {
     /// A tab was dragged from `.0` to `.1`; the caller reorders its tabs.
     pub moved: Option<(usize, usize)>,
     pub plus_clicked: bool,
+    /// The dragged tab left the strip (reported once per drag): the caller
+    /// may start a drag-and-drop with it. The tab that was active before
+    /// the press is active again, so the content below is a drop target.
+    pub dragged_out: Option<usize>,
     /// Where each tab was drawn.
     pub tab_rects: Vec<Rect>,
 }
@@ -28,6 +32,23 @@ pub struct TabsResponse {
 #[derive(Debug, Clone, Copy, Default)]
 struct TabDrag {
     dragging: Option<usize>,
+    /// The tab active before the press.
+    before: Option<usize>,
+    /// The drag has left the strip once.
+    out: bool,
+}
+
+/// Index `b` after the item at `from` moved to `to`.
+fn index_after_move(b: usize, from: usize, to: usize) -> usize {
+    if b == from {
+        to
+    } else if from < b && to >= b {
+        b - 1
+    } else if from > b && to <= b {
+        b + 1
+    } else {
+        b
+    }
 }
 
 fn index_at(rects: &[Rect], x: i32) -> usize {
@@ -97,6 +118,15 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
     if n > 0 {
         if sr.pressed {
             match drag.dragging {
+                Some(i) if !pressed_now && (mouse.y < rect.y || mouse.y >= rect.bottom()) => {
+                    if !drag.out {
+                        drag.out = true;
+                        out.dragged_out = Some(i);
+                        if let Some(b) = drag.before {
+                            *active = b;
+                        }
+                    }
+                }
                 Some(i) if !pressed_now => {
                     let target = index_at(&out.tab_rects, mouse.x);
                     if target != i {
@@ -104,20 +134,21 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
                         if *active == i {
                             *active = target;
                         }
+                        drag.before = drag.before.map(|b| index_after_move(b, i, target));
                         drag.dragging = Some(target);
                     }
                 }
                 _ => {
                     let i = index_at(&out.tab_rects, mouse.x);
+                    drag = TabDrag { dragging: Some(i), before: Some(*active), out: false };
                     *active = i;
-                    drag.dragging = Some(i);
                 }
             }
         } else {
             if sr.clicked {
                 *active = index_at(&out.tab_rects, mouse.x);
             }
-            drag.dragging = None;
+            drag = TabDrag::default();
         }
     }
     *ui.memory::<TabDrag>(id) = drag;

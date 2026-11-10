@@ -69,7 +69,8 @@ every key.
 
 **GUI.** Run `skiff-gui`. Pick a host in the sidebar (right-click for file
 transfer, forwards and editing), or press `Ctrl+Shift+K` (`Cmd+K`) for the
-quick switcher. `Ctrl+Shift+,` opens Settings.
+quick switcher. `Ctrl+Shift+,` (or the gear at the right end of the tab
+strip) opens Settings.
 
 **Command line.**
 
@@ -140,8 +141,19 @@ Every key, the `[gui]` options, custom themes, key remapping (`[keys]`,
 
 - **Find** searches scrollback and screen as you type; case-insensitive
   unless the query has a capital. Matches stay on their text as output scrolls.
-- **Split panes**: each pane is a second session to the same host. The TUI
-  allows two panes per tab; the GUI nests splits.
+- **Split panes**: each pane is its own session to the same host, and
+  sessions keep running through every move.
+  - *TUI*: two panes per tab. `Alt+Shift+arrows` move the divider between
+    25 / 33 / 50 / 67 / 75%, `Alt+=` equalizes, `Alt+Shift+X` swaps. With
+    `tui_mouse = "always"` drag the border; it snaps to those shares (hold
+    `Alt` to place it freely). A pane keeps at least 10 columns by 3 rows.
+  - *GUI*: split any pane as often as you like. Drag a divider (it snaps to
+    the same shares, `Alt` places it freely, double-click equalizes). Drag a
+    pane by its grip (the dots at its top centre) or with `Alt`+drag onto
+    another pane: the left, right, top or bottom half splits that pane there,
+    the centre swaps the two, and the tab strip gives it a tab of its own.
+    Drag a terminal tab onto a pane's edge to join it into that tab. `Esc`
+    cancels a drag.
 - **Paste warning**: text with a line break pasted into a shell without
   bracketed paste would run each line, so Skiff asks first
   (`confirm_multiline_paste = false` turns it off).
@@ -189,7 +201,7 @@ General → Clear history forgets it.
 | Everywhere | `Alt+1`…`Alt+9` | Switch tab |
 | | `Alt+←` / `Alt+→` (or `Alt+[` / `Alt+]`) | Previous / next tab |
 | | `Alt+W` | Close tab (in a split tab: the focused pane) |
-| | `Alt+T` / `Alt+H` / `Alt+Q` | Theme picker / help / quit |
+| | `Alt+'` / `Alt+H` / `Alt+Q` | Theme picker / help / quit |
 | Hosts | `Enter` / `s` | Open terminal / SFTP browser |
 | | `/` | Fuzzy filter (name, host, user, tags) |
 | | `n` / `e` / `d` | New / edit / delete host (ssh config hosts too) |
@@ -202,10 +214,13 @@ General → Clear history forgets it.
 | | `Space` | Toggle "Save to" / Hidden |
 | | `Enter` in Other options | Add a line |
 | Terminal | `Shift+PgUp` / `Shift+PgDn` | Scrollback |
-| | `Alt+F` | Find (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
+| | `Alt+/` | Find (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
 | | `Alt+S` | Snippets (`Enter` sends) |
-| | `Alt+\` / `Alt+-` | Split side by side / one above the other |
+| | `Alt+\|` / `Alt+-` | Split side by side / one above the other |
 | | `Alt+O` | Focus the other pane |
+| | `Alt+Shift+X` | Swap the two panes |
+| | `Alt+Shift+←` `→` `↑` `↓` | Move the divider to the next of 25 / 33 / 50 / 67 / 75% |
+| | `Alt+=` | Make the panes equal |
 | | `Enter` after disconnect | Reconnect |
 | SFTP | `Tab` / `←` `→` | Switch pane |
 | | `Enter` / `Backspace` | Open directory / go up |
@@ -219,8 +234,10 @@ General → Clear history forgets it.
 | File exists | `o` / `s` / `a` / `S` | Overwrite / skip / overwrite all / skip all |
 | | `c` or `Esc` | Cancel the transfer |
 
-The `Alt+` shortcuts can be remapped in `[tui_keys]`; `Alt+Shift+` chords
-always reach the shell.
+The global shortcuts can be remapped in `[tui_keys]`; every other key goes to
+the shell. `Alt+F`, `Alt+T` and `Alt+\` used to be skiff's and now reach the
+shell (readline word movement and editing); see
+[Coming from termax](docs/CONFIGURATION.md#coming-from-termax) to put them back.
 
 ### GUI
 
@@ -238,6 +255,9 @@ always reach the shell.
 | Split pane right / down | `Ctrl+Shift+D` / `Ctrl+Shift+E` | `Cmd+D` / `Cmd+Shift+D` |
 | Next pane | `Ctrl+Shift+O` (or `F6`) | `Cmd+]` (or `F6`) |
 | Close pane | `Ctrl+Shift+X` | `Cmd+Alt+W` |
+| Swap focused pane with its neighbour | `Ctrl+Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+Shift+←` `→` `↑` `↓` |
+| Move the divider next to the focused pane (next snap point) | `Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+←` `→` `↑` `↓` |
+| Equalize panes | `Alt+Shift+=` | `Cmd+Ctrl+=` |
 
 \* Plain `Ctrl`+letter belongs to the shell inside a terminal, so `Ctrl+K`
 opens the switcher only outside terminals. All of these can be changed in
@@ -250,7 +270,7 @@ Keyboard navigation (no mouse needed):
 | `F6` / `Shift+F6` | Next / previous area: hosts, tabs, content; each split pane, then the pane dividers |
 | `Tab` / `Shift+Tab` | Next / previous control within the area |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move in lists; `←` `→` switch tabs on the tab strip |
-| Arrow keys on a pane divider | Move the divider (5% per press) |
+| Arrow keys on a pane divider | Move the divider to the next snap point (25 / 33 / 50 / 67 / 75%, then 5% per press) |
 | `Enter` / `Space` | Open the selected row; press buttons and checkboxes |
 | `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
 | `Delete` | Delete the selected host (asks first) |

@@ -298,7 +298,7 @@ fn tui_search_scrolls_and_counts() {
         s.write(text.as_bytes());
     }
     wait_screen(&t, "row59");
-    alt(&mut t, 'f');
+    alt(&mut t, '/');
     t.typed("needle");
     t.key(KeyCode::Enter);
     assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"));
@@ -392,7 +392,7 @@ fn tui_search_highlights_and_follows_new_output() {
     wait_screen(&t, "needle\n");
     t.app.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT | KeyModifiers::SHIFT)));
     assert!(t.app.modal.is_none(), "Alt+Shift+F goes to the shell");
-    alt(&mut t, 'f');
+    alt(&mut t, '/');
     t.app.handle_event(Event::Paste("needle".into()));
     assert_eq!(t.app.search_status().as_deref(), Some("match 1/1"), "a paste goes into the query");
     let term = draw(&mut t);
@@ -755,11 +755,11 @@ fn wait_pane(t: &T, focused: bool, s: &str) {
 fn split_panes_size_and_route_input() {
     let mut t = T::new("");
     local_shell(&mut t);
-    alt(&mut t, '\\');
+    alt(&mut t, '|');
     let sp = t.app.tabs[t.app.active].split.as_ref().expect("split");
     assert!(!sp.focus_first, "the new (right) pane has the focus");
     draw(&mut t); // 80x26: the body is 80x24 at row 1
-    let (left, right) = crate::ui::split_areas(Rect::new(0, 1, 80, 24), SplitDir::Right);
+    let (left, right) = crate::ui::split_areas(Rect::new(0, 1, 80, 24), SplitDir::Right, 0.5);
     assert_eq!((left.width + right.width, left.height), (80, 24));
     let size = |s: &TerminalSession| s.parser.lock().unwrap().screen().size();
     let (f, o) = panes(&t);
@@ -811,4 +811,71 @@ fn waiting_tab_past_nine_has_no_shortcut_hint() {
     let term = draw(&mut t);
     assert!(find_text(&term, "switch to tab 10").is_some());
     assert!(find_text(&term, "(Alt+9)").is_none(), "Alt+9 opens tab 9, not this one");
+}
+
+#[test]
+fn split_divider_math() {
+    use crate::ui::{divider_ratio, on_divider, split_areas};
+    let area = Rect::new(0, 1, 80, 24);
+    let (a, b) = split_areas(area, SplitDir::Right, 0.25);
+    assert_eq!((a.width, b.x), (20, 20));
+    // Each pane keeps 10 columns (plus its border).
+    assert_eq!(split_areas(area, SplitDir::Right, 0.05).0.width, 12);
+    assert_eq!(split_areas(area, SplitDir::Down, 0.95).1.height, 5);
+    // The border columns on both sides of the boundary are the divider.
+    assert!(on_divider(area, SplitDir::Right, 0.25, 19, 5) && on_divider(area, SplitDir::Right, 0.25, 20, 5));
+    assert!(!on_divider(area, SplitDir::Right, 0.25, 21, 5) && !on_divider(area, SplitDir::Right, 0.25, 19, 0));
+    // A drag snaps within a cell of a snap point, unless snapping is off.
+    assert_eq!(divider_ratio(area, SplitDir::Right, 26, 5, true), 1.0 / 3.0);
+    assert_eq!(divider_ratio(area, SplitDir::Right, 26, 5, false), 27.0 / 80.0);
+    assert_eq!(divider_ratio(area, SplitDir::Right, 49, 5, true), 50.0 / 80.0);
+}
+
+#[test]
+fn split_panes_swap_resize_equalize_and_drag() {
+    use crossterm::event::{MouseButton as B, MouseEventKind as K};
+    let mut t = T::new("");
+    t.app.cfg.settings.tui_mouse = skiff_core::config::TuiMouse::Always;
+    local_shell(&mut t);
+    alt(&mut t, '|');
+    draw(&mut t);
+    let split = |t: &T| {
+        let sp = t.app.tabs[t.app.active].split.as_ref().unwrap();
+        (sp.focus_first, sp.ratio)
+    };
+    let key = |t: &mut T, c: KeyCode, m: KeyModifiers| t.app.handle_event(Event::Key(KeyEvent::new(c, m)));
+    let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+    assert_eq!(split(&t), (false, 0.5));
+    alt(&mut t, 'x');
+    assert_eq!(split(&t), (false, 0.5), "Alt+X is the shell's (M-x)");
+    key(&mut t, KeyCode::Char('X'), alt_shift);
+    assert_eq!(split(&t), (true, 0.5), "swapped: the focused pane is now on the left");
+    key(&mut t, KeyCode::Right, alt_shift);
+    assert_eq!(split(&t).1, 2.0 / 3.0, "the next snap point");
+    key(&mut t, KeyCode::Up, alt_shift);
+    assert_eq!(split(&t).1, 2.0 / 3.0, "a side-by-side split has no up");
+    alt(&mut t, '=');
+    assert_eq!(split(&t).1, 0.5);
+
+    // Drag the divider (column 39/40 of 80) to near a quarter: it snaps.
+    draw(&mut t);
+    mouse(&mut t, K::Down(B::Left), 40, 10);
+    mouse(&mut t, K::Drag(B::Left), 20, 10);
+    mouse(&mut t, K::Up(B::Left), 20, 10);
+    assert_eq!(split(&t), (true, 0.25), "focus unchanged by the drag");
+    draw(&mut t);
+    let size = |s: &TerminalSession| s.parser.lock().unwrap().screen().size();
+    assert_eq!(size(panes(&t).0).1, 18, "the left pane is 20 columns with its border");
+}
+
+#[test]
+fn readline_alt_keys_reach_the_shell() {
+    let mut t = T::new("");
+    local_shell(&mut t);
+    for c in ['f', 't', 'b', 'd', '.', '\\'] {
+        alt(&mut t, c);
+        assert!(t.app.modal.is_none() && t.app.tabs[t.app.active].split.is_none(), "Alt+{c} is the shell's");
+    }
+    alt(&mut t, '/');
+    assert!(matches!(t.app.modal, Some(Modal::Search { .. })), "Alt+/ finds");
 }

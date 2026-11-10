@@ -85,7 +85,7 @@ fn keys_encode_to_pty() {
     assert_eq!(r(vec![kd(Key::F(5), shift, None)], false), b"\x1b[15;2~".to_vec());
     assert_eq!(r(vec![kd(Key::Home, CTRL, None)], false), b"\x1b[1;5H".to_vec());
     let alt_shift = Modifiers { alt: true, shift: true, ..Modifiers::NONE };
-    assert_eq!(r(vec![kd(Key::Up, alt_shift, None)], false), b"\x1b[1;4A".to_vec(), "Alt keeps Shift on non-text keys");
+    assert_eq!(r(vec![kd(Key::Home, alt_shift, None)], false), b"\x1b[1;4H".to_vec(), "Alt keeps Shift on non-text keys");
     assert_eq!(r(vec![kd(Key::Char('x'), alt_shift, Some("X")), Event::Text("X".into())], false), b"\x1bX".to_vec());
 }
 

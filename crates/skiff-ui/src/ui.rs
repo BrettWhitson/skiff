@@ -906,6 +906,12 @@ impl<'a> Ui<'a> {
         self.st.drag.is_some()
     }
 
+    /// The payload of the drag-and-drop in progress, when it is a `T`
+    /// (targets use it to decide whether, and how, to show a drop preview).
+    pub fn drag_payload<T: 'static>(&self) -> Option<&T> {
+        self.st.drag.as_ref().and_then(|d| d.payload.downcast_ref::<T>())
+    }
+
     /// Declares `rect` a drop target for payloads of type `T`.
     pub fn drop_target<T: 'static>(&mut self, rect: Rect) -> crate::dnd::DropResult<T> {
         let mut out = crate::dnd::DropResult::default();

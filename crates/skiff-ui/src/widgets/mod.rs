@@ -14,6 +14,7 @@ mod select_list;
 mod splitter;
 mod tabs;
 mod text_input;
+mod tooltip;
 
 pub use button::{button, button_backgrounds};
 pub use checkbox::checkbox;
@@ -27,6 +28,7 @@ pub use select_list::{SelectListResponse, Selection, select_list, select_list_na
 pub use splitter::splitter_h;
 pub use tabs::{TabTitle, TabsResponse, tabs};
 pub use text_input::{TextInputOpts, TextInputResponse, text_input};
+pub use tooltip::tooltip;
 
 #[cfg(test)]
 mod tests;

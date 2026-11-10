@@ -61,6 +61,7 @@ exists is overwritten. This is skipped when `SKIFF_CONFIG` or
 | `TERMAX_CONFIG` | `SKIFF_CONFIG` (`TERMAX_CONFIG` still works in this release) |
 | `# termax:` comments in ssh config | `# skiff:` (old ones are read, and rewritten when the host is edited) |
 | `*.termax-part` leftovers | `*.skiff-part` (both are skipped when copying folders) |
+| TUI `Alt+F` find, `Alt+T` theme, `Alt+\` split side by side | `Alt+/`, `Alt+'`, `Alt+\|`. `Alt+F`, `Alt+T` and `Alt+\` now reach the shell (readline / emacs forward-word, transpose-words, delete-horizontal-space). Put the old keys back with `find = "alt+f"`, `theme = "alt+t"`, `split_right = "alt+\\"` in `[tui_keys]`. |
 
 ## `[settings]`
 
@@ -285,17 +286,26 @@ chords and flags ones shared by two actions.
 | `split_down` | `ctrl+shift+e` | `cmd+shift+d` |
 | `focus_next_pane` | `ctrl+shift+o` | `cmd+]` |
 | `close_pane` | `ctrl+shift+x` | `cmd+alt+w` |
+| `move_pane_left` / `_right` / `_up` / `_down` | `ctrl+alt+shift+left` / `right` / `up` / `down` | `cmd+ctrl+shift+left` / … |
+| `resize_pane_left` / `_right` / `_up` / `_down` | `alt+shift+left` / `right` / `up` / `down` | `cmd+ctrl+left` / … |
+| `equalize_panes` | `alt+shift+=` | `cmd+ctrl+=` |
+
+`move_pane_*` swaps the focused pane with its neighbour in that direction;
+`resize_pane_*` moves the divider next to the focused pane to the next snap
+point (25 / 33 / 50 / 67 / 75%); `equalize_panes` shares the space equally.
+An empty value unbinds an action, so its chord reaches the shell.
 
 ```toml
 [keys]
 close_tab = "ctrl+shift+q"
 quick_switcher = "ctrl+shift+p, f1"
+resize_pane_up = ""   # unbound: Alt+Shift+Up goes to the shell
 ```
 
 ## `[tui_keys]` (TUI shortcuts)
 
 Same idea for the TUI's global shortcuts. A chord is modifiers (`ctrl`,
-`alt`, `shift`) and a key joined by `+`: a character, `left`, `right`, `up`,
+`alt` / `meta` / `option`, `shift`) and a key joined by `+`: a character, `left`, `right`, `up`,
 `down`, `home`, `end`, `pageup`, `pagedown`, `tab`, `enter`, `esc`, `space`,
 `backspace`, `delete`, `insert`, `plus`, `minus` or `f1`–`f12`.
 
@@ -304,6 +314,7 @@ Same idea for the TUI's global shortcuts. A chord is modifiers (`ctrl`,
   and are refused (`ctrl+shift+c` and the like are fine).
 - For symbols such as `alt+?` or `alt++`, `Shift` is ignored, since many
   layouts need it to type them. A letter shortcut also works with Caps Lock on.
+- An empty value unbinds the action.
 - An unknown action, a chord that doesn't parse, or a chord already bound to
   another action is reported at start (and at the top of the help); that
   entry keeps its default. The help (`Alt+H`) and status line always show
@@ -314,13 +325,16 @@ Same idea for the TUI's global shortcuts. A chord is modifiers (`ctrl`,
 | `tab_1` … `tab_9` | `alt+1` … `alt+9` |
 | `next_tab` / `prev_tab` | `alt+right, alt+]` / `alt+left, alt+[` |
 | `close_tab` | `alt+w` (in a split tab: the focused pane) |
-| `theme` | `alt+t` |
+| `theme` | `alt+'` |
 | `help` | `alt+h` |
 | `quit` | `alt+q` |
-| `find` | `alt+f` (terminal tabs) |
+| `find` | `alt+/` (terminal tabs) |
 | `snippets` | `alt+s` (terminal tabs) |
-| `split_right` / `split_down` | `alt+\` / `alt+-` (terminal tabs) |
+| `split_right` / `split_down` | `alt+\|` / `alt+-` (terminal tabs) |
 | `focus_next_pane` | `alt+o` (terminal tabs) |
+| `swap_panes` | `alt+shift+x` (split tabs) |
+| `resize_pane_left` / `_right` / `_up` / `_down` | `alt+shift+left` / `right` / `up` / `down` (split tabs; an arrow across the split goes to the shell) |
+| `equalize_panes` | `alt+=` (split tabs) |
 
 ```toml
 [tui_keys]

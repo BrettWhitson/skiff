@@ -19,6 +19,7 @@ use crate::keys::Action;
 use crate::sftp_tab::{Pane, SftpTab, Side, Status, TransferState, human_size};
 use crate::tui_theme::Theme;
 use skiff_core::askpass::AskKind;
+use skiff_core::panes;
 use skiff_core::status::Status as HostStatus;
 use skiff_core::terminal::TerminalSession;
 
@@ -245,13 +246,45 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// The two pane areas of a split terminal: (first, second) = (left, right)
 /// or (top, bottom).
-pub fn split_areas(area: Rect, dir: SplitDir) -> (Rect, Rect) {
-    let halves = [Constraint::Percentage(50), Constraint::Percentage(50)];
+/// The first pane takes `ratio` of `area`, but each pane keeps at least
+/// `MIN_COLS` x `MIN_ROWS` cells inside its border where there is room.
+pub fn split_areas(area: Rect, dir: SplitDir, ratio: f32) -> (Rect, Rect) {
+    let (total, min) = match dir {
+        SplitDir::Right => (area.width, panes::MIN_COLS + 2),
+        SplitDir::Down => (area.height, panes::MIN_ROWS + 2),
+    };
+    let first = (total as f32 * ratio).round() as u16;
+    let first = if total >= 2 * min { first.clamp(min, total - min) } else { total / 2 };
+    let sizes = [Constraint::Length(first), Constraint::Fill(1)];
     let [a, b] = match dir {
-        SplitDir::Right => Layout::horizontal(halves).areas(area),
-        SplitDir::Down => Layout::vertical(halves).areas(area),
+        SplitDir::Right => Layout::horizontal(sizes).areas(area),
+        SplitDir::Down => Layout::vertical(sizes).areas(area),
     };
     (a, b)
+}
+
+/// The cell is on the border between the panes (either side's edge).
+pub fn on_divider(area: Rect, dir: SplitDir, ratio: f32, col: u16, row: u16) -> bool {
+    if !area.contains(ratatui::layout::Position::new(col, row)) {
+        return false;
+    }
+    let (a, b) = split_areas(area, dir, ratio);
+    match dir {
+        SplitDir::Right => col + 1 == a.right() || col == b.x,
+        SplitDir::Down => row + 1 == a.bottom() || row == b.y,
+    }
+}
+
+/// The share that puts the first pane's edge at the pointer, snapped to
+/// the nearest snap point within a cell when `snapping`.
+pub fn divider_ratio(area: Rect, dir: SplitDir, col: u16, row: u16, snapping: bool) -> f32 {
+    let (pos, start, total) = match dir {
+        SplitDir::Right => (col, area.x, area.width),
+        SplitDir::Down => (row, area.y, area.height),
+    };
+    let r = (pos.saturating_sub(start) + 1) as f32 / total.max(1) as f32;
+    let r = if snapping { panes::snap(r, total as i32, 1).unwrap_or(r) } else { r };
+    r.clamp(panes::MIN_RATIO, 1.0 - panes::MIN_RATIO)
 }
 
 /// Draws one terminal pane (sized to fit `area`); returns its content area.
@@ -286,10 +319,11 @@ fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
     let active = app.active;
     let tab = &mut app.tabs[active];
     let title_text = tab.title.clone();
+    app.split_area = tab.split.as_ref().map(|_| area);
     let (area, other) = match &tab.split {
         None => (area, None),
         Some(sp) => {
-            let (a, b) = split_areas(area, sp.dir);
+            let (a, b) = split_areas(area, sp.dir, sp.ratio);
             if sp.focus_first { (a, Some(b)) } else { (b, Some(a)) }
         }
     };
@@ -574,6 +608,12 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 a(Action::SplitRight),
                 a(Action::SplitDown),
                 a(Action::FocusNextPane),
+                a(Action::SwapPanes),
+                a(Action::ResizePaneLeft),
+                a(Action::ResizePaneRight),
+                a(Action::ResizePaneUp),
+                a(Action::ResizePaneDown),
+                a(Action::EqualizePanes),
                 k("Enter (when closed)", "reconnect"),
                 h("File transfer"),
                 k("Tab / ← →", "switch pane"),

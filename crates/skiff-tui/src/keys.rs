@@ -24,10 +24,19 @@ pub enum Action {
     /// Split the terminal tab one above the other.
     SplitDown,
     FocusNextPane,
+    /// Swap the two panes of a split.
+    SwapPanes,
+    /// Move the divider of a split to the next snap point that way.
+    ResizePaneLeft,
+    ResizePaneRight,
+    ResizePaneUp,
+    ResizePaneDown,
+    /// Give the two panes of a split the same size.
+    EqualizePanes,
 }
 
 impl Action {
-    pub const ALL: [Action; 20] = [
+    pub const ALL: [Action; 26] = [
         Action::Tab(1),
         Action::Tab(2),
         Action::Tab(3),
@@ -48,6 +57,12 @@ impl Action {
         Action::SplitRight,
         Action::SplitDown,
         Action::FocusNextPane,
+        Action::SwapPanes,
+        Action::ResizePaneLeft,
+        Action::ResizePaneRight,
+        Action::ResizePaneUp,
+        Action::ResizePaneDown,
+        Action::EqualizePanes,
     ];
 
     /// The name used in the `[tui_keys]` table.
@@ -65,6 +80,12 @@ impl Action {
             Action::SplitRight => "split_right".into(),
             Action::SplitDown => "split_down".into(),
             Action::FocusNextPane => "focus_next_pane".into(),
+            Action::SwapPanes => "swap_panes".into(),
+            Action::ResizePaneLeft => "resize_pane_left".into(),
+            Action::ResizePaneRight => "resize_pane_right".into(),
+            Action::ResizePaneUp => "resize_pane_up".into(),
+            Action::ResizePaneDown => "resize_pane_down".into(),
+            Action::EqualizePanes => "equalize_panes".into(),
         }
     }
 
@@ -86,6 +107,12 @@ impl Action {
             Action::SplitRight => "split terminal side by side",
             Action::SplitDown => "split terminal top / bottom",
             Action::FocusNextPane => "other pane of a split",
+            Action::SwapPanes => "swap the panes of a split",
+            Action::ResizePaneLeft => "move a side-by-side divider left (25/33/50/67/75%)",
+            Action::ResizePaneRight => "move a side-by-side divider right",
+            Action::ResizePaneUp => "move a top / bottom divider up",
+            Action::ResizePaneDown => "move a top / bottom divider down",
+            Action::EqualizePanes => "split panes the same size",
         }
     }
 
@@ -99,14 +126,20 @@ impl Action {
             Action::NextTab => &["alt+right", "alt+]"],
             Action::PrevTab => &["alt+left", "alt+["],
             Action::CloseTab => &["alt+w"],
-            Action::Theme => &["alt+t"],
+            Action::Theme => &["alt+'"],
             Action::Help => &["alt+h"],
             Action::Quit => &["alt+q"],
-            Action::Find => &["alt+f"],
+            Action::Find => &["alt+/"],
             Action::Snippets => &["alt+s"],
-            Action::SplitRight => &["alt+\\"],
+            Action::SplitRight => &["alt+|"],
             Action::SplitDown => &["alt+-"],
             Action::FocusNextPane => &["alt+o"],
+            Action::SwapPanes => &["alt+shift+x"],
+            Action::ResizePaneLeft => &["alt+shift+left"],
+            Action::ResizePaneRight => &["alt+shift+right"],
+            Action::ResizePaneUp => &["alt+shift+up"],
+            Action::ResizePaneDown => &["alt+shift+down"],
+            Action::EqualizePanes => &["alt+="],
         }
     }
 }
@@ -353,7 +386,7 @@ mod tests {
             ("nope", "alt+z"),
             ("help", "alt+banana"),
             ("theme", "x"),
-            ("quit", "alt+f"), // taken by find
+            ("quit", "alt+/"), // taken by find
         ]));
         assert_eq!(
             errors,
@@ -361,7 +394,7 @@ mod tests {
                 "[tui_keys] help: unknown key \"banana\" in \"alt+banana\"",
                 "[tui_keys] nope: unknown action",
                 "[tui_keys] theme: \"x\" needs Ctrl or Alt (or use F1-F12)",
-                "[tui_keys] quit: Alt+F is already bound to find",
+                "[tui_keys] quit: Alt+/ is already bound to find",
             ]
         );
         assert_eq!(k.match_key(&key(KeyCode::Char('X'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)), Some(Action::CloseTab));
@@ -399,6 +432,19 @@ mod tests {
         assert_eq!(k.show(Action::Quit), "Alt+Q");
         assert_eq!(k.show(Action::Snippets), "Ctrl+Alt+C");
         assert_eq!(k.show(Action::CloseTab), "Ctrl+Shift+C", "Shift tells letters apart");
+    }
+
+    #[test]
+    fn defaults_leave_readline_and_emacs_alt_keys_to_the_shell() {
+        let k = Keymap::default();
+        let mut keys: Vec<KeyCode> = "bfdulct.y<>\\".chars().map(KeyCode::Char).collect();
+        keys.push(KeyCode::Backspace);
+        for code in keys {
+            assert_eq!(k.match_key(&key(code, KeyModifiers::ALT)), None, "Alt+{code:?}");
+        }
+        assert_eq!(k.match_key(&key(KeyCode::Char('/'), KeyModifiers::ALT)), Some(Action::Find));
+        assert_eq!(k.match_key(&key(KeyCode::Char('|'), KeyModifiers::ALT | KeyModifiers::SHIFT)), Some(Action::SplitRight));
+        assert_eq!(k.match_key(&key(KeyCode::Char('\''), KeyModifiers::ALT)), Some(Action::Theme));
     }
 
     #[test]

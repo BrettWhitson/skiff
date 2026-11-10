@@ -23,6 +23,7 @@ use skiff_core::forward::Forward;
 use skiff_core::history::{self, ConnKind, History};
 use skiff_core::hostform::{self, Dest, HostForm, Saved};
 use skiff_core::hosts::{self, HostEntry, Source};
+use skiff_core::panes;
 use skiff_core::sshconfig;
 use skiff_core::sshconfig::edit::{ConfigSet, backups_dir, display_path};
 use skiff_core::state::UiState;
@@ -99,6 +100,8 @@ pub struct Split {
     pub dir: SplitDir,
     /// The focused pane is the first one (left or top).
     pub focus_first: bool,
+    /// The first (left or top) pane's share of the tab.
+    pub ratio: f32,
 }
 
 pub enum TabKind {
@@ -236,6 +239,10 @@ pub struct App {
     pub term_origin: (u16, u16),
     /// Where the unfocused pane of a split terminal is drawn (a click there focuses it).
     pub other_pane: Option<Rect>,
+    /// The whole area of a split terminal (its divider drags with the mouse).
+    pub split_area: Option<Rect>,
+    /// The divider of a split is being dragged.
+    divider_drag: bool,
     /// Screen columns of each tab's label in the tab bar (row 0).
     pub tab_cols: Vec<(u16, u16)>,
     /// The mouse button a program was told is down.
@@ -308,6 +315,8 @@ impl App {
             term_area: (24, 80),
             term_origin: (1, 1),
             other_pane: None,
+            split_area: None,
+            divider_drag: false,
             tab_cols: vec![],
             mouse_held: None,
             mouse_target: None,
@@ -764,7 +773,7 @@ impl App {
         let (program, args) = s.command();
         match TerminalSession::spawn(program, args, rows, cols, scrollback) {
             Ok(other) => {
-                tab.split = Some(Split { other: Box::new(other), dir, focus_first: true });
+                tab.split = Some(Split { other: Box::new(other), dir, focus_first: true, ratio: 0.5 });
                 self.focus_other_pane();
             }
             Err(e) => self.set_error(format!("{e:#}")),
@@ -780,6 +789,27 @@ impl App {
             // This belongs to the pane that had the focus (a held button
             // is released to it by `check_mouse_held`).
             self.selection = None;
+        }
+    }
+
+    /// Swaps the panes of a split tab (the focus stays with its session).
+    fn swap_panes(&mut self) {
+        if let Some(sp) = &mut self.tabs[self.active].split {
+            sp.focus_first = !sp.focus_first;
+            self.selection = None;
+        }
+    }
+
+    /// Moves the divider of a split tab one step (to the next snap point)
+    /// towards `right_or_down` along `dir`; false when the split runs the
+    /// other way (the key goes to the shell).
+    fn resize_split(&mut self, dir: SplitDir, right_or_down: bool) -> bool {
+        match &mut self.tabs[self.active].split {
+            Some(sp) if sp.dir == dir => {
+                sp.ratio = panes::step_ratio(sp.ratio, right_or_down);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1072,6 +1102,28 @@ impl App {
     /// Otherwise, with `tui_mouse = "always"` (or Shift held while a
     /// program has the mouse), the wheel scrolls the scrollback and a drag
     /// selects text and copies it.
+    /// With `tui_mouse = "always"`, the border between the panes of a split
+    /// drags (snapping to 25 / 33 / 50 / 67 / 75% unless Alt is held).
+    fn drag_divider(&mut self, m: &MouseEvent) -> bool {
+        let always = self.cfg.settings.tui_mouse == TuiMouse::Always;
+        let (Some(area), Some(sp)) = (self.split_area, self.tabs[self.active].split.as_mut()) else {
+            self.divider_drag = false;
+            return false;
+        };
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if always && crate::ui::on_divider(area, sp.dir, sp.ratio, m.column, m.row) => {
+                self.divider_drag = true;
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.divider_drag => {
+                let free = m.modifiers.contains(KeyModifiers::ALT);
+                sp.ratio = crate::ui::divider_ratio(area, sp.dir, m.column, m.row, !free);
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.divider_drag => self.divider_drag = false,
+            _ => return false,
+        }
+        true
+    }
+
     fn handle_mouse(&mut self, m: MouseEvent) {
         if self.modal.is_some() {
             return;
@@ -1081,6 +1133,9 @@ impl App {
             && let Some(i) = self.tab_cols.iter().position(|&(a, b)| (a..b).contains(&m.column))
         {
             self.active = i;
+            return;
+        }
+        if self.drag_divider(&m) {
             return;
         }
         // A click in the other pane of a split focuses it.
@@ -1304,13 +1359,15 @@ impl App {
 
     /// Shortcuts from the keymap work everywhere, including inside terminal
     /// tabs (the defaults are Alt chords; letters match in either case for
-    /// Caps Lock, and Alt+Shift chords are left for the shell). Terminal-only
+    /// Caps Lock, and Alt+Shift letter chords are left for the shell except
+    /// `swap_panes`; the defaults avoid readline / emacs Alt keys). Terminal-only
     /// actions elsewhere let the key through.
     fn handle_global_key(&mut self, key: KeyEvent) -> bool {
         let Some(action) = self.keys.match_key(&key) else {
             return false;
         };
         let terminal = matches!(self.tabs[self.active].kind, TabKind::Terminal(_));
+        let split = terminal && self.tabs[self.active].split.is_some();
         match action {
             Action::Tab(n) => {
                 let i = n as usize - 1;
@@ -1331,6 +1388,16 @@ impl App {
             Action::SplitRight if terminal => self.split(SplitDir::Right),
             Action::SplitDown if terminal => self.split(SplitDir::Down),
             Action::FocusNextPane if terminal => self.focus_other_pane(),
+            Action::SwapPanes if split => self.swap_panes(),
+            Action::EqualizePanes if split => {
+                if let Some(sp) = &mut self.tabs[self.active].split {
+                    sp.ratio = 0.5;
+                }
+            }
+            Action::ResizePaneLeft => return split && self.resize_split(SplitDir::Right, false),
+            Action::ResizePaneRight => return split && self.resize_split(SplitDir::Right, true),
+            Action::ResizePaneUp => return split && self.resize_split(SplitDir::Down, false),
+            Action::ResizePaneDown => return split && self.resize_split(SplitDir::Down, true),
             _ => return false,
         }
         true

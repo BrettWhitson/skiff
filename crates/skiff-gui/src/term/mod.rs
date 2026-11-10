@@ -32,12 +32,18 @@ const BLINK: Duration = Duration::from_millis(530);
 const WHEEL_PX_PER_LINE: f32 = 16.0;
 const MIN_FONT: f32 = 8.0;
 const MAX_FONT: f32 = 40.0;
+/// Space between a terminal pane's edge and its cells, logical px.
+pub const PAD: i32 = 6;
+
+static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub struct TermTab {
     pub host: HostEntry,
     program: String,
     args: Vec<String>,
     scrollback: usize,
+    /// Unique per terminal for the app's lifetime (follows it between tabs).
+    pub uid: u64,
     pub session: Option<TerminalSession>,
     pub error: Option<String>,
     /// (rows, cols) last sent to the pty.
@@ -102,6 +108,7 @@ impl TermTab {
             program,
             args,
             scrollback,
+            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             session: None,
             error: None,
             grid: (0, 0),
@@ -305,7 +312,7 @@ pub fn view(
     let (cw, ch) = ui.fonts().cell_size(px);
     let cell = Size::new((cw.round() as i32).max(1), (ch.ceil() as i32).max(1));
     tab.cell = cell;
-    let pad = ui.px(6);
+    let pad = ui.px(PAD);
     let inner = Rect::new(rect.x + pad, rect.y + pad, (rect.w - 2 * pad).max(0), (rect.h - 2 * pad).max(0));
     let grid = grid_for(inner, cell);
 

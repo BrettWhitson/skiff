@@ -31,7 +31,7 @@ use crate::keys::{Action, Keymap};
 use crate::sidebar::{Sidebar, SidebarAction, SidebarCtx, sidebar};
 use crate::switcher::{Cmd, Item, SwitcherState};
 use crate::term::TermTab;
-use crate::term::split::{Dir, TermSplit};
+use crate::term::split::{Dir, PaneDrag, TabDrop, TermSplit, Zone};
 use crate::theme::{GuiTheme, from_def};
 
 /// Starts the askpass broker; its questions arrive as `Msg::Ask`.
@@ -78,8 +78,8 @@ pub struct GuiApp {
     pub statuses: HashMap<String, Status>,
     pub history: History,
     history_path: PathBuf,
-    /// Terminal tabs to record in history once they prove connected.
-    pending_records: Vec<(u64, String, Instant)>,
+    /// Terminals (by `TermTab::uid`) to record in history once they prove connected.
+    pub(crate) pending_records: Vec<(u64, String, Instant)>,
     pub forwards: ForwardsState,
     pub theme: GuiTheme,
     pub style: Style,
@@ -134,6 +134,8 @@ pub struct GuiApp {
     /// The OS high-contrast mode and text size the theme and style are for.
     os_prefs: (bool, f32),
     ui_state: UiState,
+    /// A drag-and-drop was in progress at the end of the last frame.
+    drag_live: bool,
 }
 
 /// The theme named in the config, falling back to the first built-in.
@@ -241,6 +243,7 @@ impl GuiApp {
             window_focused: true,
             os_prefs: (crate::os::high_contrast(), crate::os::text_scale()),
             ui_state: UiState::default(),
+            drag_live: false,
         };
         if on_start {
             app.check_status(None);
@@ -269,9 +272,8 @@ impl GuiApp {
 
     pub fn open_terminal(&mut self, host: &HostEntry) -> u64 {
         let term = TermTab::new(host.clone(), &self.cfg.settings.ssh_binary, self.cfg.settings.scrollback);
-        let id = self.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))));
-        self.pending_records.push((id, host.name.clone(), Instant::now()));
-        id
+        self.pending_records.push((term.uid, host.name.clone(), Instant::now()));
+        self.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))))
     }
 
     /// Shows the Forwards tab (opening it if needed).
@@ -561,14 +563,19 @@ impl GuiApp {
     /// two seconds in, and for forwards that came up.
     fn record_connections(&mut self) {
         let mut done = vec![];
-        self.pending_records.retain(|(id, name, at)| {
-            let Some(tab) = self.tabs.iter_mut().find(|t| t.id == *id) else {
+        // By terminal, not tab: a terminal may move to another tab meanwhile.
+        self.pending_records.retain(|(uid, name, at)| {
+            let Some(t) = self
+                .tabs
+                .iter_mut()
+                .filter_map(|tab| match &mut tab.kind {
+                    TabKind::Terminal(split) => Some(split),
+                    _ => None,
+                })
+                .find_map(|split| split.panes.iter_mut().find(|p| p.term.uid == *uid).map(|p| &mut p.term))
+            else {
                 return false;
             };
-            let TabKind::Terminal(split) = &mut tab.kind else {
-                return false;
-            };
-            let t = &mut split.panes[0].term;
             match &mut t.session {
                 Some(s) if at.elapsed() >= Duration::from_secs(2) && s.generation() > 0 => {
                     if s.is_alive() {
@@ -818,7 +825,19 @@ impl GuiApp {
                 self.style = style_for(&self.theme, &self.cfg);
                 self.save_config();
             }
-            Action::SplitRight | Action::SplitDown | Action::FocusNextPane | Action::ClosePane => self.pane_action(a),
+            Action::SplitRight
+            | Action::SplitDown
+            | Action::FocusNextPane
+            | Action::ClosePane
+            | Action::MovePaneLeft
+            | Action::MovePaneRight
+            | Action::MovePaneUp
+            | Action::MovePaneDown
+            | Action::ResizePaneLeft
+            | Action::ResizePaneRight
+            | Action::ResizePaneUp
+            | Action::ResizePaneDown
+            | Action::EqualizePanes => self.pane_action(a),
             Action::Copy | Action::Paste | Action::Find | Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => self.view_actions.push(a),
             _ => {}
         }
@@ -835,7 +854,49 @@ impl GuiApp {
             Action::SplitDown => t.split(Dir::Down),
             Action::FocusNextPane => t.focus_next(true),
             Action::ClosePane if !t.close_focused() => self.request_close_tab(id),
+            Action::MovePaneLeft => _ = t.move_focused(Zone::Left),
+            Action::MovePaneRight => _ = t.move_focused(Zone::Right),
+            Action::MovePaneUp => _ = t.move_focused(Zone::Top),
+            Action::MovePaneDown => _ = t.move_focused(Zone::Bottom),
+            Action::ResizePaneLeft => _ = t.resize_focused(Zone::Left),
+            Action::ResizePaneRight => _ = t.resize_focused(Zone::Right),
+            Action::ResizePaneUp => _ = t.resize_focused(Zone::Top),
+            Action::ResizePaneDown => _ = t.resize_focused(Zone::Bottom),
+            Action::EqualizePanes => t.equalize(),
             _ => {}
+        }
+    }
+
+    /// A terminal tab dropped onto a pane of tab `into`: on a side, its
+    /// panes join that tab there (sessions keep running); on the centre,
+    /// it is just shown.
+    pub fn drop_tab_on_pane(&mut self, d: TabDrop, into: u64) {
+        let Some(from_i) = self.tabs.iter().position(|t| t.id == d.from) else { return };
+        if d.zone == Zone::Center {
+            self.active = from_i;
+            return;
+        }
+        let target_ok =
+            matches!(self.tabs.iter().find(|t| t.id == into).map(|t| &t.kind), Some(TabKind::Terminal(t)) if t.layout.contains(d.target));
+        if d.from == into || !target_ok || !matches!(self.tabs[from_i].kind, TabKind::Terminal(_)) {
+            return;
+        }
+        let Tab { kind: TabKind::Terminal(src), .. } = self.tabs.remove(from_i) else { return };
+        let Some(into_i) = self.tabs.iter().position(|t| t.id == into) else { return };
+        if let TabKind::Terminal(t) = &mut self.tabs[into_i].kind
+            && let Err(back) = t.absorb(*src, d.target, d.zone)
+        {
+            self.tabs.insert(from_i, Tab { id: d.from, kind: TabKind::Terminal(back) });
+        }
+        self.active = self.tabs.iter().position(|t| t.id == into).unwrap_or(0);
+    }
+
+    /// Moves pane `key` of tab `tab` into a tab of its own (its session
+    /// keeps running), shown at once.
+    pub fn pop_out_pane(&mut self, tab: u64, key: u64) {
+        let Some(TabKind::Terminal(t)) = self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.kind) else { return };
+        if let Some(term) = t.take(key) {
+            self.push_tab(TabKind::Terminal(Box::new(TermSplit::new(term))));
         }
     }
 
@@ -954,6 +1015,10 @@ impl GuiApp {
                 None => self.warn(format!("unknown host: {name}")),
             }
         }
+        // Esc ended a drag (the toolkit drops it): it goes nowhere else.
+        if std::mem::take(&mut self.drag_live) {
+            ui.input_mut().take_key(&skiff_ui::input::Key::Escape, skiff_ui::input::Modifiers::NONE);
+        }
         if !self.settings.capturing() || !self.tabs.get(self.active).is_some_and(|t| matches!(t.kind, TabKind::Settings)) {
             self.handle_shortcuts(ui);
         }
@@ -988,6 +1053,7 @@ impl GuiApp {
         self.status_bar(ui, status);
         self.switcher_ui(ui);
         self.save_geometry_when_due(ui);
+        self.drag_live = ui.dragging();
     }
 
     fn track_window_size(&mut self, ui: &mut Ui) {
@@ -1024,13 +1090,40 @@ impl GuiApp {
         let titles: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
         let tt: Vec<TabTitle> = titles.iter().map(|t| TabTitle { text: t, closable: true }).collect();
         // The close question sits over the strip, in its region (Tab reaches it).
-        let r = ui.region(Id::new("region-tabs"), "Tabs", |ui| {
-            let r = tabs(ui, Id::new("tabs"), strip, &tt, &mut self.active);
+        // The Settings gear ends the strip: always there, sidebar or not.
+        let side = strip.h;
+        let tab_strip = Rect::new(strip.x, strip.y, (strip.w - side).max(0), strip.h);
+        let gear_rect = Rect::new(strip.right() - side, strip.y, side, strip.h);
+        let tip = crate::gear::tip(self.keymap.chords(Action::Settings).first().map(|c| c.to_string()));
+        let (r, gear) = ui.region(Id::new("region-tabs"), "Tabs", |ui| {
+            let r = tabs(ui, Id::new("tabs"), tab_strip, &tt, &mut self.active);
+            let gear = crate::gear::button(ui, gear_rect, &tip);
             if let Some(id) = self.closing {
                 self.close_confirm(ui, strip, id);
             }
-            r
+            (r, gear)
         });
+        if gear {
+            self.open_settings();
+        }
+        if let Some(i) = r.dragged_out
+            && let Some(Tab { id, kind: TabKind::Terminal(_) }) = self.tabs.get(i)
+        {
+            ui.start_drag(Box::new(PaneDrag::Tab(*id)), titles[i].clone());
+        }
+        // A pane dropped on the strip gets a tab of its own.
+        if matches!(ui.drag_payload::<PaneDrag>(), Some(PaneDrag::Pane { .. })) {
+            let d = ui.drop_target::<PaneDrag>(tab_strip);
+            if d.hovered {
+                let p = self.theme.palette;
+                let w = ui.px(2).max(1);
+                ui.painter().rect(tab_strip, p.accent.with_alpha(48), 0.0);
+                ui.painter().border(tab_strip, p.accent, w, 0.0);
+            }
+            if let Some(PaneDrag::Pane { tab, key }) = d.dropped {
+                self.pop_out_pane(tab, key);
+            }
+        }
         if let Some((from, to)) = r.moved
             && from < self.tabs.len()
             && to < self.tabs.len()
@@ -1065,6 +1158,7 @@ impl GuiApp {
         self.shown_tab = Some(tab.id);
         let mut show_settings = false;
         let mut show_forwards = false;
+        let mut dropped = None;
         match &mut tab.kind {
             TabKind::Terminal(t) => {
                 for p in &mut t.panes {
@@ -1080,7 +1174,8 @@ impl GuiApp {
                     }
                 }
                 let wake = self.engine.wake_fn();
-                crate::term::split::view(ui, tab.id, content, t, &self.theme, &self.keymap, wake, &mut self.view_actions);
+                dropped = crate::term::split::view(ui, tab.id, content, t, &self.theme, &self.keymap, wake, &mut self.view_actions)
+                    .map(|d| (d, tab.id));
             }
             TabKind::Files(f) => {
                 let _ = line;
@@ -1100,6 +1195,9 @@ impl GuiApp {
                 show_settings = true;
             }
             TabKind::Forwards => show_forwards = true,
+        }
+        if let Some((d, into)) = dropped {
+            self.drop_tab_on_pane(d, into);
         }
         if show_settings {
             crate::settings::view(ui, content, self);
