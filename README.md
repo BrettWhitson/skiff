@@ -238,10 +238,15 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | File exists | `o` / `s` / `a` / `S` | Overwrite / skip / overwrite all / skip all for this transfer |
 | | `c` or `Esc` | Cancel the transfer |
 
-A copied file is written next to its destination as `.<name>.termax-part`
-and moved into place only when complete, so cancelling (or a failure) never
-damages a file being overwritten. Over SFTP the old file is removed just
+A copied file is written next to its destination as
+`.<name>.<id>.termax-part` and moved into place only when complete, so
+cancelling (or a failure) never damages a file being overwritten; the new file
+keeps the old one's permission bits. Over SFTP the old file is removed just
 before the move, since SFTP servers don't rename onto an existing file.
+A destination that is a symlink, belongs to another user, or sits in a
+directory that doesn't allow new files is instead overwritten in place, so
+the link, owner and ACL survive; cancelling then leaves it partially written.
+`*.termax-part` leftovers are skipped when copying folders.
 
 All other keys in a terminal tab go straight to the remote shell. Only the
 shortcuts from the keymap are intercepted (by default `Alt+` chords, and only
@@ -258,8 +263,9 @@ action takes a chord, or several separated by commas. A chord is modifiers
 `esc`, `space`, `backspace`, `delete`, `insert`, `plus`, `minus` or `f1`-`f12`.
 Every chord needs `ctrl` or `alt`, except the F-keys. `Ctrl+C`, `Ctrl+D`,
 `Ctrl+Z`, `Ctrl+\` and `Ctrl+[` belong to the shell and are refused (the
-default stays). For symbols such as `alt+?` or `alt++`, `Shift` is ignored,
-since many layouts need it to type them.
+default stays; `ctrl+shift+c` and the like are fine). For symbols such as
+`alt+?` or `alt++`, `Shift` is ignored, since many layouts need it to type
+them.
 
 ```toml
 [tui_keys]
