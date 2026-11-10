@@ -218,8 +218,8 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | Terminal | `Shift+PgUp` / `Shift+PgDn` | Scrollback |
 | | `Alt+F` | Find in the output (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
 | | `Alt+S` | Snippets (`Enter` sends) |
-| | `Alt+V` / `Alt+-` | Split side by side / one above the other |
-| | `Alt+O` / `Alt+X` | Focus the other pane / close the focused pane |
+| | `Alt+\` / `Alt+-` | Split side by side / one above the other |
+| | `Alt+O` | Focus the other pane (`Alt+W` closes the focused one) |
 | | `Enter` after disconnect | Reconnect |
 | SFTP | `Tab` / `←` `→` | Switch pane |
 | | `Enter` / `Backspace` | Open directory / go up |
@@ -251,7 +251,7 @@ Every chord needs `ctrl` or `alt`, except the F-keys.
 ```toml
 [tui_keys]
 close_tab = "alt+x"
-close_pane = "ctrl+alt+x"
+split_right = "alt+v"
 help = "f1, alt+h"
 ```
 
@@ -259,15 +259,14 @@ help = "f1, alt+h"
 |---|---|
 | `tab_1` … `tab_9` | `alt+1` … `alt+9` |
 | `next_tab` / `prev_tab` | `alt+right, alt+]` / `alt+left, alt+[` |
-| `close_tab` | `alt+w` |
+| `close_tab` | `alt+w` (in a split tab: the focused pane) |
 | `theme` | `alt+t` |
 | `help` | `alt+h` |
 | `quit` | `alt+q` |
 | `find` | `alt+f` (terminal tabs) |
 | `snippets` | `alt+s` (terminal tabs) |
-| `split_right` / `split_down` | `alt+v` / `alt+-` (terminal tabs) |
+| `split_right` / `split_down` | `alt+\` / `alt+-` (terminal tabs) |
 | `focus_next_pane` | `alt+o` (terminal tabs) |
-| `close_pane` | `alt+x` (terminal tabs) |
 
 An unknown action, a chord that doesn't parse, or a chord already bound to
 another action is reported when termax starts (and listed at the top of the
@@ -276,13 +275,13 @@ always show the keys in effect.
 
 ### TUI split panes
 
-`Alt+V` splits a terminal tab side by side and `Alt+-` one above the other.
+`Alt+\` splits a terminal tab side by side and `Alt+-` one above the other.
 The new pane is a second connection to the same host (it runs the same ssh
 command) and takes the focus. `Alt+O` (or a click, with the mouse captured)
 moves the focus to the other pane; keys, pastes, find, snippets and the
-mouse go to the focused pane, whose border is highlighted. `Alt+X` closes
-the focused pane and its session; `Alt+W` closes the whole tab. A tab holds
-at most two panes: splitting a split tab again switches its direction. Each
+mouse go to the focused pane, whose border is highlighted. `Alt+W` closes
+the focused pane and its session; with one pane left it closes the tab. A
+tab holds at most two panes: splitting a split tab again switches its direction. Each
 pane's terminal is resized to fit its half. Port-forward tabs can't be split.
 
 ### Terminal tabs (both apps)

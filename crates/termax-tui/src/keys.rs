@@ -24,11 +24,10 @@ pub enum Action {
     /// Split the terminal tab one above the other.
     SplitDown,
     FocusNextPane,
-    ClosePane,
 }
 
 impl Action {
-    pub const ALL: [Action; 21] = [
+    pub const ALL: [Action; 20] = [
         Action::Tab(1),
         Action::Tab(2),
         Action::Tab(3),
@@ -49,7 +48,6 @@ impl Action {
         Action::SplitRight,
         Action::SplitDown,
         Action::FocusNextPane,
-        Action::ClosePane,
     ];
 
     /// The name used in the `[tui_keys]` table.
@@ -67,7 +65,6 @@ impl Action {
             Action::SplitRight => "split_right".into(),
             Action::SplitDown => "split_down".into(),
             Action::FocusNextPane => "focus_next_pane".into(),
-            Action::ClosePane => "close_pane".into(),
         }
     }
 
@@ -80,7 +77,7 @@ impl Action {
             Action::Tab(_) => "switch to tab",
             Action::NextTab => "next tab",
             Action::PrevTab => "previous tab",
-            Action::CloseTab => "close tab",
+            Action::CloseTab => "close tab (or the focused pane of a split)",
             Action::Theme => "theme picker",
             Action::Help => "this help",
             Action::Quit => "quit",
@@ -89,7 +86,6 @@ impl Action {
             Action::SplitRight => "split terminal side by side",
             Action::SplitDown => "split terminal top / bottom",
             Action::FocusNextPane => "other pane of a split",
-            Action::ClosePane => "close the focused pane",
         }
     }
 
@@ -108,10 +104,9 @@ impl Action {
             Action::Quit => &["alt+q"],
             Action::Find => &["alt+f"],
             Action::Snippets => &["alt+s"],
-            Action::SplitRight => &["alt+v"],
+            Action::SplitRight => &["alt+\\"],
             Action::SplitDown => &["alt+-"],
             Action::FocusNextPane => &["alt+o"],
-            Action::ClosePane => &["alt+x"],
         }
     }
 }

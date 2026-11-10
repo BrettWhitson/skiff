@@ -706,7 +706,7 @@ fn wait_pane(t: &T, focused: bool, s: &str) {
 fn split_panes_size_and_route_input() {
     let mut t = T::new("");
     local_shell(&mut t);
-    alt(&mut t, 'v');
+    alt(&mut t, '\\');
     let sp = t.app.tabs[t.app.active].split.as_ref().expect("split");
     assert!(!sp.focus_first, "the new (right) pane has the focus");
     draw(&mut t); // 80x26: the body is 80x24 at row 1
@@ -742,8 +742,10 @@ fn split_panes_size_and_route_input() {
     let (f, o) = panes(&t);
     assert_eq!((size(f), size(o)), ((10, 78), (10, 78)));
 
-    alt(&mut t, 'x');
+    let tabs = t.app.tabs.len();
+    alt(&mut t, 'w');
     assert!(t.app.tabs[t.app.active].split.is_none());
+    assert_eq!(t.app.tabs.len(), tabs, "Alt+W closed only the focused pane");
     let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else { panic!() };
     assert!(pane_text(s).contains("left-pane-mark"), "the other pane stays");
 }

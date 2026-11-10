@@ -707,11 +707,16 @@ impl App {
         self.push_tab(format!("{} [sftp]", host.name), TabKind::Sftp(Box::new(tab)));
     }
 
+    /// Closes the active tab, or only its focused pane when it is split.
     fn close_active_tab(&mut self) {
         if self.active == 0 {
             return;
         }
-        self.remove_tab(self.active);
+        if self.tabs[self.active].split.is_some() {
+            self.close_pane();
+        } else {
+            self.remove_tab(self.active);
+        }
     }
 
     // ----- split panes -----
@@ -761,13 +766,10 @@ impl App {
     /// Closes the focused pane of a split tab (its session ends).
     fn close_pane(&mut self) {
         let tab = &mut self.tabs[self.active];
-        match tab.split.take() {
-            Some(sp) => {
-                tab.kind = TabKind::Terminal(sp.other);
-                self.selection = None;
-                self.mouse_held = None;
-            }
-            None => self.set_info(format!("This tab isn't split ({} closes it)", self.keys.show(Action::CloseTab))),
+        if let Some(sp) = tab.split.take() {
+            tab.kind = TabKind::Terminal(sp.other);
+            self.selection = None;
+            self.mouse_held = None;
         }
     }
 
@@ -1225,7 +1227,6 @@ impl App {
             Action::SplitRight if terminal => self.split(SplitDir::Right),
             Action::SplitDown if terminal => self.split(SplitDir::Down),
             Action::FocusNextPane if terminal => self.focus_other_pane(),
-            Action::ClosePane if terminal => self.close_pane(),
             _ => return false,
         }
         true

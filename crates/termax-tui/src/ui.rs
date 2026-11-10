@@ -104,7 +104,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             TabKind::Terminal(_) => {
                 let k = &app.keys;
                 let split = if app.tabs[app.active].split.is_some() {
-                    format!("{} other pane · {} close pane", k.show(Action::FocusNextPane), k.show(Action::ClosePane))
+                    format!("{} other pane", k.show(Action::FocusNextPane))
                 } else {
                     format!("{} split", k.show(Action::SplitRight))
                 };
@@ -270,7 +270,7 @@ fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
             if sp.focus_first { (a, Some(b)) } else { (b, Some(a)) }
         }
     };
-    let close = app.keys.show(if tab.split.is_some() { Action::ClosePane } else { Action::CloseTab });
+    let close = app.keys.show(Action::CloseTab);
     app.other_pane = match (&mut tab.split, other) {
         (Some(sp), Some(r)) => Some(draw_session(f, &t, &mut sp.other, r, &title_text, false, &close)),
         _ => None,
@@ -551,7 +551,6 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 a(Action::SplitRight),
                 a(Action::SplitDown),
                 a(Action::FocusNextPane),
-                a(Action::ClosePane),
                 k("Enter (when closed)", "reconnect"),
                 h("File transfer"),
                 k("Tab / ← →", "switch pane"),
