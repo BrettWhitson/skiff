@@ -12,12 +12,15 @@ const MARK: &str = "› ";
 use ratatui::Frame;
 use tui_term::widget::{Cursor, PseudoTerminal};
 
-use crate::app::{App, Modal, TabKind};
+use crate::app::{App, Modal, SplitDir, TabKind};
 use crate::forms::{ForwardForm, FwdRow, Row as EdRow};
 use crate::input::TextInput;
+use crate::keys::Action;
 use crate::sftp_tab::{Pane, SftpTab, Side, Status, TransferState, human_size};
 use crate::tui_theme::Theme;
+use termax_core::askpass::AskKind;
 use termax_core::status::Status as HostStatus;
+use termax_core::terminal::TerminalSession;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.theme.plain = app.plain;
@@ -94,14 +97,30 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled(format!(" {kind}: {msg}"), Style::new().fg(if *is_err { t.error } else { t.success })))
     } else {
         let hints = match &app.tabs[app.active].kind {
-            TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear",
+            TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear".to_string(),
             TabKind::Hosts => {
-                "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · ? help"
+                "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · ? help".to_string()
             }
             TabKind::Terminal(_) => {
-                "Alt+1-9 tabs · Alt+←/→ cycle · Alt+W close · Alt+F find · Alt+S snippets · Shift+PgUp/PgDn scroll · Alt+H help"
+                let k = &app.keys;
+                let split = if app.tabs[app.active].split.is_some() {
+                    format!("{} other pane · {} close pane", k.show(Action::FocusNextPane), k.show(Action::ClosePane))
+                } else {
+                    format!("{} split", k.show(Action::SplitRight))
+                };
+                format!(
+                    "{} tabs · {} close · {} find · {} snippets · {split} · Shift+PgUp/PgDn scroll · {} help",
+                    k.show_tabs(),
+                    k.show(Action::CloseTab),
+                    k.show(Action::Find),
+                    k.show(Action::Snippets),
+                    k.show(Action::Help)
+                )
             }
-            TabKind::Sftp(_) => "Tab pane · Enter open · Bksp up · c copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh",
+            TabKind::Sftp(_) => {
+                "Tab pane · Enter open · Bksp up · c copy · X cancel copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh"
+                    .to_string()
+            }
         };
         Line::from(Span::styled(format!(" {hints}"), t.muted()))
     };
@@ -201,43 +220,74 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
 
 // ---------------------------------------------------------------- terminal
 
-fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
-    let t = app.theme.clone();
-    let active = app.active;
-    let title_text = app.tabs[active].title.clone();
-    let TabKind::Terminal(s) = &mut app.tabs[active].kind else {
-        return;
+/// The two pane areas of a split terminal: (first, second) = (left, right)
+/// or (top, bottom).
+pub fn split_areas(area: Rect, dir: SplitDir) -> (Rect, Rect) {
+    let halves = [Constraint::Percentage(50), Constraint::Percentage(50)];
+    let [a, b] = match dir {
+        SplitDir::Right => Layout::horizontal(halves).areas(area),
+        SplitDir::Down => Layout::vertical(halves).areas(area),
     };
+    (a, b)
+}
+
+/// Draws one terminal pane (sized to fit `area`); returns its content area.
+fn draw_session(f: &mut Frame, t: &Theme, s: &mut TerminalSession, area: Rect, title_text: &str, focused: bool, close: &str) -> Rect {
     let alive = s.is_alive();
     let scroll = s.scroll_offset();
-
-    let mut title = vec![Span::styled(format!(" {title_text} "), t.title())];
+    let mut title = vec![Span::styled(format!(" {title_text} "), if focused { t.title() } else { t.muted() })];
     if !alive {
-        title.push(Span::styled(" disconnected — Enter to reconnect, Alt+W to close ", Style::new().fg(t.error)));
+        title.push(Span::styled(format!(" disconnected — Enter to reconnect, {close} to close "), Style::new().fg(t.error)));
     } else if scroll > 0 {
         title.push(Span::styled(format!(" scrollback +{scroll} "), Style::new().fg(t.warning)));
     }
-    let b = block(&t, Line::from(title), true);
+    let b = block(t, Line::from(title), focused);
     let inner = b.inner(area);
     s.resize(inner.height, inner.width);
+    // A poisoned lock (the output thread panicked) shows an empty frame
+    // instead of taking the whole app down.
+    let Ok(parser) = s.parser.lock() else {
+        f.render_widget(b, area);
+        return inner;
+    };
+    let mut cursor = Cursor::default();
+    if !focused || !alive || scroll > 0 || parser.screen().hide_cursor() {
+        cursor.hide();
+    }
+    f.render_widget(PseudoTerminal::new(parser.screen()).block(b).cursor(cursor), area);
+    inner
+}
+
+fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = app.theme.clone();
+    let active = app.active;
+    let tab = &mut app.tabs[active];
+    let title_text = tab.title.clone();
+    let (area, other) = match &tab.split {
+        None => (area, None),
+        Some(sp) => {
+            let (a, b) = split_areas(area, sp.dir);
+            if sp.focus_first { (a, Some(b)) } else { (b, Some(a)) }
+        }
+    };
+    let close = app.keys.show(if tab.split.is_some() { Action::ClosePane } else { Action::CloseTab });
+    app.other_pane = match (&mut tab.split, other) {
+        (Some(sp), Some(r)) => Some(draw_session(f, &t, &mut sp.other, r, &title_text, false, &close)),
+        _ => None,
+    };
+    let TabKind::Terminal(s) = &mut tab.kind else {
+        return;
+    };
+    let inner = draw_session(f, &t, s, area, &title_text, true, &close);
     app_term_area(inner, &mut app.term_area);
     app.term_origin = (inner.x, inner.y);
 
     let TabKind::Terminal(s) = &app.tabs[active].kind else {
         return;
     };
-    // A poisoned lock (the output thread panicked) shows an empty frame
-    // instead of taking the whole app down.
     let Ok(parser) = s.parser.lock() else {
-        f.render_widget(b, area);
         return;
     };
-    let mut cursor = Cursor::default();
-    if !alive || scroll > 0 || parser.screen().hide_cursor() {
-        cursor.hide();
-    }
-    let widget = PseudoTerminal::new(parser.screen()).block(b).cursor(cursor);
-    f.render_widget(widget, area);
     let top = s.scrolled().saturating_sub(parser.screen().scrollback() as u64);
     drop(parser);
     let buf = f.buffer_mut();
@@ -285,6 +335,7 @@ fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
     let TabKind::Sftp(s) = &mut app.tabs[active].kind else {
         return;
     };
+    let s = s.as_mut();
 
     let transfer_h = if s.transfers.is_empty() { 0 } else { (s.transfers.len() as u16).min(6) + 2 };
     let [panes, transfers] = Layout::vertical([Constraint::Min(5), Constraint::Length(transfer_h)]).areas(area);
@@ -314,8 +365,7 @@ fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::raw(""),
                 Line::raw(err.clone()),
                 Line::raw(""),
-                Line::styled("r: retry   Alt+W: close", t.muted()),
-                Line::styled("SFTP runs without a terminal, so it needs key or agent auth (see sftp_batch_mode).", t.muted()),
+                Line::styled(format!("r: retry   {}: close", app.keys.show(Action::CloseTab)), t.muted()),
             ];
             f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }).block(b), right);
         }
@@ -379,7 +429,7 @@ fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: Strin
 }
 
 fn draw_transfers(f: &mut Frame, t: &Theme, s: &SftpTab, area: Rect) {
-    let b = block(t, " Transfers (x: clear finished) ", false);
+    let b = block(t, " Transfers (X: cancel newest running · x: clear finished) ", false);
     let inner = b.inner(area);
     f.render_widget(b, area);
     let lines: Vec<Line> = s
@@ -397,12 +447,14 @@ fn draw_transfers(f: &mut Frame, t: &Theme, s: &SftpTab, area: Rect) {
             let (state, style) = match &tr.state {
                 TransferState::Running => ("…".to_string(), Style::new().fg(t.warning)),
                 TransferState::Done => ("✓".to_string(), Style::new().fg(t.success)),
+                TransferState::Cancelled => ("✗ cancelled".to_string(), Style::new().fg(t.warning)),
                 TransferState::Failed(e) => (format!("✗ {e}"), Style::new().fg(t.error)),
             };
+            let skipped = if tr.skipped > 0 { format!("  ({} skipped)", tr.skipped) } else { String::new() };
             Line::from(vec![
                 Span::styled(format!(" {state} "), style),
                 Span::raw(format!("{}  ", tr.label)),
-                Span::styled(progress, t.muted()),
+                Span::styled(progress + &skipped, t.muted()),
             ])
         })
         .collect();
@@ -463,18 +515,21 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
     let Some(modal) = &app.modal else { return };
     match modal {
         Modal::Help => {
-            let r = centered(area, 72, 40);
+            let r = centered(area, 76, 50);
             f.render_widget(Clear, r);
             let k = |key: &str, desc: &str| Line::from(vec![Span::styled(format!("  {key:<22}"), t.accent()), Span::raw(desc.to_string())]);
+            let a = |action: Action| k(&app.keys.show(action), action.label());
             let h = |s: &str| Line::styled(s.to_string(), t.title());
-            let lines = vec![
-                h("Everywhere"),
-                k("Alt+1 … Alt+9", "switch to tab"),
-                k("Alt+← / Alt+→", "previous / next tab"),
-                k("Alt+W", "close tab"),
-                k("Alt+T", "theme picker"),
-                k("Alt+H", "this help"),
-                k("Alt+Q", "quit"),
+            let mut lines: Vec<Line> = app.key_errors.iter().map(|e| Line::styled(format!("  {e}"), Style::new().fg(t.error))).collect();
+            lines.extend([
+                h("Everywhere ([tui_keys] in the config remaps these)"),
+                k(&app.keys.show_tabs(), "switch to tab"),
+                a(Action::PrevTab),
+                a(Action::NextTab),
+                a(Action::CloseTab),
+                a(Action::Theme),
+                a(Action::Help),
+                a(Action::Quit),
                 h("Hosts"),
                 k("Enter", "open terminal (ssh)"),
                 k("s", "open file transfer (sftp)"),
@@ -491,8 +546,12 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 k("Enter (Other options)", "add a line"),
                 h("Terminal"),
                 k("Shift+PgUp / PgDn", "scroll back"),
-                k("Alt+F", "find (Enter older · Shift+Enter newer)"),
-                k("Alt+S", "snippets"),
+                a(Action::Find),
+                a(Action::Snippets),
+                a(Action::SplitRight),
+                a(Action::SplitDown),
+                a(Action::FocusNextPane),
+                a(Action::ClosePane),
                 k("Enter (when closed)", "reconnect"),
                 h("File transfer"),
                 k("Tab / ← →", "switch pane"),
@@ -502,8 +561,9 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 k("R or F2", "rename"),
                 k("d, Del or F8", "delete"),
                 k("g", "go to path"),
+                k("X", "cancel the newest running transfer"),
                 k(". / r / x", "hidden files / refresh / clear transfers"),
-            ];
+            ]);
             let p = Paragraph::new(lines).block(block(t, format!(" Help — config: {} ", app.cfg_path.display()), true));
             f.render_widget(p, r);
         }
@@ -621,6 +681,39 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             set_cursor(f, inner.x, inner.y, &p.input);
         }
         Modal::Search { .. } => {} // drawn on the status line
+        Modal::Ask { host, input, req } => {
+            let secret = req.kind == AskKind::Secret;
+            let prompt: Vec<Line> = req.prompt.trim_end().lines().map(|l| Line::raw(l.to_string())).collect();
+            let r = centered(area, 76, prompt.len() as u16 + 6);
+            f.render_widget(Clear, r);
+            let b = block(t, format!(" {host} — ssh asks "), true);
+            let inner = b.inner(r);
+            f.render_widget(b, r);
+            let hint = if secret { "Enter send · Esc cancel" } else { "y yes · n no · Esc cancel" };
+            let [text, field, help] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(if secret { 2 } else { 0 }), Constraint::Length(1)]).areas(inner);
+            f.render_widget(Paragraph::new(prompt).wrap(Wrap { trim: false }), text);
+            if secret {
+                // Masked: one dot per character typed, never the text.
+                let dots = "•".repeat(input.value.chars().count());
+                f.render_widget(Paragraph::new(Span::styled(format!("> {dots}"), t.accent())), Rect { y: field.y + 1, height: 1, ..field });
+                let before = input.value.chars().take(input.cursor).count() as u16;
+                f.set_cursor_position(Position::new(field.x + 2 + before, field.y + 1));
+            }
+            f.render_widget(Paragraph::new(Line::styled(hint, t.muted())), help);
+        }
+        Modal::Overwrite { host, path, .. } => {
+            let text = format!("{path} already exists ({host}). Replace it?");
+            let w = (unicode_width(&text) + 6).clamp(40, 80);
+            let r = centered(area, w, 6);
+            f.render_widget(Clear, r);
+            let lines = vec![
+                Line::raw(text),
+                Line::raw(""),
+                Line::styled("o overwrite · s skip · a overwrite all · S skip all · c/Esc cancel transfer", t.muted()),
+            ];
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(block(t, " File exists ", true)), r);
+        }
         Modal::Snippets { selected } => {
             let list = app.tab_snippets();
             let r = centered(area, 76, list.len().max(1) as u16 + 4);

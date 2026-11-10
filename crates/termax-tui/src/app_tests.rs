@@ -17,6 +17,11 @@ struct T {
 
 impl T {
     fn new(ssh: &str) -> T {
+        T::with(ssh, |_| {})
+    }
+
+    /// `edit` adjusts the saved config before the app loads it.
+    fn with(ssh: &str, edit: impl FnOnce(&mut Config)) -> T {
         let dir = tempfile::tempdir().unwrap();
         let ssh_path = dir.path().join("ssh_config");
         std::fs::write(&ssh_path, ssh).unwrap();
@@ -24,6 +29,7 @@ impl T {
         let base = Config::load_or_create(&cfg_path).unwrap();
         let mut cfg = base.clone();
         cfg.settings.ssh_config_path = Some(ssh_path.display().to_string());
+        edit(&mut cfg);
         cfg.save(&base, &cfg_path).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let app = App::new(cfg, cfg_path, rt.handle().clone());
@@ -476,4 +482,254 @@ fn rename_carries_forwards_and_history() {
     assert!(std::fs::read_to_string(t.dir.path().join("config.toml")).unwrap().contains("host = \"web2\""));
     let hist = termax_core::history::History::load(&t.dir.path().join("history.toml"));
     assert_eq!(hist.recent(5), ["web2"]);
+}
+
+#[test]
+fn tui_keys_remap_end_to_end() {
+    let mut t = T::with("", |cfg| {
+        cfg.tui_keys.insert("help".into(), "f1".into());
+        cfg.tui_keys.insert("bogus".into(), "alt+z".into());
+    });
+    let (msg, is_err, _) = t.app.status.clone().expect("the bad entry is reported");
+    assert!(is_err && msg.contains("[tui_keys] bogus: unknown action"), "{msg}");
+    alt(&mut t, 'h');
+    assert!(t.app.modal.is_none(), "Alt+H no longer opens help");
+    t.key(KeyCode::F(1));
+    assert!(matches!(t.app.modal, Some(Modal::Help)));
+    let term = draw(&mut t);
+    assert!(find_text(&term, "F1").is_some(), "the help lists the effective key");
+    assert!(find_text(&term, "bogus").is_some(), "and the config problem");
+}
+
+/// Removing a tab before the active one must not switch tabs.
+#[test]
+fn stopping_a_forward_keeps_the_active_tab() {
+    use termax_core::forward::{Forward, ForwardKind};
+    let mut t = T::new("");
+    for name in ["a", "fwd", "b", "c"] {
+        t.app.push_tab(name.into(), TabKind::Hosts);
+    }
+    let f = Forward { host: "x".into(), kind: ForwardKind::Dynamic, listen: 47313, ..Default::default() };
+    t.app.tabs[2].forward = Some(f.title());
+    t.app.cfg.forwards.push(f);
+    t.app.active = 3; // "b"
+    t.app.stop_forward(0);
+    assert_eq!(t.app.tabs[t.app.active].title, "b");
+}
+
+/// An SFTP tab still connecting, for askpass questions.
+fn connecting_sftp_tab(t: &mut T) -> String {
+    let id = t.app.next_id;
+    let tab = SftpTab::new(id, "web".into(), t.dir.path().to_path_buf(), false, t.app.rt.clone(), t.app.tx.clone());
+    let tag = tab.ask_tag();
+    t.app.push_tab("web [sftp]".into(), TabKind::Sftp(Box::new(tab)));
+    tag
+}
+
+fn ask(t: &mut T, tag: &str, prompt: &str) -> (oneshot::Receiver<Option<String>>, tokio_util::sync::CancellationToken) {
+    let (reply, rx) = oneshot::channel();
+    let cancelled = tokio_util::sync::CancellationToken::new();
+    let req = AskRequest { tag: tag.into(), prompt: prompt.into(), kind: AskKind::of(prompt), reply, cancelled: cancelled.clone() };
+    t.app.tx.send(Msg::Ask(req)).unwrap();
+    t.app.drain_messages();
+    (rx, cancelled)
+}
+
+#[test]
+fn askpass_modal_masks_answers_and_cancels() {
+    let mut t = T::new("");
+    let tag = connecting_sftp_tab(&mut t);
+    // A password: typed masked, Enter answers.
+    let (mut rx, _) = ask(&mut t, &tag, "tester@127.0.0.1's password: ");
+    assert!(matches!(t.app.modal, Some(Modal::Ask { .. })));
+    t.typed("pw9x");
+    let term = draw(&mut t);
+    assert!(find_text(&term, "pw9x").is_none(), "the password is never drawn");
+    assert!(find_text(&term, "••••").is_some());
+    t.key(KeyCode::Enter);
+    assert_eq!(rx.try_recv().unwrap().as_deref(), Some("pw9x"));
+    assert!(t.app.modal.is_none());
+    // A host key: y answers yes.
+    let (mut rx, _) = ask(&mut t, &tag, "Are you sure you want to continue connecting (yes/no/[fingerprint])? ");
+    t.key(KeyCode::Char('y'));
+    assert_eq!(rx.try_recv().unwrap().as_deref(), Some("yes"));
+    // Esc cancels.
+    let (mut rx, _) = ask(&mut t, &tag, "Verification code: ");
+    t.key(KeyCode::Esc);
+    assert_eq!(rx.try_recv().unwrap(), None);
+    // ssh withdrew the question (gave up, tab closed): the prompt goes away.
+    let (_rx, cancelled) = ask(&mut t, &tag, "password: ");
+    assert!(t.app.modal.is_some());
+    cancelled.cancel();
+    t.app.drain_messages();
+    assert!(t.app.modal.is_none());
+    // A question for an attempt that's over is refused without showing.
+    let (mut rx, _) = ask(&mut t, "sftp:999:1", "password: ");
+    assert!(t.app.modal.is_none());
+    assert_eq!(rx.try_recv().unwrap(), None);
+}
+
+/// Runs the (current-thread) runtime and the app's message loop until `done`.
+fn pump(t: &mut T, what: &str, done: impl Fn(&App) -> bool) {
+    let start = std::time::Instant::now();
+    while !done(&t.app) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(20), "waiting for {what}: {:?} {:?}", t.app.status, last_state(&t.app));
+        t._rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(20)).await });
+        t.app.drain_messages();
+    }
+}
+
+fn sftp(app: &App) -> &SftpTab {
+    match &app.tabs[app.active].kind {
+        TabKind::Sftp(s) => s,
+        _ => panic!("not an sftp tab"),
+    }
+}
+
+fn last_state(app: &App) -> Option<crate::sftp_tab::TransferState> {
+    let s = app.tabs.iter().find_map(|t| match &t.kind {
+        TabKind::Sftp(s) => Some(s),
+        _ => None,
+    })?;
+    s.transfers.last().map(|t| t.state.clone())
+}
+
+#[test]
+fn transfers_ask_before_overwriting_and_cancel() {
+    use crate::sftp_tab::TransferState as St;
+    let fx = termax_testserver::TestFixture::new(termax_testserver::FixtureAuth::Key).unwrap();
+    let mut t = T::new("");
+    let local = t.dir.path().join("up");
+    std::fs::create_dir(&local).unwrap();
+    std::fs::write(local.join("a.txt"), "new").unwrap();
+    std::fs::write(local.join("b.txt"), "bee").unwrap();
+    std::fs::write(fx.root().join("a.txt"), "old").unwrap();
+    let mut tab = SftpTab::new(t.app.next_id, "fx".into(), local.clone(), false, t.app.rt.clone(), t.app.tx.clone());
+    let mut args = fx.ssh_options();
+    args.extend(["-s".into(), fx.destination(), "sftp".into()]);
+    tab.connect(termax_core::fs::connect::SshLaunch { program: "ssh".into(), args, env: vec![], start_dir: None });
+    t.app.push_tab("fx [sftp]".into(), TabKind::Sftp(Box::new(tab)));
+    pump(&mut t, "the remote listing", |a| matches!(sftp(a).status, Status::Connected) && !sftp(a).remote.loading);
+    let select = |t: &mut T, name: &str| {
+        let TabKind::Sftp(s) = &mut t.app.tabs[t.app.active].kind else { panic!() };
+        s.focus = Side::Local;
+        s.local.selected = s.local.entries.iter().position(|e| e.name == name).unwrap();
+    };
+    let remote = fx.root().join("a.txt");
+
+    // Overwrite.
+    select(&mut t, "a.txt");
+    t.key(KeyCode::Char('c'));
+    pump(&mut t, "the overwrite question", |a| matches!(a.modal, Some(Modal::Overwrite { .. })));
+    t.key(KeyCode::Char('o'));
+    pump(&mut t, "the copy", |a| last_state(a) == Some(St::Done));
+    assert_eq!(std::fs::read_to_string(&remote).unwrap(), "new");
+
+    // Skip.
+    std::fs::write(local.join("a.txt"), "newer").unwrap();
+    t.key(KeyCode::Char('c'));
+    pump(&mut t, "the overwrite question", |a| matches!(a.modal, Some(Modal::Overwrite { .. })));
+    t.key(KeyCode::Char('s'));
+    pump(&mut t, "the skip", |a| last_state(a) == Some(St::Done));
+    assert_eq!(sftp(&t.app).transfers.last().unwrap().skipped, 1);
+    assert_eq!(std::fs::read_to_string(&remote).unwrap(), "new");
+
+    // Cancel from the question.
+    t.key(KeyCode::Char('c'));
+    pump(&mut t, "the overwrite question", |a| matches!(a.modal, Some(Modal::Overwrite { .. })));
+    t.key(KeyCode::Esc);
+    pump(&mut t, "the cancel", |a| last_state(a) == Some(St::Cancelled));
+    assert_eq!(std::fs::read_to_string(&remote).unwrap(), "new");
+
+    // Cancel a running transfer (X); nothing has run yet on this runtime.
+    select(&mut t, "b.txt");
+    t.key(KeyCode::Char('c'));
+    t.key(KeyCode::Char('X'));
+    pump(&mut t, "the cancel", |a| last_state(a) == Some(St::Cancelled));
+    assert!(!fx.root().join("b.txt").exists());
+    t.key(KeyCode::Char('X'));
+    assert!(t.app.status.as_ref().is_some_and(|s| s.1), "nothing left to cancel");
+
+    // Closing the tab cancels its transfers.
+    t.key(KeyCode::Char('c'));
+    alt(&mut t, 'w');
+    for _ in 0..10 {
+        t._rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(20)).await });
+    }
+    assert!(!fx.root().join("b.txt").exists());
+}
+
+/// A local shell (no network) for split-pane tests.
+fn local_shell(t: &mut T) {
+    let (prog, args): (&str, Vec<String>) = if cfg!(windows) { ("cmd.exe", vec![]) } else { ("sh", vec![]) };
+    let s = TerminalSession::spawn(prog, &args, 24, 80, 100).unwrap();
+    t.app.push_tab("sh".into(), TabKind::Terminal(Box::new(s)));
+}
+
+fn pane_text(s: &TerminalSession) -> String {
+    s.parser.lock().unwrap().screen().contents()
+}
+
+fn panes(t: &T) -> (&TerminalSession, &TerminalSession) {
+    let tab = &t.app.tabs[t.app.active];
+    let TabKind::Terminal(focused) = &tab.kind else { panic!() };
+    (focused, &tab.split.as_ref().expect("split").other)
+}
+
+fn wait_pane(t: &T, focused: bool, s: &str) {
+    let start = std::time::Instant::now();
+    loop {
+        let (f, o) = panes(t);
+        if pane_text(if focused { f } else { o }).contains(s) {
+            return;
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(15), "waiting for {s:?}");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+}
+
+#[test]
+fn split_panes_size_and_route_input() {
+    let mut t = T::new("");
+    local_shell(&mut t);
+    alt(&mut t, 'v');
+    let sp = t.app.tabs[t.app.active].split.as_ref().expect("split");
+    assert!(!sp.focus_first, "the new (right) pane has the focus");
+    draw(&mut t); // 80x26: the body is 80x24 at row 1
+    let (left, right) = crate::ui::split_areas(Rect::new(0, 1, 80, 24), SplitDir::Right);
+    assert_eq!((left.width + right.width, left.height), (80, 24));
+    let size = |s: &TerminalSession| s.parser.lock().unwrap().screen().size();
+    let (f, o) = panes(&t);
+    assert_eq!(size(f), (22, right.width - 2), "each pane's pty fits inside its border");
+    assert_eq!(size(o), (22, left.width - 2));
+    assert_eq!(t.app.term_origin, (right.x + 1, 2), "mouse reports are relative to the focused pane");
+
+    // Typing goes to the focused pane only.
+    t.typed("echo right-pane-mark");
+    t.key(KeyCode::Enter);
+    wait_pane(&t, true, "right-pane-mark");
+    assert!(!pane_text(panes(&t).1).contains("right-pane-mark"));
+    alt(&mut t, 'o');
+    t.typed("echo left-pane-mark");
+    t.key(KeyCode::Enter);
+    wait_pane(&t, true, "left-pane-mark");
+    assert!(!pane_text(panes(&t).1).contains("left-pane-mark"));
+
+    // A paste goes to the focused pane too; a click on the other one focuses it.
+    t.app.handle_event(Event::Paste("echo pasted-mark".into()));
+    wait_pane(&t, true, "pasted-mark");
+    draw(&mut t);
+    mouse(&mut t, crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left), right.x + 5, 5);
+    assert!(!t.app.tabs[t.app.active].split.as_ref().unwrap().focus_first, "the click focused the right pane");
+
+    // Stacked: halves of the height.
+    alt(&mut t, '-');
+    draw(&mut t);
+    let (f, o) = panes(&t);
+    assert_eq!((size(f), size(o)), ((10, 78), (10, 78)));
+
+    alt(&mut t, 'x');
+    assert!(t.app.tabs[t.app.active].split.is_none());
+    let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else { panic!() };
+    assert!(pane_text(s).contains("left-pane-mark"), "the other pane stays");
 }

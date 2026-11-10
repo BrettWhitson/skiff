@@ -78,7 +78,7 @@ ssh_binary = "ssh"
 load_ssh_config = true
 # ssh_config_path = "~/.ssh/config"
 scrollback = 5000
-sftp_batch_mode = true      # SFTP fails instead of prompting (see below)
+sftp_batch_mode = true      # only when termax can't prompt: fail instead of asking (see below)
 show_hidden_files = false
 # local_start_dir = "~/Downloads"
 status_checks = "manual"    # or "on_start": check which hosts are reachable at start
@@ -127,6 +127,14 @@ error = "#f7768e"
 
 Saving from the app only changes the settings you edited; comments and
 formatting in `config.toml` are kept.
+
+**SFTP passwords.** The SFTP channel has no terminal, so when ssh needs a
+password, a one-time code or a yes/no for an unknown host key, it asks
+termax (`SSH_ASKPASS`, OpenSSH 8.4 or newer): the TUI shows the question in
+a dialog (input masked; `y` / `n` for host keys; `Esc` cancels) and the GUI
+in the pane. Answers go straight to ssh and are never stored. When termax
+can't prompt (an older OpenSSH), `sftp_batch_mode = true` makes ssh fail at
+once with its own message instead; key and agent auth always work.
 
 ## Host management
 
@@ -210,6 +218,8 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | Terminal | `Shift+PgUp` / `Shift+PgDn` | Scrollback |
 | | `Alt+F` | Find in the output (`Enter` older match, `Shift+Enter` newer, `Esc` close) |
 | | `Alt+S` | Snippets (`Enter` sends) |
+| | `Alt+V` / `Alt+-` | Split side by side / one above the other |
+| | `Alt+O` / `Alt+X` | Focus the other pane / close the focused pane |
 | | `Enter` after disconnect | Reconnect |
 | SFTP | `Tab` / `←` `→` | Switch pane |
 | | `Enter` / `Backspace` | Open directory / go up |
@@ -218,11 +228,62 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | | `R` or `F2` | Rename |
 | | `d`, `Del` or `F8` | Delete (asks first) |
 | | `g` | Go to path |
+| | `X` | Cancel the newest running transfer (press again for the next) |
 | | `.` / `r` / `x` | Toggle hidden files / refresh / clear finished transfers |
+| File exists | `o` / `s` / `a` / `S` | Overwrite / skip / overwrite all / skip all for this transfer |
+| | `c` or `Esc` | Cancel the transfer |
 
-All other keys in a terminal tab go straight to the remote shell. Only `Alt+`
-shortcuts are intercepted, and only without `Shift`: `Alt+Shift+F` and the like
-reach the shell (a letter shortcut also works with Caps Lock on).
+All other keys in a terminal tab go straight to the remote shell. Only the
+shortcuts from the keymap are intercepted (by default `Alt+` chords, and only
+without `Shift`: `Alt+Shift+F` and the like reach the shell; a letter
+shortcut also works with Caps Lock on).
+
+### TUI key remapping
+
+The `Alt+` shortcuts above (the "Everywhere" ones, plus find, snippets and
+split panes) can be changed in a `[tui_keys]` section of `config.toml`. Each
+action takes a chord, or several separated by commas. A chord is modifiers
+(`ctrl`, `alt`, `shift`) and a key joined by `+`: a character, `left`,
+`right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `tab`, `enter`,
+`esc`, `space`, `backspace`, `delete`, `insert`, `plus`, `minus` or `f1`-`f12`.
+Every chord needs `ctrl` or `alt`, except the F-keys.
+
+```toml
+[tui_keys]
+close_tab = "alt+x"
+close_pane = "ctrl+alt+x"
+help = "f1, alt+h"
+```
+
+| Action | Default |
+|---|---|
+| `tab_1` … `tab_9` | `alt+1` … `alt+9` |
+| `next_tab` / `prev_tab` | `alt+right, alt+]` / `alt+left, alt+[` |
+| `close_tab` | `alt+w` |
+| `theme` | `alt+t` |
+| `help` | `alt+h` |
+| `quit` | `alt+q` |
+| `find` | `alt+f` (terminal tabs) |
+| `snippets` | `alt+s` (terminal tabs) |
+| `split_right` / `split_down` | `alt+v` / `alt+-` (terminal tabs) |
+| `focus_next_pane` | `alt+o` (terminal tabs) |
+| `close_pane` | `alt+x` (terminal tabs) |
+
+An unknown action, a chord that doesn't parse, or a chord already bound to
+another action is reported when termax starts (and listed at the top of the
+help); that entry keeps its default. The help (`Alt+H`) and the status line
+always show the keys in effect.
+
+### TUI split panes
+
+`Alt+V` splits a terminal tab side by side and `Alt+-` one above the other.
+The new pane is a second connection to the same host (it runs the same ssh
+command) and takes the focus. `Alt+O` (or a click, with the mouse captured)
+moves the focus to the other pane; keys, pastes, find, snippets and the
+mouse go to the focused pane, whose border is highlighted. `Alt+X` closes
+the focused pane and its session; `Alt+W` closes the whole tab. A tab holds
+at most two panes: splitting a split tab again switches its direction. Each
+pane's terminal is resized to fit its half. Port-forward tabs can't be split.
 
 ### Terminal tabs (both apps)
 
@@ -415,15 +476,6 @@ into words.
 
 ## Known limitations / next steps
 
-These apply to the terminal UI (`termax`); the GUI has mouse support,
-password prompts, cancellable transfers, overwrite prompts and remappable keys.
-
-
-- **SFTP needs non-interactive auth.** The SFTP channel has no terminal, so with
-  `sftp_batch_mode = true` it uses keys or an agent and fails instead of prompting
-  for a password. A future step is an `SSH_ASKPASS` helper that prompts inside termax.
-- Keybindings are fixed. A `[keys]` config section would make them remappable.
 - The status check can't see past a jump host: for `ProxyJump` hosts it reports
   only whether the first jump host answers, and `ProxyCommand` hosts show "unknown".
-- Transfers can't be cancelled, and there's no overwrite confirmation.
-- Split panes (two sessions side by side in one tab) aren't supported.
+

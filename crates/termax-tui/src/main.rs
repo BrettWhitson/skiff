@@ -1,6 +1,7 @@
 mod app;
 mod forms;
 mod input;
+mod keys;
 mod sftp_tab;
 mod tui_theme;
 mod ui;
@@ -18,6 +19,11 @@ use termax_core::history::{self, ConnKind, History};
 use termax_core::hosts;
 
 fn main() -> Result<()> {
+    // ssh runs this executable as SSH_ASKPASS (SFTP password and host-key
+    // questions): relay the question to the running termax and exit.
+    if termax_core::askpass::is_helper_invocation() {
+        std::process::exit(termax_core::askpass::helper_main());
+    }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // `--plain` (anywhere) switches the TUI to plain mode for this run.
     let plain = args.iter().any(|a| a == "--plain");
@@ -96,6 +102,9 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build()?;
     let mut app = App::new(cfg, cfg_path, rt.handle().clone());
     app.plain |= plain;
+    if let Ok(exe) = std::env::current_exe() {
+        app.enable_askpass(exe);
+    }
     if let Some((name, files)) = open {
         app.open_named(&name, files);
     }
