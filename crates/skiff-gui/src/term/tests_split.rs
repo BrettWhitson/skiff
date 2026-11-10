@@ -369,7 +369,8 @@ fn dragging_a_tab_onto_a_pane_edge_splits_and_esc_cancels() {
     f.app.active = 0;
     f.frame(vec![]);
     f.frame(vec![]);
-    let tab = f.h.tree().find("\u{25CF} beta").expect("tab of beta").bounds;
+    let tab =
+        f.h.tree().nodes.iter().find(|n| n.role == skiff_ui::a11y::Role::Tab && n.name.starts_with("beta, ")).expect("tab of beta").bounds;
     let pane = f.h.tree().find("Terminal: alpha").expect("terminal of alpha").bounds;
     let right_edge = Point::new(pane.right() - 20, pane.center().y);
     let below = Point::new(tab.center().x, tab.bottom() + 40);
@@ -399,7 +400,7 @@ fn dragging_a_tab_onto_a_pane_edge_splits_and_esc_cancels() {
     let strip = Point::new(tab.x + 4, tab.center().y);
     drag(&mut f, grip, &[Point::new(grip.x - 30, grip.y + 30), strip]);
     assert_eq!(f.app.tabs.len(), 2);
-    assert_eq!(f.app.tab_title(1), "\u{25CF} beta");
+    assert_eq!(f.app.tab_title(1), "beta");
 }
 
 #[test]
@@ -496,4 +497,30 @@ fn a_tab_merged_early_is_still_recorded_in_history() {
         f.frame(vec![]);
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+#[test]
+/// With `dim_inactive_panes` (the default) the pane without focus gets a
+/// translucent veil; turned off, or in a high-contrast theme, it does not.
+fn inactive_panes_dim_unless_off_or_high_contrast() {
+    let (mut f, _) = alpha();
+    f.app.do_action(Action::SplitRight);
+    f.frame(vec![]);
+    f.frame(vec![]);
+    let veils = |f: &Fixture| {
+        let bg = f.app.theme.term_bg;
+        f.h.list()
+            .prims
+            .iter()
+            .filter(|p| matches!(p, skiff_ui::display::Prim::Rect { color, .. } if color.a == 38 && color.with_alpha(255) == bg))
+            .count()
+    };
+    assert_eq!(veils(&f), 1, "one of two panes is dimmed");
+    f.app.cfg.gui.dim_inactive_panes = false;
+    f.frame(vec![]);
+    assert_eq!(veils(&f), 0, "off by setting");
+    f.app.cfg.gui.dim_inactive_panes = true;
+    f.app.apply_theme("high-contrast");
+    f.frame(vec![]);
+    assert_eq!(veils(&f), 0, "never in high contrast");
 }
