@@ -189,3 +189,43 @@ fn rename_carries_forwards_and_history() {
     let hist = termax_core::history::History::load(&termax_core::history::History::path_for(&f.path));
     assert_eq!(hist.recent(5), ["alpha2"]);
 }
+
+#[test]
+fn editing_a_forward_keeps_a_host_no_longer_listed() {
+    let mut f = Fixture::with_config(&FWD_CONFIG.replace("host = \"alpha\"\nkind", "host = \"gone\"\nkind"));
+    f.app.open_forwards();
+    f.frame(vec![]);
+    f.click_text("Edit");
+    set_field(&mut f, "Listen port", "47392");
+    f.click_text("Save");
+    assert_eq!((f.app.cfg.forwards[0].host.as_str(), f.app.cfg.forwards[0].listen), ("gone", 47392), "not moved to another host");
+}
+
+#[test]
+fn forward_rows_and_sidebar_controls_are_named() {
+    let mut f = Fixture::with_config(FWD_CONFIG);
+    f.app.open_forwards();
+    f.frame(vec![]);
+    let t = f.h.tree();
+    let title = f.app.cfg.forwards[0].title();
+    for verb in ["Start", "Edit", "Delete"] {
+        assert_eq!(t.find(&format!("{verb} {title}")).map(|n| n.role), Some(termax_ui::a11y::Role::Button), "{verb}");
+    }
+    assert_eq!(t.find("More host actions").map(|n| n.role), Some(termax_ui::a11y::Role::Button));
+    assert_eq!(t.find("Sort hosts by").and_then(|n| n.value.clone()).as_deref(), Some("Name"));
+}
+
+#[test]
+fn sidebar_delete_key_focuses_cancel_and_esc_cancels() {
+    let mut f = Fixture::new();
+    f.click_text("beta");
+    f.frame(vec![Event::KeyDown { key: Key::Delete, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("Delete beta?").is_some(), "{:?}", f.texts());
+    assert_eq!(f.h.state.focused(), Some(termax_ui::ui::Id::new("sidebar-del-no")), "a reflexive Enter keeps the host");
+    f.frame(vec![Event::KeyDown { key: Key::Escape, mods: Modifiers::NONE, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("Delete beta?").is_none());
+    assert_eq!(f.app.cfg.connections.len(), 2);
+    assert_eq!(f.h.state.focused(), Some(termax_ui::ui::Id::new("sidebar-list")), "back on the list");
+}

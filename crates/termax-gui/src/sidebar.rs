@@ -16,7 +16,7 @@ use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Ui};
 use termax_ui::widgets::{
-    MenuItem, TextInputOpts, button, context_menu, dropdown, elide, label, list_named, open_context_menu, text_input,
+    MenuItem, TextInputOpts, button, context_menu, dropdown_labeled, elide, label, list_named, open_context_menu, text_input,
 };
 
 const ROW_H: i32 = 26;
@@ -71,6 +71,8 @@ pub struct Sidebar {
     collapsed: HashSet<String>,
     menu_host: Option<String>,
     confirm_delete: Option<String>,
+    /// The delete question just appeared: focus goes to Cancel.
+    confirm_new: bool,
     /// The host under the mouse (the status bar describes it).
     pub hovered: Option<String>,
 }
@@ -179,12 +181,15 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     }
     let sorts = [SortMode::Name, SortMode::Recent];
     let mut si = sorts.iter().position(|s| *s == ctx.sort).unwrap_or(0);
-    if dropdown(ui, Id::new("sidebar-sort"), head[1], &["Name", "Recent"], &mut si) {
+    if dropdown_labeled(ui, Id::new("sidebar-sort"), head[1], "Sort hosts by", &["Name", "Recent"], &mut si) {
         action = Some(SidebarAction::SetSort(sorts[si]));
     }
     let more = Id::new("sidebar-more-menu");
     if button(ui, Id::new("sidebar-more"), head[2], "\u{22EF}").clicked {
         open_context_menu(ui, more, Point::new(head[2].x, head[2].bottom()));
+    }
+    if let Some(n) = ui.a11y_node(Id::new("sidebar-more"), termax_ui::a11y::Role::Button, "") {
+        n.name = "More host actions".into();
     }
     let hidden_label = if ctx.show_hidden { "\u{2713} Show hidden hosts" } else { "Show hidden hosts" };
     let more_items = [
@@ -294,6 +299,7 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
         && ui.input_mut().take_key(&Key::Delete, Modifiers::NONE)
     {
         sb.confirm_delete = Some(hosts[*h].name.clone());
+        sb.confirm_new = true;
     }
     if let Some(i) = lr.activated
         && let Some(Row::Host(h)) = rows.get(i)
@@ -335,7 +341,10 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
                 open_context_menu(ui, move_menu, at);
             }
             7 => action = Some(SidebarAction::SetHidden(h, !hidden)),
-            8 => sb.confirm_delete = Some(h),
+            8 => {
+                sb.confirm_delete = Some(h);
+                sb.confirm_new = true;
+            }
             _ => {}
         }
     }
@@ -363,12 +372,18 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
                     n.live = true;
                 }
                 let btns = ui.split_h(rows[1], &[L::Frac(0.5), L::Frac(0.5)], 6);
-                if button(ui, Id::new("sidebar-del-yes"), btns[0], "Delete").clicked {
+                let (yes, no) = (Id::new("sidebar-del-yes"), Id::new("sidebar-del-no"));
+                if std::mem::take(&mut sb.confirm_new) {
+                    ui.request_focus(no); // a reflexive Enter keeps the host
+                }
+                let esc = (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE);
+                if button(ui, yes, btns[0], "Delete").clicked {
                     action = Some(SidebarAction::Delete(h));
                     sb.confirm_delete = None;
-                }
-                if button(ui, Id::new("sidebar-del-no"), btns[1], "Cancel").clicked {
+                    ui.request_focus(Id::new("sidebar-list"));
+                } else if button(ui, no, btns[1], "Cancel").clicked || esc {
                     sb.confirm_delete = None;
+                    ui.request_focus(Id::new("sidebar-list"));
                 }
             }
         }
