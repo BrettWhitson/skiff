@@ -13,7 +13,7 @@ exactly as they do on the command line.
   fuzzy filter, tags, hidden hosts and "Recent" sorting.
 - **Edits `~/.ssh/config` in place**: add, edit, duplicate, move and delete
   hosts, with comments and formatting kept, a conflict check and backups.
-- **Tabs** for interactive terminals (with split panes, find, snippets and a
+- **Tabs** for interactive terminals (with splits, find, snippets and a
   multi-line paste warning) and dual-pane **file transfer** (local↔remote and
   remote↔remote, drag and drop in the GUI, safe overwrite and cancel).
 - **Passwords and host-key questions** answered inside the app for SFTP and
@@ -162,13 +162,18 @@ Every key, the `[gui]` options, custom themes, key remapping (`[keys]`,
     freely). A pane keeps at least 10 columns by 3 rows. A lone terminal has
     no frame at all; split panes get a one-line title rule, heavy and in the
     accent color on the focused pane.
-  - *GUI*: split any pane as often as you like. Drag a divider (it snaps to
-    the same shares, `Alt` places it freely, double-click equalizes). Drag a
-    pane by its grip (the dots at its top centre) or with `Alt+Shift`+drag
-    (plain `Alt`+click stays the terminal's) onto another pane: the left, right, top or bottom half splits that pane there,
-    the centre swaps the two, and the tab strip gives it a tab of its own.
-    Drag a terminal tab onto a pane's edge to join it into that tab. `Esc`
-    cancels a drag.
+  - *GUI*: the main area is a dock of **tab groups**, each with its own tab
+    strip, split side by side or stacked as often as you like. Any tab
+    (terminal, file transfer, Settings, Forwards) docks anywhere: drag it
+    off its strip (the active tab and a group's only tab too) and the group
+    under the pointer shows a dock guide and a preview of where it would go.
+    Its left, right, top or bottom part docks the tab there as a new group,
+    its centre moves the tab into that group, and another group's tab strip
+    takes it at the marked position. A release anywhere else does nothing;
+    `Esc` cancels. Splitting a terminal opens another session to its host
+    in a new group; empty groups close by themselves. Drag a divider (it
+    snaps to the same shares, `Alt` places it freely, double-click
+    equalizes); every drag has a keyboard equivalent (below).
 - **Paste warning**: text with a line break pasted into a shell without
   bracketed paste would run each line, so Skiff asks first
   (`confirm_multiline_paste = false` turns it off).
@@ -287,12 +292,14 @@ them back.
 | Interface larger / smaller / normal | `Ctrl+Alt+=` / `-` / `0` | `Cmd+Alt+=` / `-` / `0` |
 | Toggle sidebar | `Ctrl+Shift+B` | `Cmd+B` |
 | Settings | `Ctrl+Shift+,` | `Cmd+,` |
-| Split pane right / down | `Ctrl+Shift+D` / `Ctrl+Shift+E` | `Cmd+D` / `Cmd+Shift+D` |
-| Next pane | `Ctrl+Shift+O` (or `F6`) | `Cmd+]` (or `F6`) |
-| Close pane | `Ctrl+Shift+X` | `Cmd+Alt+W` |
-| Swap focused pane with its neighbour | `Ctrl+Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+Shift+←` `→` `↑` `↓` |
-| Move the divider next to the focused pane (next snap point) | `Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+←` `→` `↑` `↓` |
-| Equalize panes | `Alt+Shift+=` | `Cmd+Ctrl+=` |
+| Split right / down (a terminal opens a new session in a new group; Settings and Forwards move) | `Ctrl+Shift+D` / `Ctrl+Shift+E` | `Cmd+D` / `Cmd+Shift+D` |
+| Next group | `Ctrl+Shift+O` | `Cmd+]` |
+| Focus the group to the left / right / above / below | `Ctrl+Alt+←` `→` `↑` `↓` | `Cmd+Alt+←` `→` `↑` `↓` |
+| Close group (its tabs; with one group, the tab) | `Ctrl+Shift+X` | `Cmd+Alt+W` |
+| Move the tab into the group on that side (a new group there if none) | `Ctrl+Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+Shift+←` `→` `↑` `↓` |
+| Move the tab to a new group right / below | palette (unbound) | palette (unbound) |
+| Move the divider next to the focused group (next snap point) | `Alt+Shift+←` `→` `↑` `↓` | `Cmd+Ctrl+←` `→` `↑` `↓` |
+| Equalize groups | `Alt+Shift+=` | `Cmd+Ctrl+=` |
 
 \* Plain `Ctrl`+letter belongs to the shell inside a terminal, so `Ctrl+P`
 stays the shell's previous-history key there and `Ctrl+Shift+P` opens the
@@ -303,10 +310,11 @@ Keyboard navigation (no mouse needed):
 
 | Key | Does |
 |---|---|
-| `F6` / `Shift+F6` | Next / previous area: sidebar divider, hosts, tabs, content; each split pane, then the pane dividers |
+| `F6` / `Shift+F6` | Next / previous area: sidebar divider, hosts, then each group's tabs and content, then the group dividers |
 | `Tab` / `Shift+Tab` | Next / previous control within the area |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move in lists; `←` `→` switch tabs on the tab strip |
-| Arrow keys on a pane divider | Move the divider to the next snap point (25 / 33 / 50 / 67 / 75%, then 5% per press) |
+| `Shift+←` `→` on a tab strip | Move the tab left / right in its strip |
+| Arrow keys on a group divider | Move the divider to the next snap point (25 / 33 / 50 / 67 / 75%, then 5% per press) |
 | `←` `→` on the sidebar divider | Narrow / widen the sidebar |
 | `Enter` / `Space` | Open the selected row; press buttons and checkboxes |
 | `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
@@ -361,6 +369,7 @@ Please report anything a screen reader gets wrong.
 - Answering prompts inside the app needs OpenSSH 8.4+ (`SSH_ASKPASS_REQUIRE`).
 - On macOS, a forward can outlive a killed Skiff until ssh notices.
 - A TUI tab holds at most two panes; port-forward tabs can't be split.
+- The GUI's group layout is not kept across restarts.
 - Windows consoles have no bracketed paste, so the TUI there treats a burst
   of 8+ keys with a line break as a paste.
 - Some ssh config hosts can't be edited in place (shared `Host` lines,

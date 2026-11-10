@@ -123,7 +123,7 @@ Read only by `skiff-gui`; the TUI ignores this section.
 | `ui_scale` | `1.0` | Interface scale (clamped to 0.5–3). Windows' text-size setting is applied on top. |
 | `announce_output` | `true` | New terminal output read by screen readers: `true` (all terminals), `"focused"` (only the focused one) or `false`. |
 | `cursor_blink` | `true` | Blinking text and terminal cursors. Windows' "animation effects" off also stops blinking. |
-| `dim_inactive_panes` | `true` | Split panes without keyboard focus are dimmed a little, so the one you type into stands out. Never applied in the high-contrast themes. |
+| `dim_inactive_panes` | `true` | With several tab groups, terminals in the groups without focus are dimmed a little, so the one you type into stands out. Never applied in the high-contrast themes. |
 | `font_family` | — | Retired: older configs may have it; it is accepted and ignored. Use `font_path` / `ui_font_path`. |
 
 ```toml
@@ -314,14 +314,24 @@ finds any setting, host or snippet by name.
 | `focus_next_pane` | `ctrl+shift+o` | `cmd+]` |
 | `close_pane` | `ctrl+shift+x` | `cmd+alt+w` |
 | `move_pane_left` / `_right` / `_up` / `_down` | `ctrl+alt+shift+left` / `right` / `up` / `down` | `cmd+ctrl+shift+left` / … |
+| `move_to_new_group_right` / `_down` | (unbound) | (unbound) |
+| `focus_group_left` / `_right` / `_up` / `_down` | `ctrl+alt+left` / `right` / `up` / `down` | `cmd+alt+left` / … |
 | `resize_pane_left` / `_right` / `_up` / `_down` | `alt+shift+left` / `right` / `up` / `down` | `cmd+ctrl+left` / … |
 | `equalize_panes` | `alt+shift+=` | `cmd+ctrl+=` |
 
-`move_pane_*` swaps the focused pane with its neighbour in that direction;
-`resize_pane_*` moves the divider next to the focused pane to the next snap
-point (25 / 33 / 50 / 67 / 75%); `equalize_panes` shares the space equally.
-When there is nothing to do (no pane that way, a single pane, not a terminal
-tab), a pane shortcut's key goes to the shell instead. An empty value unbinds an action, so its chord
+In the GUI these act on the dock's tab groups (the `*_pane*` names are kept
+from when splits lived inside a terminal tab). `split_*` splits the focused
+tab into a new group (a terminal opens another session to its host, a file
+transfer another tab on the same places; Settings and Forwards move);
+`focus_next_pane` and `focus_group_*` move between groups; `close_pane`
+closes the focused group's tabs (with a single group, just the focused
+tab); `move_pane_*` moves the focused tab into the group on that side, or
+into a new group there when there is none; `move_to_new_group_*` always
+makes a new group beside the tab's own; `resize_pane_*` moves the divider
+next to the focused group to the next snap point (25 / 33 / 50 / 67 / 75%);
+`equalize_panes` shares the space equally. When there is nothing to do (no
+group that way, a lone tab already at that edge, a single group), the
+shortcut's key goes to the shell instead. An empty value unbinds an action, so its chord
 reaches the shell.
 
 ```toml

@@ -10,6 +10,15 @@ First release under the name Skiff (formerly termax).
 
 ### Changed
 
+- **One split system (GUI).** Splits now belong to the window's tab groups
+  instead of living inside a terminal tab; the split, pane-move, focus,
+  resize and equalize shortcuts keep their `[keys]` names and act on
+  groups. "Split right / down" opens another session to the same host in a
+  new group (a file transfer opens another tab on the same places;
+  Settings and Forwards move), "move pane" moves the focused tab into the
+  group on that side, and "close pane" closes the focused group. The pane
+  grip and `Alt+Shift`+drag are gone: drag the tab instead.
+
 - **Renamed termax to Skiff.** The TUI and CLI command is `skiff` (crate
   `skiff-ssh`), the desktop app `skiff-gui`.
 - **Config directory.** Settings live in the `skiff` folder
@@ -48,6 +57,20 @@ First release under the name Skiff (formerly termax).
   inline bars.
 
 ### Added
+
+- **Dock with tab groups (GUI).** The main area is a split layout of tab
+  groups, each with its own tab strip. Any tab (terminal, file transfer,
+  Settings, Forwards) can be dragged, the active tab and a group's only tab
+  included: a dock guide and a translucent preview show where it goes, an
+  edge docks it as a new group on that side, the centre moves it into the
+  group, another strip takes it at the marked position; `Esc` cancels and
+  a release elsewhere does nothing. Empty groups close by themselves.
+  Dividers resize like before (snapping, `Alt` free, double-click
+  equalize, arrow keys). New actions: focus the group left / right / up /
+  down (`Ctrl+Alt+arrows`, `Cmd+Alt+arrows` on macOS) and move the tab to
+  a new group right / below (palette). `Shift+Left` / `Right` on a focused
+  tab strip moves the tab. Each group is a named region ("Group 2 of 3:
+  web") with its own tab list, and dock changes are announced.
 
 - **App icon.** A Skiff mark (a small boat whose sail is a `>` prompt) as
   the GUI's window and taskbar icon, in the Windows `.exe` files of
@@ -114,6 +137,15 @@ First release under the name Skiff (formerly termax).
   cancellable transfers in the TUI.
 
 ### Fixed
+
+- **Dragging a tab never showed the split targets (GUI).** Drop zones only
+  appeared for a non-active terminal tab dragged over another terminal
+  tab's panes: dragging the tab you were looking at, the only tab, any
+  non-terminal tab, or sideways out of the strip did nothing. All of these
+  now dock.
+- **App shortcuts stand aside for an open context menu (GUI)**, so the
+  menu's own shortcut chooses its item and closes it (a terminal menu's
+  `Ctrl+Shift+D` used to split behind a menu that stayed open).
 
 - **Menu shortcuts work.** Pressing a shortcut shown in an open context
   menu (such as `Del` or `Enter` in a host's menu) chooses that item, and a

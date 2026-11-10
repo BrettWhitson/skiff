@@ -24,7 +24,7 @@ exactly as on the command line.
 |---|---|---|
 | `skiff-core` | `crates/skiff-core` | Everything that isn't drawing: `config.toml`, `state.toml`, `history.toml`, themes, the host list, reading and editing ssh config files, the CLI parser, terminal sessions (pty + `vt100`), terminal helpers (search, paste rules, mouse reporting), split-pane divider rules, the SFTP engine and transfers, the askpass broker, port forwards and reachability probes. No UI code. |
 | `skiff-ssh` | `crates/skiff-tui` | The `skiff` binary: CLI commands (`list`, `info`, `completion`, `skiff host cmd`), and the full-screen TUI built with `ratatui` + `crossterm`; terminals are drawn with `tui-term`. |
-| `skiff-gui` | `crates/skiff-gui` | The `skiff-gui` binary: sidebar, tabs (terminals with nested, draggable split panes, file transfer, forwards, settings), a Settings gear on the tab strip, a command palette, toasts. Draws a cell grid for terminals itself. |
+| `skiff-gui` | `crates/skiff-gui` | The `skiff-gui` binary: sidebar, tabs in a dock of split, draggable tab groups (terminals, file transfer, forwards, settings), a Settings gear on the tab strip, a command palette, toasts. Draws a cell grid for terminals itself. |
 | `skiff-ui` | `crates/skiff-ui` | A from-scratch GUI toolkit: window shell (`winit` + `softbuffer`), CPU renderer with tile damage tracking, text (`fontdue` behind a trait), layout, focus, widgets and an accessibility tree bridged to AccessKit. Knows nothing about SSH. |
 | `skiff-testserver` | `crates/skiff-testserver` | A `russh` server bound to 127.0.0.1 with SFTP, an optional echo shell, exec and local forwards, plus a fixture that generates keys and an isolated ssh config. Used by tests only; never shipped. |
 
@@ -56,12 +56,12 @@ reporting to programs that enable it, snippets.
 
 The TUI draws the parser's screen with `tui-term`; the GUI converts it to
 toolkit cell rows (`skiff-gui/src/term/render.rs`) drawn by the display list.
-A split pane is simply another `TerminalSession` to the same host.
+A split terminal is simply another `TerminalSession` to the same host.
 
 ### Split panes
 
-Every pane is its own `TerminalSession` to the same host; moving panes
-never restarts a session. The divider rules both front-ends share live in
+Every pane (TUI) or tab group (GUI) holds its own `TerminalSession`;
+moving them never restarts a session. The divider rules both front-ends share live in
 `skiff_core::panes`: the snap shares (25 / 33 / 50 / 67 / 75%), `snap` (the
 nearest share within a tolerance), `step_ratio` (keyboard: the next share in
 a direction, then `KEY_STEP` = 5% past the last one), `MIN_RATIO` (10%) and
@@ -74,30 +74,43 @@ always the first (left / top) side's share.
   snaps within one cell
   unless `Alt` is held; `app.rs` handles swap, resize (`step_ratio`) and
   equalize.
-- **GUI** (`skiff-gui/src/term/split.rs`): a terminal tab is a `TermSplit`
-  holding its panes, each with a stable `u64` key that is never reused in
-  the tab, and a `Layout` binary tree. Leaves are `Pane(key)`; inner nodes
-  are `Split { dir: Right | Down, ratio, a, b }`. Nodes are addressed by a
-  path of turns. Each frame `Layout::arrange` turns the tree into pane
-  rectangles (in reading order, which is also the "pane n of m" numbering)
-  plus one divider per split. The minimum pane size is enforced on a
-  per-frame copy of the tree, so stored ratios come back when the window
-  grows again.
-  - *Dividers* snap within 8 logical px of a share during a drag (`Alt`
-    drags freely, a double-click equalizes by pane count) and step with the
+- **GUI** (`skiff-gui/src/dock/`): splits belong to the window, not to a
+  terminal tab. The main area is a *dock*: a `Layout` binary tree whose
+  leaves are tab groups (`Layout::Group(id)`) and whose inner nodes are
+  `Split { dir: Right | Down, ratio, a, b }`, addressed by a path of turns.
+  Each `Group` has an ordered list of tab ids (its strip) and the one it
+  shows; a terminal tab is one `TermTab`, so "split right" is a new tab with
+  a sibling session in a new group. `GuiApp` still owns the tabs (`tabs`,
+  by id) and the focused one (`active`); `Dock::sync` reconciles both each
+  frame (closed tabs leave their group, tabs in no group join the focused
+  one, the focused tab's group gets focus), so code that opens, closes or
+  picks tabs never touches the dock. A group left empty closes and its
+  neighbor takes the space. Each frame `Layout::arrange` turns the tree
+  into group rectangles (reading order is the "Group n of m" numbering)
+  plus one divider per split; the minimum group size (200 x 130 logical px)
+  is enforced on a per-frame copy, so stored ratios come back when the
+  window grows again.
+  - *Dividers* (`dock/view.rs`) snap within 8 logical px of a share during
+    a drag (`Alt` drags freely, a double-click equalizes) and step with the
     arrow keys or screen-reader increment / decrement. Each divider's
-    widget id is keyed by the first pane key of the split's second side,
-    which is unique and survives restructuring, so keyboard focus stays on
-    a divider while the tree changes around it.
-  - *Drag and drop*: a pane is dragged by its grip or with `Alt+Shift`+drag
-    (plain `Alt`+click is left to programs reading the mouse). Over
-    a target pane the middle third is the centre zone, elsewhere the nearest
-    edge wins; an edge is offered only if both halves would keep the minimum
-    size. Dropping on an edge removes the pane and re-inserts it beside the
-    target at 50/50; the centre swaps the two. Dropping on the tab strip
-    pops the pane out into its own tab. A whole terminal tab dragged onto a
-    pane's edge has its subtree grafted in beside that pane (keys shifted so
-    they stay unique); onto the centre it just switches to that tab.
+    widget id is keyed by the first group of the split's second side,
+    which is unique and survives restructuring.
+  - *Drag and drop*: the toolkit tab strip reports a tab dragged out of its
+    rect on any side (`TabsResponse::dragged_out`); the app then starts a
+    toolkit drag carrying `DockDrag { tab }`. Every group's strip and
+    content is a drop target. Over a content area the zone is a dock-guide
+    square under the pointer, else the middle third (centre) or the nearest
+    edge; over a strip it is the insertion index before the first tab whose
+    middle is right of the pointer. `Dock::can_drop` refuses drops that
+    change nothing (the only tab of a group onto itself, a strip position
+    next to its own), and an edge needs room for two minimum-size halves;
+    only offered zones are drawn. A drop becomes `Drop::Into { group,
+    index }` or `Drop::Beside { group, zone }` and `GuiApp::move_tab`
+    applies it, focuses the tab and announces the result through a polite
+    live region. The keyboard actions build the same `Drop`s.
+  - *Focus*: the focused group follows a press in it or keyboard focus in
+    its strip or content; a tab focused any other way (palette, shortcut,
+    drop) gets keyboard focus (its terminal, or its group's strip).
 
 ### SFTP engine
 
@@ -218,7 +231,7 @@ converts it into AccessKit updates for Narrator/NVDA/JAWS, VoiceOver and
 Orca, and AccessKit actions come back as ordinary `Event::A11y` input the
 next frame. Keyboard access follows the same model: `Tab` cycles controls
 within a focus region, `F6` moves between regions (sidebar divider, hosts,
-tab strip, content, each split pane, pane dividers), and a focus ring plus a
+then each tab group's strip and content, then the group dividers), and a focus ring plus a
 list focus bar show focus without relying on color. Every divider, the
 sidebar's `splitter_h` included, is a focusable `Splitter` node whose value
 is the first side's share; the arrow keys and the screen reader's
@@ -289,13 +302,13 @@ notices also go out through `SettingsState::take_notices`.
 | ssh config read/edit/resolve | `skiff-core/src/sshconfig/{mod,doc,edit,resolve}.rs` |
 | CLI | `skiff-core/src/cli.rs`, `skiff-tui/src/main.rs` |
 | Terminal sessions | `skiff-core/src/{terminal,termx}.rs` |
-| Split-pane rules | `skiff-core/src/panes.rs`, `skiff-gui/src/term/split.rs`, `skiff-tui/src/ui.rs` (`split_areas`) |
+| Split rules, dock | `skiff-core/src/panes.rs`, `skiff-gui/src/dock/{mod,layout,view}.rs`, `skiff-tui/src/ui.rs` (`split_areas`) |
 | SFTP and transfers | `skiff-core/src/fs/{connect,endpoint,path,transfer}.rs` |
 | Askpass | `skiff-core/src/{askpass,sshver}.rs`, `skiff-core/src/bin/askpass-shim.rs` (tests) |
 | Forwards, status | `skiff-core/src/{forward,status}.rs` |
 | TUI | `skiff-tui/src/{main,app,ui,widgets,keys,forms,input,sftp_tab}.rs` |
 | GUI app | `skiff-gui/src/{main,app,engine,sidebar,palette,forwards,keys,gear,os}.rs` |
-| GUI terminals | `skiff-gui/src/term/` (render, input, mouse, select, search, split, announce) |
+| GUI terminals | `skiff-gui/src/term/` (render, input, mouse, select, search, announce) |
 | GUI files, settings | `skiff-gui/src/files/`, `skiff-gui/src/settings/` |
 | Toolkit core | `skiff-ui/src/{ui,shell,display,canvas,layout,input}.rs` |
 | Toolkit text, widgets, a11y | `skiff-ui/src/text/`, `skiff-ui/src/widgets/`, `skiff-ui/src/{a11y,a11y_kit}.rs` |
