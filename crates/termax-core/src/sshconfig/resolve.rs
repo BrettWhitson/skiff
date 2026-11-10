@@ -41,11 +41,11 @@ struct Found {
 
 /// Walks doc `di` in file order, splicing in included files where the
 /// `Include` line is, so "first value wins" follows OpenSSH.
-fn walk(set: &ConfigSet, di: usize, alias: &str, mut active: bool, depth: usize, found: &mut Found) {
+/// `in_match` is set for a file included from inside a `Match` block.
+fn walk(set: &ConfigSet, di: usize, alias: &str, mut active: bool, mut in_match: bool, depth: usize, found: &mut Found) {
     if depth > MAX_INCLUDE_DEPTH {
         return;
     }
-    let mut in_match = false;
     for (line, _) in &set.docs[di].lines {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
@@ -67,7 +67,7 @@ fn walk(set: &ConfigSet, di: usize, alias: &str, mut active: bool, depth: usize,
                 for p in v.split_whitespace() {
                     for path in resolve_include(unquote(p)) {
                         if let Some(inc) = set.docs.iter().position(|d| d.path == path) {
-                            walk(set, inc, alias, active, depth + 1, found);
+                            walk(set, inc, alias, active, in_match, depth + 1, found);
                         }
                     }
                 }
@@ -90,9 +90,15 @@ fn walk(set: &ConfigSet, di: usize, alias: &str, mut active: bool, depth: usize,
 
 /// The address a status check for ssh config host `alias` connects to.
 pub fn probe_target(set: &ConfigSet, alias: &str) -> Probe {
+    probe_target_all(std::slice::from_ref(set), alias)
+}
+
+/// Like [`probe_target`] over several config files read in order (the
+/// user's, then the system-wide one): the first value wins across them.
+pub fn probe_target_all(sets: &[ConfigSet], alias: &str) -> Probe {
     let mut f = Found::default();
-    if !set.docs.is_empty() {
-        walk(set, 0, alias, true, 0, &mut f);
+    for set in sets.iter().filter(|s| !s.docs.is_empty()) {
+        walk(set, 0, alias, true, false, 0, &mut f);
     }
     if f.match_blocks {
         return Probe::Unknown("Match rules".into());
@@ -154,5 +160,22 @@ mod tests {
     fn percent_h_substituted_other_tokens_unknown() {
         assert_eq!(probe("Host web\n HostName %h.example.com\n", "web"), direct("web.example.com", 22));
         assert!(matches!(probe("Host web\n HostName %r.example.com\n", "web"), Probe::Unknown(_)));
+    }
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    #[test]
+    fn match_then_include_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let inc = dir.path().join("proxied.conf");
+        std::fs::write(&inc, "ProxyJump bastion\n").unwrap();
+        let inc = inc.display().to_string().replace('\\', "/");
+        let p = dir.path().join("config");
+        std::fs::write(&p, format!("Host web\n    HostName 10.0.0.5\nMatch host 10.0.0.5\n    Include \"{inc}\"\n")).unwrap();
+        let set = ConfigSet::load(&p).unwrap();
+        assert!(matches!(probe_target(&set, "web"), Probe::Unknown(_)));
     }
 }

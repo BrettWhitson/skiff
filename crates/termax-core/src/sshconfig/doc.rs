@@ -151,6 +151,11 @@ impl Doc {
         let mut cur = Block { kind: BlockKind::Preamble, start: 0, end: 0, patterns: vec![], line: 0 };
         for (i, (c, _)) in self.lines.iter().enumerate() {
             if is_comment_or_blank(c) {
+                // termax's own comment is part of the host it describes, even
+                // in a block with no option lines.
+                if cur.kind == BlockKind::Host && parse_extras(c.trim()).is_some() {
+                    cur.end = i + 1;
+                }
                 continue;
             }
             let kind = match split_kv(c.trim()).map(|(k, _)| k.to_ascii_lowercase()).as_deref() {

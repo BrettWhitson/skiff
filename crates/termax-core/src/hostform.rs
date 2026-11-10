@@ -5,7 +5,7 @@
 use crate::config::{CONNECTION_FIELDS, Config, Connection};
 use crate::hosts::{HostEntry, Source};
 use crate::sshconfig::doc::HostFields;
-use crate::sshconfig::edit::{ConfigSet, Locate, validate};
+use crate::sshconfig::edit::{ConfigSet, Locate, validate_with};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
@@ -201,7 +201,8 @@ impl HostForm {
             }
             Dest::SshConfig(doc) => {
                 let f = self.host_fields();
-                validate(&f, taken, self.current_name())?;
+                let existing = self.current_name().and_then(|a| set.fields(a)).map(|h| h.other).unwrap_or_default();
+                validate_with(&f, taken, self.current_name(), &existing)?;
                 match self.current_name() {
                     Some(alias) => set.update_host(alias, &f)?,
                     None => set.add_host(doc, &f)?,
@@ -295,3 +296,4 @@ mod tests {
         assert!(!f.fields().contains(&Field::ExtraArgs));
     }
 }
+

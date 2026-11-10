@@ -46,6 +46,8 @@ pub struct Tab {
     pub kind: TabKind,
     /// History to record once the session proves it connected.
     pub record: Option<(String, ConnKind, Instant)>,
+    /// The saved forward (by title) this tab runs.
+    pub forward: Option<String>,
 }
 
 pub enum PromptAction {
@@ -128,7 +130,7 @@ impl App {
             host_offset: 0,
             filter: TextInput::default(),
             filtering: false,
-            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts, record: None }],
+            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts, record: None, forward: None }],
             active: 0,
             modal: None,
             status: None,
@@ -242,7 +244,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let title = self.unique_title(title);
-        self.tabs.push(Tab { id, title, kind, record: None });
+        self.tabs.push(Tab { id, title, kind, record: None, forward: None });
         self.active = self.tabs.len() - 1;
     }
 
@@ -278,18 +280,17 @@ impl App {
         match hosts::ssh_config_path(&self.cfg) {
             Some(p) => ConfigSet::load(&p).unwrap_or_else(|e| {
                 self.set_error(format!("{e:#}"));
-                ConfigSet { docs: vec![] }
+                ConfigSet::default()
             }),
-            None => ConfigSet { docs: vec![] },
+            None => ConfigSet::default(),
         }
     }
 
     /// Checks every listed host (opt-in: never runs unless asked or `on_start`).
     pub fn check_status(&mut self) {
-        let set = self.load_set();
-        let set = (!set.docs.is_empty()).then_some(set);
+        let sets = hosts::probe_sets(&self.cfg);
         let items: Vec<(String, hosts::Probe)> =
-            self.filtered.iter().map(|&i| (self.hosts[i].name.clone(), self.hosts[i].probe(set.as_ref()))).collect();
+            self.filtered.iter().map(|&i| (self.hosts[i].name.clone(), self.hosts[i].probe(sets.as_deref()))).collect();
         for (n, _) in &items {
             self.statuses.insert(n.clone(), HostStatus::Checking);
         }
@@ -328,18 +329,63 @@ impl App {
 
     // ----- forwards -----
 
+    /// Starts forward `f` in its own tab. A forward that is already running
+    /// is shown instead; a failed one's tab is replaced.
     pub fn start_forward(&mut self, f: &Forward) {
         let Some(host) = self.hosts.iter().find(|h| h.name == f.host).cloned() else {
             self.set_error(format!("unknown host: {}", f.host));
             return;
         };
+        let title = f.title();
+        if let Some(i) = self.forward_tab(&title) {
+            if let TabKind::Terminal(s) = &mut self.tabs[i].kind {
+                if s.is_alive() {
+                    self.active = i;
+                    return;
+                }
+            }
+            self.tabs.remove(i);
+            self.active = self.active.min(self.tabs.len() - 1);
+        }
         let (rows, cols) = self.term_area;
         match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &f.ssh_args(&host), rows, cols, self.cfg.settings.scrollback) {
             Ok(s) => {
-                self.push_tab(f.title(), TabKind::Terminal(Box::new(s)));
+                self.push_tab(title.clone(), TabKind::Terminal(Box::new(s)));
+                if let Some(t) = self.tabs.last_mut() {
+                    t.forward = Some(title);
+                }
                 self.record(&host.name, ConnKind::Forward);
             }
             Err(e) => self.set_error(format!("{e:#}")),
+        }
+    }
+
+    fn forward_tab(&self, title: &str) -> Option<usize> {
+        self.tabs.iter().position(|t| t.forward.as_deref() == Some(title))
+    }
+
+    /// "running", "stopped" or "failed: <ssh's reason>" for saved forward `i`.
+    pub fn forward_state(&mut self, i: usize) -> String {
+        let Some(title) = self.cfg.forwards.get(i).map(|f| f.title()) else { return String::new() };
+        let Some(ti) = self.forward_tab(&title) else { return "stopped".into() };
+        let TabKind::Terminal(s) = &mut self.tabs[ti].kind else { return "stopped".into() };
+        if s.is_alive() {
+            return "running".into();
+        }
+        let text = s.parser.lock().map(|p| p.screen().contents()).unwrap_or_default();
+        let lines: Vec<String> = text.lines().map(String::from).collect();
+        match termax_core::forward::error_line(&lines) {
+            Some(l) => format!("failed: {l}"),
+            None => "failed".into(),
+        }
+    }
+
+    /// Stops saved forward `i` (closes its tab).
+    fn stop_forward(&mut self, i: usize) {
+        let Some(title) = self.cfg.forwards.get(i).map(|f| f.title()) else { return };
+        if let Some(ti) = self.forward_tab(&title) {
+            self.tabs.remove(ti);
+            self.active = self.active.min(self.tabs.len() - 1);
         }
     }
 
@@ -823,6 +869,13 @@ impl App {
                         self.start_forward(&f);
                         None
                     }
+                    KeyCode::Char('s') if selected < n => {
+                        self.stop_forward(selected);
+                        Some(Modal::Forwards { selected })
+                    }
+                    KeyCode::Char('e') if selected < n => {
+                        Some(Modal::Forward(ForwardForm::edit(&self.cfg.forwards[selected], selected)))
+                    }
                     KeyCode::Char('d') | KeyCode::Delete if selected < n => Some(Modal::Confirm {
                         text: format!("Delete forward '{}'?", self.cfg.forwards[selected].title()),
                         action: ConfirmAction::DeleteForward(selected),
@@ -839,7 +892,9 @@ impl App {
     /// Returns the modal to keep showing (with an error) or `None` on success.
     fn save_editor(&mut self, mut ed: Editor) -> Option<Modal> {
         let taken = hostform::taken_names(&self.hosts);
-        let saved = match ed.form.save(&mut self.cfg, &mut ed.set, &taken) {
+        // Edit a copy: if the write fails, the form can be saved again as is.
+        let mut set = ed.set.clone();
+        let saved = match ed.form.save(&mut self.cfg, &mut set, &taken) {
             Ok(s) => s,
             Err(e) => {
                 ed.error = Some(e);
@@ -847,7 +902,7 @@ impl App {
             }
         };
         let name = saved.name().to_string();
-        if let Err(e) = self.after_host_change(saved, &mut ed.set) {
+        if let Err(e) = self.after_host_change(saved, &mut set) {
             ed.error = Some(e);
             return Some(Modal::Editor(ed));
         }

@@ -137,3 +137,70 @@ fn new_dialogs_render_on_a_small_screen() {
     t.keys(KeyCode::Up, 1); // wraps to the last "Other options" line
     term.draw(|f| crate::ui::draw(f, &mut t.app)).unwrap();
 }
+
+/// Windows only: a read-only file can't be replaced there, which stands in
+/// for an editor or antivirus holding the file.
+#[cfg(windows)]
+fn set_readonly(p: &std::path::Path, ro: bool) {
+    let mut perm = std::fs::metadata(p).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perm.set_readonly(ro);
+    std::fs::set_permissions(p, perm).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_save_can_be_retried() {
+    let mut t = T::new("Host web\n    HostName a\n");
+    let ssh = t.dir.path().join("ssh_config");
+    t.key(KeyCode::Char('n'));
+    t.key(KeyCode::Down);
+    t.typed("db");
+    t.key(KeyCode::Down);
+    t.typed("10.0.0.9");
+    set_readonly(&ssh, true);
+    t.ctrl('s');
+    assert!(t.app.modal.is_some(), "the form stays open after a failed write");
+    set_readonly(&ssh, false);
+    t.ctrl('s');
+    assert!(t.app.modal.is_none(), "{:?}", t.app.status);
+    assert!(t.ssh_text().contains("Host db"));
+}
+
+/// A forward through a custom connection to a closed port on 127.0.0.1;
+/// `-F none` keeps ssh away from the real ssh config.
+#[test]
+fn forwards_panel_shows_state_stop_and_edit() {
+    use termax_core::config::Connection;
+    use termax_core::forward::{Forward, ForwardKind};
+    let mut t = T::new("");
+    let args = ["-F", "none", "-o", "BatchMode=yes"].map(String::from).to_vec();
+    t.app.cfg.connections.push(Connection { name: "loop".into(), host: "127.0.0.1".into(), port: Some(1), extra_args: args, ..Default::default() });
+    t.app.reload_hosts();
+    let fw = Forward { name: Some("w".into()), host: "loop".into(), kind: ForwardKind::Local, bind: None, listen: 47311, target: Some("localhost:80".into()) };
+    t.app.cfg.forwards.push(fw);
+    assert_eq!(t.app.forward_state(0), "stopped");
+    t.key(KeyCode::Char('F'));
+    t.key(KeyCode::Enter);
+    let tabs = t.app.tabs.len();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !t.app.forward_state(0).starts_with("failed") && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let state = t.app.forward_state(0);
+    assert!(state.starts_with("failed: "), "{state}");
+    t.app.active = 0; // back to the host list
+    t.key(KeyCode::Char('F'));
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.tabs.len(), tabs, "a restart replaces the forward's tab");
+    t.app.active = 0;
+    t.key(KeyCode::Char('F'));
+    t.key(KeyCode::Char('s'));
+    assert_eq!(t.app.forward_state(0), "stopped");
+    assert_eq!(t.app.tabs.len(), tabs - 1);
+    t.key(KeyCode::Char('e'));
+    match &t.app.modal {
+        Some(Modal::Forward(f)) => assert_eq!((f.editing, f.listen.value.as_str()), (Some(0), "47311")),
+        _ => panic!("e opens the forward editor"),
+    }
+}
