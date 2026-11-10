@@ -2,12 +2,15 @@
 //! and its output is parsed by `vt100` for rendering in a tab.
 
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+
+/// Called from the reader thread after output is processed or the session ends.
+pub type NotifyFn = Arc<dyn Fn() + Send + Sync>;
 
 pub struct TerminalSession {
     pub parser: Arc<Mutex<vt100::Parser>>,
@@ -19,10 +22,24 @@ pub struct TerminalSession {
     program: String,
     args: Vec<String>,
     scrollback: usize,
+    notify: Arc<Mutex<Option<NotifyFn>>>,
+    generation: Arc<AtomicU64>,
 }
 
 impl TerminalSession {
     pub fn spawn(program: &str, args: &[String], rows: u16, cols: u16, scrollback: usize) -> Result<Self> {
+        Self::spawn_with(program, args, rows, cols, scrollback, Arc::default(), Arc::default())
+    }
+
+    fn spawn_with(
+        program: &str,
+        args: &[String],
+        rows: u16,
+        cols: u16,
+        scrollback: usize,
+        notify: Arc<Mutex<Option<NotifyFn>>>,
+        generation: Arc<AtomicU64>,
+    ) -> Result<Self> {
         let rows = rows.max(2);
         let cols = cols.max(10);
         let pair = native_pty_system()
@@ -44,6 +61,13 @@ impl TerminalSession {
         let exited = Arc::new(AtomicBool::new(false));
 
         let (p, e, w) = (parser.clone(), exited.clone(), writer.clone());
+        let (nf, gen_) = (notify.clone(), generation.clone());
+        let ping = move || {
+            let f = nf.lock().ok().and_then(|g| g.clone());
+            if let Some(f) = f {
+                f();
+            }
+        };
         std::thread::spawn(move || {
             let mut buf = [0u8; 16 * 1024];
             loop {
@@ -70,10 +94,14 @@ impl TerminalSession {
                                 let _ = w.flush();
                             }
                         }
+                        gen_.fetch_add(1, Ordering::SeqCst);
+                        ping();
                     }
                 }
             }
             e.store(true, Ordering::SeqCst);
+            gen_.fetch_add(1, Ordering::SeqCst);
+            ping();
         });
 
         Ok(Self {
@@ -86,13 +114,36 @@ impl TerminalSession {
             program: program.to_string(),
             args: args.to_vec(),
             scrollback,
+            notify,
+            generation,
         })
+    }
+
+    /// Calls `f` (from the reader thread) whenever output arrives or the
+    /// session ends. Survives `respawn`.
+    pub fn set_notify(&mut self, f: NotifyFn) {
+        if let Ok(mut g) = self.notify.lock() {
+            *g = Some(f);
+        }
+    }
+
+    /// Increases each time output is processed; unchanged means the screen is too.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     /// Starts the same command again in a fresh pty.
     pub fn respawn(&mut self) -> Result<()> {
         let _ = self.child.kill();
-        *self = Self::spawn(&self.program.clone(), &self.args.clone(), self.size.0, self.size.1, self.scrollback)?;
+        *self = Self::spawn_with(
+            &self.program.clone(),
+            &self.args.clone(),
+            self.size.0,
+            self.size.1,
+            self.scrollback,
+            self.notify.clone(),
+            self.generation.clone(),
+        )?;
         Ok(())
     }
 

@@ -6,6 +6,7 @@ pub mod config;
 pub mod fs;
 pub mod hosts;
 pub mod sshconfig;
+pub mod sshver;
 pub mod state;
 pub mod terminal;
 pub mod theme;
