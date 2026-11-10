@@ -21,6 +21,20 @@ fn set_field(f: &mut Fixture, label: &str, value: &str) {
     f.frame(vec![]);
 }
 
+/// Activates the control named `name` the way a screen reader does.
+fn activate(f: &mut Fixture, name: &str) {
+    let id = f.h.tree().find(name).map(|n| n.id).unwrap_or_else(|| panic!("no control named {name:?}"));
+    f.frame(vec![Event::A11y { target: id, action: skiff_ui::a11y::A11yAction::Click }]);
+    f.frame(vec![]);
+}
+
+/// Opens the overflow menu of the forward row titled `title` and picks `item`.
+fn row_menu(f: &mut Fixture, title: &str, item: &str) {
+    activate(f, &format!("More actions for {title}"));
+    let at = f.find_last(item);
+    f.click(at);
+}
+
 /// A fixture whose hosts come from a temp ssh config holding `ssh`; returns
 /// the fixture and that file's path. ssh itself is a nonexistent binary.
 fn with_ssh(ssh: &str) -> (Fixture, std::path::PathBuf) {
@@ -155,18 +169,15 @@ fn forward_save_without_start_and_delete_asks() {
     assert_eq!(f.app.cfg.forwards.len(), 2);
     assert!(f.app.forwards.running.is_empty(), "Save doesn't start it");
 
-    let del = f.h.list().prims.iter().filter(|p| matches!(p, skiff_ui::display::Prim::Text { text, .. } if text == "Delete")).count();
-    assert_eq!(del, 2);
-    f.click_text("Delete");
+    let title = f.app.cfg.forwards[0].title();
+    row_menu(&mut f, &title, "Delete");
     assert!(f.texts().iter().any(|t| t.starts_with("Delete forward ")), "{:?}", f.texts());
     assert_eq!(f.app.cfg.forwards.len(), 2, "nothing deleted before confirming");
     f.click_text("Cancel");
     assert_eq!(f.app.cfg.forwards.len(), 2);
-    f.click_text("Delete");
-    let yes = f.texts().iter().filter(|t| *t == "Delete").count();
-    assert_eq!(yes, 3, "the confirm button joins the row buttons");
-    // The confirmation's button comes first on screen.
-    f.click_text("Delete");
+    row_menu(&mut f, &title, "Delete");
+    let at = f.find_last("Delete"); // the dialog's button
+    f.click(at);
     assert_eq!(f.app.cfg.forwards.len(), 1);
     assert!(!std::fs::read_to_string(&f.path).unwrap().contains("47390"));
 }
@@ -212,25 +223,32 @@ fn editing_a_forward_keeps_a_host_no_longer_listed() {
     let mut f = Fixture::with_config(&FWD_CONFIG.replace("host = \"alpha\"\nkind", "host = \"gone\"\nkind"));
     f.app.open_forwards();
     f.frame(vec![]);
-    f.click_text("Edit");
+    let title = f.app.cfg.forwards[0].title();
+    row_menu(&mut f, &title, "Edit");
     set_field(&mut f, "Listen port", "47392");
     f.click_text("Save");
     assert_eq!((f.app.cfg.forwards[0].host.as_str(), f.app.cfg.forwards[0].listen), ("gone", 47392), "not moved to another host");
 }
 
-/// Forward row buttons and sidebar controls have accessible names.
+/// Forward rows name their Start button and overflow menu by the forward,
+/// the menu offers Edit and Delete, and the status pill says "Stopped".
 #[test]
 fn forward_rows_and_sidebar_controls_are_named() {
+    use skiff_ui::a11y::Role;
     let mut f = Fixture::with_config(FWD_CONFIG);
     f.app.open_forwards();
     f.frame(vec![]);
-    let t = f.h.tree();
     let title = f.app.cfg.forwards[0].title();
-    for verb in ["Start", "Edit", "Delete"] {
-        assert_eq!(t.find(&format!("{verb} {title}")).map(|n| n.role), Some(skiff_ui::a11y::Role::Button), "{verb}");
-    }
-    assert_eq!(t.find("More host actions").map(|n| n.role), Some(skiff_ui::a11y::Role::Button));
+    let t = f.h.tree();
+    assert_eq!(t.find(&format!("Start {title}")).map(|n| n.role), Some(Role::Button));
+    assert!(f.try_find("Stopped").is_some(), "{:?}", f.texts());
+    assert_eq!(t.find("More host actions").map(|n| n.role), Some(Role::Button));
     assert_eq!(t.find("Sort hosts by").and_then(|n| n.value.clone()).as_deref(), Some("Name"));
+    activate(&mut f, &format!("More actions for {title}"));
+    let t = f.h.tree();
+    for item in ["Edit", "Delete"] {
+        assert_eq!(t.nodes.iter().find(|n| n.name == item && n.role == Role::MenuItem).map(|n| n.role), Some(Role::MenuItem), "{item}");
+    }
 }
 
 /// The Delete key asks first with focus on Cancel; Esc cancels and returns
@@ -257,7 +275,8 @@ fn forward_save_refuses_deleted_and_duplicate() {
     let mut f = Fixture::with_config(FWD_CONFIG);
     f.app.open_forwards();
     f.frame(vec![]);
-    f.click_text("Edit");
+    let title = f.app.cfg.forwards[0].title();
+    row_menu(&mut f, &title, "Edit");
     let saved = f.app.cfg.forwards.remove(0); // deleted while the form is open
     f.click_text("Save");
     assert!(f.app.cfg.forwards.is_empty(), "not brought back");
@@ -277,7 +296,8 @@ fn forward_form_asks_before_discarding_edits() {
     let mut f = Fixture::with_config(FWD_CONFIG);
     f.app.open_forwards();
     f.frame(vec![]);
-    f.click_text("Edit");
+    let title = f.app.cfg.forwards[0].title();
+    row_menu(&mut f, &title, "Edit");
     set_field(&mut f, "Listen port", "47395");
     f.click_text("New forward");
     assert!(f.try_find("Discard unsaved changes to this forward?").is_some(), "{:?}", f.texts());
