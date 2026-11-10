@@ -10,6 +10,7 @@ use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 pub fn screen_lines(parser: &mut vt100::Parser) -> (Vec<String>, usize) {
     let screen = parser.screen_mut();
     let prev = screen.scrollback();
+    // Show the oldest lines first, then walk forward a screenful at a time.
     screen.set_scrollback(usize::MAX);
     let history = screen.scrollback();
     let (rows, cols) = screen.size();
@@ -20,6 +21,7 @@ pub fn screen_lines(parser: &mut vt100::Parser) -> (Vec<String>, usize) {
     while next < total {
         let top = next.min(history);
         screen.set_scrollback(history - top);
+        // Overlapping windows near the bottom repeat rows already taken; skip them.
         for (i, row) in screen.rows(0, cols).enumerate() {
             if top + i >= next {
                 lines.push(row.trim_end().to_string());
@@ -56,6 +58,7 @@ impl ScrollTracker {
     pub fn process(&mut self, parser: &mut vt100::Parser, bytes: &[u8]) -> u64 {
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);
+        // Hold back a short unfinished CSI so it is parsed whole with the next read.
         if let Some(at) = unfinished_csi(&data)
             && data.len() - at <= 64
         {
@@ -113,6 +116,7 @@ fn piece(parser: &mut vt100::Parser, mut seg: &[u8]) -> u64 {
         let screen = parser.screen_mut();
         let prev = screen.scrollback();
         let len0 = history_len(screen);
+        // Probe: if the view can sit one line back, vt100 will move it per pushed line.
         screen.set_scrollback(1);
         let probe = screen.scrollback() == 1;
         let limit = if probe { len0.saturating_sub(1).max(1) } else { 1 };
@@ -127,7 +131,9 @@ fn piece(parser: &mut vt100::Parser, mut seg: &[u8]) -> u64 {
         }
         let off = screen.scrollback();
         let len1 = history_len(screen);
+        // Pushed lines: how far the parked view moved, or the scrollback growth if larger.
         let pushed = if probe { off.saturating_sub(1) } else { 0 }.max(len1.saturating_sub(len0));
+        // Restore the view: a scrolled-back view follows its text; a reset returns it to live.
         screen.set_scrollback(if prev > 0 && !reset { prev + pushed } else { 0 });
         total += pushed as u64;
     }
@@ -181,18 +187,24 @@ fn after_rows(seg: &[u8], n: usize, col: u16, cols: u16) -> usize {
 /// [`find`], the index into its lines); `col` / `len` in chars.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match {
+    /// Line number of the hit.
     pub line: u64,
+    /// Start column, in chars.
     pub col: usize,
+    /// Length of the hit, in chars.
     pub len: usize,
 }
 
 /// A prepared query: case-insensitive unless it has an uppercase letter.
 struct Query {
+    /// Match case exactly (the query had an uppercase letter).
     exact: bool,
+    /// The query's chars, lowercased unless `exact`.
     chars: Vec<char>,
 }
 
 impl Query {
+    /// Prepares `q`; `None` for an empty query.
     fn new(q: &str) -> Option<Query> {
         if q.is_empty() {
             return None;
@@ -201,6 +213,7 @@ impl Query {
         Some(Query { exact, chars: if exact { q.chars().collect() } else { q.to_lowercase().chars().collect() } })
     }
 
+    /// Appends the non-overlapping hits in `line`, numbered `at`, to `out`.
     fn find_in(&self, line: &str, at: u64, out: &mut Vec<Match>) {
         let q = &self.chars;
         let chars: Vec<char> = if self.exact { line.chars().collect() } else { line.to_lowercase().chars().collect() };
@@ -269,26 +282,32 @@ pub fn text_between(parser: &mut vt100::Parser, scrolled: u64, a: (u64, u16), b:
 /// as the scrollback shifts.
 #[derive(Debug, Default)]
 pub struct TermSearch {
+    /// The current search text.
     query: String,
     /// Scrollback lines, oldest first; `hist[0]` is line `base`.
     hist: std::collections::VecDeque<String>,
     base: u64,
     /// Screen rows, numbered after the scrollback.
     screen: Vec<String>,
+    /// Whether the cached lines came from the alternate screen.
     alt: bool,
     /// (generation, scrolled count, size) the lines were read at.
     stamp: Option<(u64, u64, (u16, u16))>,
     /// Matches from this line on need finding again.
     stale: Option<u64>,
+    /// Matches in line order.
     matches: Vec<Match>,
+    /// Index of the current match in `matches`.
     current: usize,
 }
 
 impl TermSearch {
+    /// The current search text.
     pub fn query(&self) -> &str {
         &self.query
     }
 
+    /// All matches, oldest line first.
     pub fn matches(&self) -> &[Match] {
         &self.matches
     }
@@ -329,6 +348,7 @@ impl TermSearch {
         let prev = screen.scrollback();
         let history = history_len(screen);
         let base = scrolled.saturating_sub(history as u64);
+        // Start over when nothing is cached, the screen switched, or lines were lost.
         let mut full = self.stamp.is_none() || alt != self.alt || base < self.base;
         if !full && let Some(last) = self.hist.back() {
             // Check the count: the newest cached line is still where expected.
@@ -342,6 +362,7 @@ impl TermSearch {
             self.hist.clear();
             self.base = base;
             self.stale = Some(0);
+        // Drop cached lines that left the scrollback; re-search from the old end.
         } else {
             while self.base < base && self.hist.pop_front().is_some() {
                 self.base += 1;
@@ -389,6 +410,7 @@ impl TermSearch {
                 }
             }
         }
+        // Keep the current match on the same text, or move to the next newer one.
         let last = self.matches.len().saturating_sub(1);
         self.current = match was {
             None => last,
@@ -444,6 +466,7 @@ impl TermSearch {
 pub fn osc52(text: &str) -> String {
     const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::from("\x1b]52;c;");
+    // Base64-encode three bytes into four chars, padding the last group with '='.
     for chunk in text.as_bytes().chunks(3) {
         let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
         for k in 0..4 {
@@ -468,12 +491,18 @@ pub fn paste_lines(text: &str, bracketed: bool, confirm: bool) -> Option<usize> 
 /// A mouse event for the program in the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseEv {
+    /// Button pressed.
     /// Button 0 = left, 1 = middle, 2 = right.
     Press(u8),
+    /// Button released.
     Release(u8),
+    /// Moved with the button held.
     Drag(u8),
+    /// Moved with no button held.
     Move,
+    /// Wheel scrolled up.
     WheelUp,
+    /// Wheel scrolled down.
     WheelDown,
 }
 
@@ -491,6 +520,7 @@ pub fn encode_mouse(
     ctrl: bool,
 ) -> Option<Vec<u8>> {
     use MouseProtocolMode as M;
+    // Which events the program's mouse mode wants reported.
     let wanted = match (mode, ev) {
         (M::None, _) => false,
         (_, MouseEv::Press(_) | MouseEv::WheelUp | MouseEv::WheelDown) => true,
@@ -504,6 +534,7 @@ pub fn encode_mouse(
         return None;
     }
     let sgr = enc == MouseProtocolEncoding::Sgr;
+    // Button code; the default encodings cannot say which button was released.
     let mut code: u32 = match ev {
         MouseEv::Press(b) | MouseEv::Drag(b) => b.min(2) as u32,
         MouseEv::Release(b) => {
@@ -520,6 +551,7 @@ pub fn encode_mouse(
     if matches!(ev, MouseEv::Drag(_) | MouseEv::Move) {
         code += 32;
     }
+    // Modifier bits are not reported in X10 (press-only) mode.
     if mode != M::Press {
         code += (shift as u32) * 4 + (alt as u32) * 8 + (ctrl as u32) * 16;
     }
@@ -529,6 +561,7 @@ pub fn encode_mouse(
             let end = if matches!(ev, MouseEv::Release(_)) { 'm' } else { 'M' };
             Some(format!("\x1b[<{code};{x};{y}{end}").into_bytes())
         }
+        // The classic encoding fits coordinates in one byte each.
         MouseProtocolEncoding::Default => {
             if x > 223 || y > 223 {
                 return None;
@@ -548,7 +581,9 @@ pub fn encode_mouse(
 /// A saved command (`[[snippet]]`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Snippet {
+    /// Name shown in the snippet list.
     pub name: String,
+    /// The command text; may span several lines.
     pub command: String,
     /// Shown only in this host's tabs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -580,6 +615,7 @@ pub enum SnippetSend {
 }
 
 impl Snippet {
+    /// How to deliver this snippet: typed for one line, pasted for several.
     pub fn send(&self) -> SnippetSend {
         if self.command.contains(['\n', '\r']) {
             SnippetSend::Paste { body: self.command.clone(), enter: self.run }
@@ -598,10 +634,12 @@ pub fn snippets_for<'a>(all: &'a [Snippet], host: &str) -> Vec<&'a Snippet> {
 mod tests {
     use super::*;
 
+    /// Feeds `s` through the tracker and adds the pushed-line count to `total`.
     fn feed(p: &mut vt100::Parser, t: &mut ScrollTracker, total: &mut u64, s: &str) {
         *total += t.process(p, s.as_bytes());
     }
 
+    /// Search reads the whole scrollback, keeps the view, honours smart case, and scrolls to a match.
     #[test]
     fn search_finds_in_scrollback() {
         let (mut p, mut t, mut n) = (vt100::Parser::new(24, 80, 10_000), ScrollTracker::default(), 0);
@@ -625,6 +663,7 @@ mod tests {
         assert_eq!(s.marks(n - p.screen().scrollback() as u64, 24), vec![(8, 0, 7, true)]);
     }
 
+    /// Line counts stay right once the scrollback is full, across alternate-screen switches.
     #[test]
     fn tracker_counts_lines_past_a_full_scrollback() {
         let (mut p, mut t, mut n) = (vt100::Parser::new(5, 20, 10), ScrollTracker::default(), 0);
@@ -644,6 +683,7 @@ mod tests {
         assert_eq!((n, p.screen().scrollback()), (31, 0));
     }
 
+    /// Wrapped long rows (including wide chars) are counted the same as vt100's own scrollback.
     #[test]
     fn tracker_counts_wrapped_rows_past_a_full_scrollback() {
         let (mut p, mut t, mut n) = (vt100::Parser::new(5, 10, 10), ScrollTracker::default(), 0);
@@ -659,6 +699,7 @@ mod tests {
         assert_eq!(n, history_len(reference.screen_mut()) as u64);
     }
 
+    /// Matches keep their lines as the scrollback shifts, and vanish when their line is dropped.
     #[test]
     fn search_matches_follow_the_scrollback() {
         let (mut p, mut t, mut n) = (vt100::Parser::new(3, 20, 10), ScrollTracker::default(), 0);
@@ -685,6 +726,7 @@ mod tests {
         assert!(s.matches().is_empty(), "{:?}", s.matches());
     }
 
+    /// Selected text spans scrollback and screen rows; OSC 52 base64 is correct.
     #[test]
     fn text_between_spans_scrollback_and_screen() {
         let (mut p, mut t, mut n) = (vt100::Parser::new(3, 20, 10), ScrollTracker::default(), 0);
@@ -696,6 +738,7 @@ mod tests {
         assert_eq!(osc52("abc"), "\x1b]52;c;YWJj\x07");
     }
 
+    /// When a multi-line paste needs confirming.
     #[test]
     fn paste_prompt_rules() {
         assert_eq!(paste_lines("a\nb", false, true), Some(2));
@@ -706,6 +749,7 @@ mod tests {
         assert_eq!(paste_lines("a\r\nb\r\n", false, true), Some(2));
     }
 
+    /// Mouse reports for each mode and encoding, including modifiers and range limits.
     #[test]
     fn mouse_encoding() {
         use MouseProtocolEncoding as E;
@@ -725,6 +769,7 @@ mod tests {
         assert_eq!(ctrl, Some(b"\x1b[<18;1;1M".to_vec()));
     }
 
+    /// A multi-line snippet is pasted, with Enter sent separately when it runs.
     #[test]
     fn multi_line_run_snippet_enters_after_the_paste() {
         let s = |command: &str, run| Snippet { name: "x".into(), command: command.into(), host: None, run };
@@ -733,6 +778,7 @@ mod tests {
         assert_eq!(s("a\nb", false).send(), SnippetSend::Paste { body: "a\nb".into(), enter: false });
     }
 
+    /// Host-specific snippets show only in that host's tabs; `run` adds Enter.
     #[test]
     fn snippets_for_host() {
         let all = vec![

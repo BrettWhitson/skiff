@@ -8,16 +8,27 @@ use serde::{Deserialize, Serialize};
 /// terminal's own default.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ThemeDef {
+    /// Name used to pick the theme in the config (`theme = "nord"`).
     pub name: String,
+    /// Window / page background.
     pub bg: String,
+    /// Normal text.
     pub fg: String,
+    /// Highlights: focus, active tab, headings.
     pub accent: String,
+    /// Secondary text (hints, details).
     pub muted: String,
+    /// Borders and separators.
     pub border: String,
+    /// Background of the selected row.
     pub selection_bg: String,
+    /// Text on the selected row.
     pub selection_fg: String,
+    /// Success / connected status.
     pub success: String,
+    /// Warnings.
     pub warning: String,
+    /// Errors.
     pub error: String,
     /// Terminal palette: 16 colors (black, red, green, yellow, blue, magenta,
     /// cyan, white, then their bright variants). Optional; the GUI falls back
@@ -26,6 +37,8 @@ pub struct ThemeDef {
     pub ansi: Option<Vec<String>>,
 }
 
+/// Builds a built-in theme from its ten UI colors (in field order) and its
+/// 16-color terminal palette.
 fn def(name: &str, c: [&str; 10], ansi: [&str; 16]) -> ThemeDef {
     ThemeDef {
         name: name.into(),
@@ -134,11 +147,13 @@ pub fn builtin() -> Vec<ThemeDef> {
 pub enum Rgb {
     /// The front-end's default (the host terminal's color in the TUI).
     Reset,
+    /// A 24-bit color.
     Rgb(u8, u8, u8),
     /// An ANSI palette index (0-15 named colors, 16-255 extended).
     Indexed(u8),
 }
 
+/// Color names accepted in themes, in ANSI index order (0-15).
 const NAMES: [&str; 16] = [
     "black",
     "red",
@@ -160,6 +175,7 @@ const NAMES: [&str; 16] = [
 
 /// Parses a config color string (see [`ThemeDef`]).
 pub fn parse_color(s: &str) -> Option<Rgb> {
+    // Normalise so "Light Blue", "light-blue" and "light_blue" all match.
     let s = s.trim().to_ascii_lowercase().replace(['-', '_', ' '], "");
     if s == "reset" {
         return Some(Rgb::Reset);
@@ -171,6 +187,7 @@ pub fn parse_color(s: &str) -> Option<Rgb> {
         let v = u32::from_str_radix(hex, 16).ok()?;
         return Some(Rgb::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8));
     }
+    // A bare number is an ANSI palette index.
     if let Ok(i) = s.parse::<u8>() {
         return Some(Rgb::Indexed(i));
     }
@@ -192,6 +209,7 @@ pub fn hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
 
 /// WCAG 2.1 contrast ratio between two colors (1 to 21).
 pub fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+    /// Relative luminance per WCAG (sRGB channels linearised).
     fn lum((r, g, b): (u8, u8, u8)) -> f32 {
         let ch = |v: u8| {
             let v = v as f32 / 255.0;
@@ -225,6 +243,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Hex, `reset`, indices and names parse; unknown names don't.
     fn parse_color_formats() {
         assert_eq!(parse_color("#ff0080"), Some(Rgb::Rgb(255, 0, 128)));
         assert_eq!(parse_color("reset"), Some(Rgb::Reset));
@@ -233,6 +252,7 @@ mod tests {
         assert_eq!(parse_color("nope"), None);
     }
 
+    /// Every built-in theme has a full 16-color hex palette.
     #[test]
     fn builtin_palettes_have_16_valid_colors() {
         for d in builtin() {
@@ -242,6 +262,7 @@ mod tests {
         }
     }
 
+    /// Every UI color of every built-in theme parses.
     #[test]
     fn builtins_parse() {
         for d in builtin() {
@@ -251,6 +272,8 @@ mod tests {
         }
     }
 
+    /// Built-in hex themes meet WCAG contrast (7:1 text for high-contrast themes,
+    /// 4.5:1 otherwise), and `effective_name` maps `auto` as documented.
     #[test]
     fn themes_meet_contrast() {
         let mut bad = vec![];

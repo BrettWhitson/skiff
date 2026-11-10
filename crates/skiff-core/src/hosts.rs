@@ -8,35 +8,55 @@ pub use crate::sshconfig::resolve::Probe;
 use crate::sshconfig::resolve::{VIA_PROXY, jump_probe, probe_target_all};
 use crate::sshconfig::{self, SshHost};
 
+/// Where a host in the list was defined.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
+    /// A `Host` block in the OpenSSH config.
     SshConfig,
     /// Index into `Config::connections`.
     Custom(usize),
 }
 
+/// One host in the list, whichever file it came from, with what's needed to
+/// display it and to build `ssh` command lines for it.
 #[derive(Debug, Clone)]
 pub struct HostEntry {
+    /// Name shown in the list: the ssh alias or the connection name.
     pub name: String,
+    /// Real host name or address (the alias when the config sets no `HostName`).
     pub hostname: String,
+    /// Login user, if set.
     pub user: Option<String>,
+    /// Port, if set.
     pub port: Option<u16>,
+    /// Private key file, if set.
     pub identity_file: Option<String>,
+    /// `ProxyJump` value, if set.
     pub proxy_jump: Option<String>,
+    /// `ProxyCommand` value, if set.
     pub proxy_command: Option<String>,
+    /// Directory the SFTP browser opens in.
     pub remote_dir: Option<String>,
+    /// Labels shown in lists and matched by search.
     pub tags: Vec<String>,
+    /// Left out of lists unless hidden hosts are shown.
     pub hidden: bool,
+    /// Which config defined it.
     pub source: Source,
+    /// Human-readable origin: the ssh config path or "Skiff config".
     pub source_label: String,
     /// The ssh config file that first defines this host.
     pub source_file: Option<PathBuf>,
     /// `ssh` options placed before the destination.
     options: Vec<String>,
+    /// Final argument to `ssh`: the alias for ssh-config hosts, the address for
+    /// custom connections.
     destination: String,
 }
 
 impl HostEntry {
+    /// An entry for an OpenSSH config host. ssh is given only the alias, so it
+    /// applies the config itself.
     fn from_ssh(h: &SshHost) -> Self {
         Self {
             name: h.alias.clone(),
@@ -58,6 +78,8 @@ impl HostEntry {
         }
     }
 
+    /// An entry for a custom connection: its fields become explicit `ssh`
+    /// options (`-p`, `-l`, `-i`, `-J`, `-o ProxyCommand=`), then its extra args.
     fn from_custom(idx: usize, c: &Connection) -> Self {
         let mut options = Vec::new();
         if let Some(port) = c.port {
@@ -128,6 +150,7 @@ impl HostEntry {
     /// `sets` is `None` when a config file couldn't be read: the host might
     /// be proxied, so it isn't probed.
     pub fn probe(&self, sets: Option<&[ConfigSet]>) -> Probe {
+        // Any ProxyCommand (field or extra args) hides the real path: don't probe.
         let has = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
         if has(&self.proxy_command) || self.options.iter().any(|a| a.to_ascii_lowercase().contains("proxycommand")) {
             return Probe::Unknown(VIA_PROXY.into());
@@ -143,12 +166,14 @@ impl HostEntry {
         if self.source == Source::SshConfig && sets.is_empty() && has(&self.proxy_jump) {
             return jump_probe(sets, self.proxy_jump.as_deref().unwrap_or_default());
         }
+        // Drop any `user@` from the destination before matching `Host` patterns.
         let dest = self.destination.rsplit('@').next().unwrap_or(&self.destination);
         let probe = match sets {
             [] => Probe::Direct { host: self.hostname.clone(), port: self.port.unwrap_or(22) },
             sets => probe_target_all(sets, dest),
         };
         // `-p` on the command line (the port field or extra args) beats the config.
+        // The last `-p` wins, as with ssh.
         let arg_port = self.options.windows(2).filter(|w| w[0] == "-p").filter_map(|w| w[1].parse::<u16>().ok()).next_back();
         match (probe, &self.source) {
             (Probe::Direct { host, port }, Source::Custom(_)) => Probe::Direct { host, port: arg_port.unwrap_or(port) },
@@ -161,6 +186,8 @@ impl HostEntry {
     /// can't read, `None` when there is none (`ProxyJump=none` included).
     fn cli_jump(&self) -> Option<Option<String>> {
         let mut args = self.options.iter();
+        // Walk the options, recognising `-J x`, `-Jx`, `-o ProxyJump=x` and
+        // `-oProxyJump=x`; other options are skipped.
         while let Some(a) = args.next() {
             let spec = match a.as_str() {
                 "-J" => args.next().cloned(),
@@ -199,6 +226,8 @@ impl HostEntry {
         s
     }
 
+    /// Lower-cased text that host search matches against: name, address, user
+    /// and tags.
     fn haystack(&self) -> String {
         format!("{} {} {} {}", self.name, self.hostname, self.user.as_deref().unwrap_or(""), self.tags.join(" ")).to_lowercase()
     }
@@ -265,6 +294,8 @@ pub fn fuzzy_score(query: &str, entry: &HostEntry) -> Option<i64> {
         // Contiguous matches beat scattered ones; earlier is better.
         return Some(1000 - pos as i64);
     }
+    // Otherwise each query character must appear in order; adjacent matches
+    // score 5, others 1.
     let mut score = 0i64;
     let mut last: Option<usize> = None;
     let mut chars = hay.char_indices();
@@ -283,6 +314,7 @@ pub fn fuzzy_score(query: &str, entry: &HostEntry) -> Option<i64> {
 mod tests {
     use super::*;
 
+    /// A custom connection using port, user, jump host, extra args and a tag.
     fn custom() -> HostEntry {
         HostEntry::from_custom(
             0,
@@ -299,6 +331,8 @@ mod tests {
         )
     }
 
+    /// Custom fields turn into ssh options in a fixed order, before the
+    /// destination; SFTP adds BatchMode and `-s ... sftp`.
     #[test]
     fn custom_args() {
         let h = custom();
@@ -307,6 +341,7 @@ mod tests {
         assert_eq!(h.target(), "root@10.1.1.1:2222");
     }
 
+    /// `sftp_launch` uses the SFTP args and the remote start directory.
     #[test]
     fn sftp_launch_carries_args_and_dir() {
         let mut h = custom();
@@ -318,6 +353,7 @@ mod tests {
         assert!(l.env.is_empty());
     }
 
+    /// ssh-config hosts pass only their alias to ssh.
     #[test]
     fn ssh_config_hosts_use_alias() {
         let h = HostEntry::from_ssh(&SshHost { alias: "web".into(), hostname: Some("1.2.3.4".into()), ..Default::default() });
@@ -325,6 +361,8 @@ mod tests {
         assert_eq!(h.sftp_args(false), ["-s", "web", "sftp"]);
     }
 
+    /// ProxyCommand becomes `-o` and blocks probing; port from the field or
+    /// `-p` in extra args is used; `-J` in extra args probes the jump host.
     #[test]
     fn custom_proxy_command_arg_and_probe() {
         let c = Connection { name: "p".into(), host: "10.0.0.9".into(), proxy_command: Some("nc %h %p".into()), ..Default::default() };
@@ -340,6 +378,7 @@ mod tests {
         assert_eq!(HostEntry::from_custom(0, &c).probe(Some(&[])), Probe::Via { jump: "b".into(), host: "b".into(), port: 22 });
     }
 
+    /// `visible` skips hidden hosts unless asked to show them.
     #[test]
     fn hidden_filtered_unless_shown() {
         let a = custom();
@@ -350,6 +389,7 @@ mod tests {
         assert_eq!(visible(&hosts, true), [0, 1]);
     }
 
+    /// Contiguous matches outscore scattered ones; non-matches give `None`.
     #[test]
     fn fuzzy() {
         let h = custom();
@@ -364,6 +404,7 @@ mod probe_tests {
     use super::*;
     use crate::config::Connection;
 
+    /// A custom connection to 10.0.0.9 with the given extra args.
     fn conn(extra: &[&str]) -> HostEntry {
         let c = Connection {
             name: "d".into(),
@@ -374,12 +415,15 @@ mod probe_tests {
         HostEntry::from_custom(0, &c)
     }
 
+    /// Without readable ssh config a host isn't probed; with none at all it is
+    /// probed directly.
     #[test]
     fn unreadable_ssh_config_is_unknown() {
         assert!(matches!(conn(&[]).probe(None), Probe::Unknown(_)));
         assert_eq!(conn(&[]).probe(Some(&[])), Probe::Direct { host: "10.0.0.9".into(), port: 22 });
     }
 
+    /// Every spelling of a jump option probes the jump host; ProxyCommand doesn't.
     #[test]
     fn jump_options_probe_the_jump_host() {
         let via = |j: &str, port| Probe::Via { jump: j.into(), host: j.into(), port };
@@ -389,6 +433,8 @@ mod probe_tests {
         assert!(matches!(conn(&["-o", "ProxyCommand=nc %h %p"]).probe(Some(&[])), Probe::Unknown(_)));
     }
 
+    /// Probe sets are read even when listing ssh hosts is off, and an unreadable
+    /// (non-UTF-8) file makes `probe_sets` return `None`.
     #[test]
     fn probe_sets_read_ssh_config_even_when_not_listed() {
         let d = tempfile::tempdir().unwrap();

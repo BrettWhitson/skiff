@@ -12,17 +12,30 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 /// Called from the reader thread after output is processed or the session ends.
 pub type NotifyFn = Arc<dyn Fn() + Send + Sync>;
 
+/// A running `ssh` (or other program) in a pty, with a reader thread that
+/// feeds its output into a shared `vt100` parser.
 pub struct TerminalSession {
+    /// The parsed screen and scrollback; locked by the reader thread while it processes output.
     pub parser: Arc<Mutex<vt100::Parser>>,
+    /// The pty's input side, shared with the reader thread for DSR replies.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// The pty master, kept for resizing.
     master: Box<dyn MasterPty + Send>,
+    /// The child process, killed on drop or respawn.
     child: Box<dyn Child + Send + Sync>,
+    /// Set by the reader thread when the pty reaches EOF.
     exited: Arc<AtomicBool>,
+    /// Current (rows, cols).
     size: (u16, u16),
+    /// The program run, kept for `respawn`.
     program: String,
+    /// Its arguments, kept for `respawn`.
     args: Vec<String>,
+    /// Scrollback length in lines.
     scrollback: usize,
+    /// Optional output callback; shared so it survives `respawn`.
     notify: Arc<Mutex<Option<NotifyFn>>>,
+    /// Output counter; see `generation()`.
     generation: Arc<AtomicU64>,
     /// Lines that ever entered the scrollback (see `termx::ScrollTracker`);
     /// updated under the parser lock. Kept across `respawn`.
@@ -30,10 +43,13 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
+    /// Starts `program args` in a new pty of `rows` x `cols` (clamped to at least 2 x 10).
     pub fn spawn(program: &str, args: &[String], rows: u16, cols: u16, scrollback: usize) -> Result<Self> {
         Self::spawn_with(program, args, rows, cols, scrollback, Arc::default(), Arc::default(), Arc::default())
     }
 
+    /// Spawns the pty, child and reader thread, reusing the given shared
+    /// notify, generation and scroll counters (so `respawn` keeps them).
     #[allow(clippy::too_many_arguments)]
     fn spawn_with(
         program: &str,
@@ -52,6 +68,7 @@ impl TerminalSession {
 
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
+        // Give programs a sensible terminal type when the parent environment has none.
         if std::env::var_os("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
         }
@@ -64,6 +81,7 @@ impl TerminalSession {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, scrollback)));
         let exited = Arc::new(AtomicBool::new(false));
 
+        // Clones moved into the reader thread.
         let (p, e, w) = (parser.clone(), exited.clone(), writer.clone());
         let (nf, gen_, sc) = (notify.clone(), generation.clone(), scrolled.clone());
         let ping = move || {
@@ -72,6 +90,7 @@ impl TerminalSession {
                 f();
             }
         };
+        // Reader thread: parse output, answer DSR queries, bump the generation, notify.
         std::thread::spawn(move || {
             let mut buf = [0u8; 16 * 1024];
             let mut tracker = crate::termx::ScrollTracker::default();
@@ -104,6 +123,7 @@ impl TerminalSession {
                     }
                 }
             }
+            // EOF or read error: mark the session ended and wake the UI once more.
             e.store(true, Ordering::SeqCst);
             gen_.fetch_add(1, Ordering::SeqCst);
             ping();
@@ -160,6 +180,7 @@ impl TerminalSession {
         Ok(())
     }
 
+    /// Sends raw bytes to the program, snapping the view back to live output first.
     pub fn write(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -171,6 +192,7 @@ impl TerminalSession {
         }
     }
 
+    /// Pastes `text`, wrapped in bracketed-paste markers when the program asked for them.
     pub fn paste(&mut self, text: &str) {
         let bracketed = self.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
         let text = sanitize_paste(text);
@@ -181,6 +203,7 @@ impl TerminalSession {
         }
     }
 
+    /// Resizes the pty and the parser (clamped to at least 2 x 10); no-op if unchanged.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let (rows, cols) = (rows.max(2), cols.max(10));
         if (rows, cols) == self.size {
@@ -199,12 +222,14 @@ impl TerminalSession {
         self.set_scroll((cur + delta).max(0) as usize);
     }
 
+    /// Sets the view's scrollback offset (0 = live output).
     fn set_scroll(&mut self, rows: usize) {
         if let Ok(mut p) = self.parser.lock() {
             p.screen_mut().set_scrollback(rows);
         }
     }
 
+    /// How far back the view is scrolled, in lines.
     pub fn scroll_offset(&self) -> usize {
         self.parser.lock().map(|p| p.screen().scrollback()).unwrap_or(0)
     }
@@ -214,10 +239,12 @@ impl TerminalSession {
         (&self.program, &self.args)
     }
 
+    /// Current row count.
     pub fn rows(&self) -> u16 {
         self.size.0
     }
 
+    /// Whether the program is still running.
     pub fn is_alive(&mut self) -> bool {
         if self.exited.load(Ordering::SeqCst) {
             return false;
@@ -225,18 +252,19 @@ impl TerminalSession {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    /// Whether the program turned on application cursor keys (DECCKM).
     pub fn application_cursor(&self) -> bool {
         self.parser.lock().map(|p| p.screen().application_cursor()).unwrap_or(false)
     }
 }
 
 impl Drop for TerminalSession {
+    /// Kills the child so it does not outlive its tab.
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
 }
 
-/// Encodes a key press as the bytes an xterm-compatible terminal would send.
 /// Pasted text as typed: newlines become Enter, and bracketed-paste
 /// markers are removed so the text cannot end the paste early and have the
 /// rest run as typed commands.
@@ -244,6 +272,8 @@ pub fn sanitize_paste(text: &str) -> String {
     text.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("\r\n", "\r").replace('\n', "\r")
 }
 
+/// Encodes a key press as the bytes an xterm-compatible terminal would send;
+/// `app_cursor` selects the `ESC O` form for unmodified arrows and Home/End.
 pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     let m = key.modifiers;
     let ctrl = m.contains(KeyModifiers::CONTROL);
@@ -265,6 +295,7 @@ pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         |n: u8| -> Vec<u8> { if modp > 1 { format!("\x1b[{n};{modp}~").into_bytes() } else { format!("\x1b[{n}~").into_bytes() } };
 
     let mut out = match key.code {
+        // Ctrl+letter maps to its control code; Ctrl with some digits/symbols maps per xterm.
         KeyCode::Char(c) if ctrl => {
             let b = match c.to_ascii_lowercase() {
                 c @ 'a'..='z' => (c as u8) & 0x1f,
@@ -307,6 +338,7 @@ pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         KeyCode::Delete => return csi_tilde(3),
         KeyCode::PageUp => return csi_tilde(5),
         KeyCode::PageDown => return csi_tilde(6),
+        // F1-F4 use SS3 letters; F5-F12 use the CSI number~ form.
         KeyCode::F(n @ 1..=4) => {
             let letter = (b'P' + n - 1) as char;
             return if modp > 1 { format!("\x1b[1;{modp}{letter}").into_bytes() } else { format!("\x1bO{letter}").into_bytes() };
@@ -323,10 +355,12 @@ pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     out
 }
 
+/// How many times `needle` occurs in `hay` (overlaps counted).
 fn count(hay: &[u8], needle: &[u8]) -> usize {
     hay.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
+/// Prefixes `bytes` with ESC when `alt` is held (the meta-sends-escape convention).
 fn with_alt(alt: bool, bytes: Vec<u8>) -> Vec<u8> {
     if alt {
         let mut v = vec![0x1b];
@@ -341,10 +375,12 @@ fn with_alt(alt: bool, bytes: Vec<u8>) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// Shorthand for a key event.
     fn k(code: KeyCode, m: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, m)
     }
 
+    /// A real pty session runs a command, its output reaches the parser, and resize works.
     #[test]
     fn pty_session_captures_output() {
         #[cfg(windows)]
@@ -365,6 +401,7 @@ mod tests {
         assert_eq!(s.rows(), 20);
     }
 
+    /// Key encodings match xterm, including modifier parameters and app-cursor mode.
     #[test]
     fn encodes_keys() {
         let n = KeyModifiers::NONE;

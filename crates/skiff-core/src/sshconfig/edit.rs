@@ -21,14 +21,15 @@ pub struct ConfigSet {
     pub docs: Vec<Doc>,
 }
 
+/// Whether and where a host can be edited.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Locate {
-    Editable {
-        doc: usize,
-        block: usize,
-    },
+    /// The host has exactly one single-alias block: `docs[doc]`, block index
+    /// `block` of `Doc::blocks()`.
+    Editable { doc: usize, block: usize },
     /// Why the host can't be edited here.
     ReadOnly(String),
+    /// No `Host` block names this alias.
     NotFound,
 }
 
@@ -47,10 +48,12 @@ pub fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// The file name alone, for short messages (`config:12`).
 fn file_label(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
+/// True for a `Host` pattern that isn't a single literal alias.
 fn is_wildcard(p: &str) -> bool {
     p.contains(['*', '?', '!'])
 }
@@ -77,6 +80,7 @@ pub fn validate_with(f: &HostFields, taken: &[String], editing: Option<&str>, ex
         return Err(format!("A host named {alias} already exists"));
     }
     let port = f.port.trim();
+    // Port must be 1-65535 when given.
     if !port.is_empty() && port.parse::<u16>().map_or(true, |p| p == 0) {
         return Err(format!("Invalid port: {port}"));
     }
@@ -87,6 +91,8 @@ pub fn validate_with(f: &HostFields, taken: &[String], editing: Option<&str>, ex
     if f.remote_dir.contains(';') {
         return Err("Remote dir can't contain ;".into());
     }
+    // Extra option lines must not start a new block or pull in another file,
+    // unless the line was already in this host's block.
     for line in &f.other {
         if line.contains(['\n', '\r']) {
             return Err("Values can't contain line breaks (or , ; in tags)".into());
@@ -121,6 +127,7 @@ fn with_value(line: &str, value: &str) -> String {
     format!("{}{}{}{}", &line[..indent], &body[..key_end], sep, value)
 }
 
+/// The indentation at the start of `s`.
 fn leading_ws(s: &str) -> &str {
     &s[..s.len() - s.trim_start().len()]
 }
@@ -144,10 +151,15 @@ fn first_separator<'a>(lines: impl IntoIterator<Item = &'a (String, &'static str
 }
 
 /// What a line inside a host block is.
+/// What a line inside a host block is, while rewriting it.
 enum LineKind {
+    /// The first line for field `FIELD_KEYS[i]`.
     Field(usize),
+    /// Any other option line (including repeats of a field key).
     Other,
+    /// The `# skiff:` (or `# termax:`) comment.
     Extras,
+    /// Ordinary comments and blank lines, always kept.
     Keep,
 }
 
@@ -202,6 +214,8 @@ impl Doc {
         let mut new: Vec<(String, &'static str)> = block.into_iter().map(|l| (l, self.eol)).collect();
         match at {
             Some(b) => {
+                // Pull any comments directly above that block along with it, and keep a
+                // blank line on both sides of the new block.
                 let mut i = b.start;
                 while i > 0 && self.lines[i - 1].0.trim().starts_with('#') {
                     i -= 1;
@@ -213,6 +227,7 @@ impl Doc {
                 self.lines.splice(i..i, new);
             }
             None => {
+                // Appending: separate from the last block with one blank line.
                 if self.lines.last().is_some_and(|(c, _)| !c.trim().is_empty()) {
                     self.lines.push((String::new(), self.eol));
                 }
@@ -235,6 +250,8 @@ impl Doc {
     }
 }
 
+/// The lines of a new `Host` block for `f`: the `Host` line, the extras
+/// comment, set fields in a fixed order, then the other options.
 fn block_lines(f: &HostFields, indent: &str, sep: &str) -> Vec<String> {
     let mut out = vec![format!("Host {}", f.alias.trim())];
     if let Some(x) = format_extras(&f.tags, f.hidden, &f.remote_dir) {
@@ -260,6 +277,8 @@ impl ConfigSet {
         Ok(set)
     }
 
+    /// Loads `path` and, recursively, the files it includes. Already-loaded files
+    /// are skipped (include loops); a missing included file is ignored.
     fn load_into(&mut self, path: &Path, depth: usize) -> anyhow::Result<()> {
         if depth > MAX_INCLUDE_DEPTH || self.docs.iter().any(|d| d.path == path) {
             return Ok(());
@@ -272,6 +291,7 @@ impl ConfigSet {
             return Ok(());
         };
         let doc = Doc::parse(path.to_path_buf(), &text);
+        // Collect the `Include` targets first; they follow this doc in `docs`.
         let includes: Vec<PathBuf> = doc
             .lines
             .iter()
@@ -298,6 +318,8 @@ impl ConfigSet {
         out
     }
 
+    /// Finds host `alias`: editable only when exactly one block names it and that
+    /// block names nothing else. Otherwise says why not (shared or duplicated).
     pub fn locate(&self, alias: &str) -> Locate {
         let occ = self.occurrences(alias);
         match occ.as_slice() {
@@ -345,6 +367,7 @@ impl ConfigSet {
         out
     }
 
+    /// The single block for `alias`, or why it can't be edited.
     fn editable(&self, alias: &str) -> Result<(usize, super::doc::Block), String> {
         match self.locate(alias) {
             Locate::Editable { doc, block } => Ok((doc, self.docs[doc].blocks().swap_remove(block))),
@@ -359,6 +382,7 @@ impl ConfigSet {
         validate_with(f, &self.aliases(), Some(alias), &existing)?;
         let (di, b) = self.editable(alias)?;
         let doc = &mut self.docs[di];
+        // Match the block's own indent and separator so new lines blend in.
         let indent = doc.lines[b.start + 1..b.end]
             .iter()
             .find(|(c, _)| !is_comment_or_blank(c))
@@ -368,6 +392,8 @@ impl ConfigSet {
         let eol = doc.eol;
         let old: Vec<(String, &'static str)> = doc.lines[b.start..b.end].to_vec();
 
+        // Classify each existing line once; only the first line per field key
+        // counts as that field.
         let mut seen = [false; FIELD_KEYS.len()];
         let kinds: Vec<LineKind> = old
             .iter()
@@ -393,6 +419,8 @@ impl ConfigSet {
         let mut wanted_other: Vec<&str> = f.other.iter().map(|o| o.trim()).filter(|o| !o.is_empty()).collect();
         let mut out: Vec<(String, &'static str)> = Vec::new();
 
+        // Rebuild the block: the Host line (renamed if needed), then each old line
+        // kept, rewritten or dropped per the form.
         let (host_line, host_term) = &old[0];
         let new_alias = f.alias.trim();
         out.push((if new_alias == alias { host_line.clone() } else { with_value(host_line, new_alias) }, host_term));
@@ -400,12 +428,14 @@ impl ConfigSet {
         for ((c, t), kind) in old.iter().skip(1).zip(&kinds) {
             match kind {
                 LineKind::Keep => out.push((c.clone(), t)),
+                // Only the first extras comment is replaced; any others are dropped.
                 LineKind::Extras => {
                     if let (Some(x), false) = (&extras, extras_done) {
                         out.push((format!("{}{x}", leading_ws(c)), t));
                     }
                     extras_done = true;
                 }
+                // A cleared field drops its line; an unchanged value keeps the exact text.
                 LineKind::Field(i) => {
                     let v = f.field(*i).trim();
                     if v.is_empty() {
@@ -417,6 +447,7 @@ impl ConfigSet {
                         out.push((with_value(c, &quote(*i, v)), t));
                     }
                 }
+                // Other lines stay only if the form still lists them; each match is used once.
                 LineKind::Other => {
                     if let Some(pos) = wanted_other.iter().position(|o| *o == c.trim()) {
                         wanted_other.remove(pos);
@@ -425,6 +456,8 @@ impl ConfigSet {
                 }
             }
         }
+        // New lines: a missing extras comment goes right after `Host`, then fields
+        // that weren't in the block, then new other options.
         if let (Some(x), false) = (&extras, extras_done) {
             out.insert(1, (format!("{indent}{x}"), eol));
         }
@@ -484,6 +517,7 @@ impl ConfigSet {
         let mut start = b.start;
         if comments {
             // Never into the previous block (its skiff comment is its own).
+            // Comment lines above the Host line that sit after the previous block's end.
             let floor = d.blocks().iter().filter(|o| o.end <= b.start).map(|o| o.end).max().unwrap_or(0);
             // Only comments indented like the `Host` line: deeper ones are the
             // previous host's commented-out options.
@@ -494,6 +528,7 @@ impl ConfigSet {
             }
         }
         let removed: Vec<String> = d.lines.drain(start..b.end).map(|(c, _)| c).collect();
+        // Remove one blank line after the gap (or before it, at the end of a block).
         let blank = |d: &Doc, i: usize| d.lines.get(i).is_some_and(|(c, _)| c.trim().is_empty());
         if blank(d, start) {
             d.lines.remove(start);
@@ -522,6 +557,7 @@ impl ConfigSet {
     /// was loaded, backs each up (keeping [`KEEP_BACKUPS`]), then replaces
     /// it atomically.
     pub fn save(&mut self, backups: &Path) -> anyhow::Result<()> {
+        // Refuse everything if any changed file was edited on disk since loading.
         for d in self.docs.iter().filter(|d| d.dirty) {
             let now = std::fs::read_to_string(&d.path).unwrap_or_default();
             if text_hash(&now) != d.loaded_hash {
@@ -551,6 +587,7 @@ impl ConfigSet {
     }
 }
 
+/// Creates `dir` (and parents) if missing, private (0700) on Unix.
 fn create_private_dir(dir: &Path) -> anyhow::Result<()> {
     if dir.is_dir() {
         return Ok(());
@@ -569,6 +606,7 @@ fn create_private_dir(dir: &Path) -> anyhow::Result<()> {
 fn timestamp() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    // Days since the epoch to year/month/day without a date library.
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -603,6 +641,7 @@ fn backup(path: &Path, backups: &Path) -> anyhow::Result<()> {
     let stamp = timestamp();
     let mut target = backups.join(format!("{name}-{stamp}.bak"));
     let mut n = 1;
+    // Pick an unused name for this second.
     while target.exists() {
         target = backups.join(format!("{name}-{stamp}~{n:02}.bak"));
         n += 1;
@@ -610,6 +649,8 @@ fn backup(path: &Path, backups: &Path) -> anyhow::Result<()> {
     let bytes = std::fs::read(path)?;
     write_private(&target, &bytes, None)?;
 
+    // Rotate: keep the newest backups of this file only (matching name, path
+    // hash and a timestamp), deleting the oldest beyond the limit.
     let prefix = format!("{name}-");
     let mut all: Vec<String> = std::fs::read_dir(backups)?
         .flatten()
@@ -691,6 +732,7 @@ fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    /// Writes `text` as `config` in a temp dir and loads it.
     fn setup(text: &str) -> (tempfile::TempDir, PathBuf, ConfigSet) {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("config");
@@ -699,10 +741,13 @@ mod tests {
         (dir, p, set)
     }
 
+    /// A host with just an alias and HostName.
     fn host(alias: &str, hostname: &str) -> HostFields {
         HostFields { alias: alias.into(), hostname: hostname.into(), ..Default::default() }
     }
 
+    /// Editing changes only the edited lines and adds the extras comment after
+    /// `Host`; comments and other blocks are untouched.
     #[test]
     fn update_changes_only_touched_lines() {
         let (_d, _p, mut s) =
@@ -719,6 +764,7 @@ mod tests {
         assert!(s.docs[0].is_dirty());
     }
 
+    /// An old `# termax:` comment is rewritten as `# skiff:` with the new tags.
     #[test]
     fn update_replaces_a_pre_rename_extras_comment() {
         let (_d, _p, mut s) = setup("Host a\n    # termax: tags=old; hidden\n    HostName h\n");
@@ -729,6 +775,8 @@ mod tests {
         assert_eq!(s.docs[0].render(), "Host a\n    # skiff: tags=new; hidden\n    HostName h\n");
     }
 
+    /// Values with spaces are quoted (ProxyCommand isn't), the file's CRLF,
+    /// tab indent and `=` separator are reused, and the result reads back the same.
     #[test]
     fn update_quotes_values_with_spaces() {
         let (_d, _p, mut s) = setup("Host a\r\n\tUser=x");
@@ -746,6 +794,7 @@ mod tests {
         assert_eq!(again.host_fields(&again.blocks()[0]), f);
     }
 
+    /// A new host uses the file's existing ` = ` separator and indent.
     #[test]
     fn new_keys_follow_the_separator_style() {
         let (_d, _p, mut s) = setup("Host a\n  User = x\n");
@@ -753,6 +802,7 @@ mod tests {
         assert_eq!(s.docs[0].render(), "Host a\n  User = x\n\nHost b\n  HostName = h\n");
     }
 
+    /// A new host goes before the first wildcard block and the comment above it.
     #[test]
     fn add_goes_before_first_wildcard() {
         let (_d, _p, mut s) = setup("Host a\n  User x\n\n# defaults\nHost *\n  User y\nMatch all\n  Port 1\n");
@@ -763,6 +813,7 @@ mod tests {
         );
     }
 
+    /// Deleting a block also removes one adjacent blank line, at either end.
     #[test]
     fn delete_removes_block_and_one_blank() {
         let text = "Host a\n  User x\n\nHost b\n  User y\n";
@@ -774,6 +825,8 @@ mod tests {
         assert_eq!(s.docs[0].render(), "Host a\n  User x\n");
     }
 
+    /// Moving a host to an included file removes it from the main file and
+    /// appends it there.
     #[test]
     fn move_between_included_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -789,6 +842,8 @@ mod tests {
         assert_eq!(s.docs[1].render(), "Host w\n  User z\n\nHost a\n  # mine\n  User x\n");
     }
 
+    /// Moving takes the comments above the Host line, but not the previous host's
+    /// indented commented-out options.
     #[test]
     fn move_takes_the_comments_above_the_host() {
         let dir = tempfile::tempdir().unwrap();
@@ -811,6 +866,7 @@ mod tests {
         assert_eq!(s.docs[1].render(), "# about b\nHost b\n  User y\n");
     }
 
+    /// A duplicate added after its original lands before the wildcard block.
     #[test]
     fn add_after_puts_the_copy_next_to_the_original() {
         let (_d, _p, mut s) = setup("Host a\n  User x\n# defaults\nHost *\n  User y\n");
@@ -818,6 +874,8 @@ mod tests {
         assert_eq!(s.docs[0].render(), "Host a\n  User x\n\nHost a-copy\n  HostName h\n\n# defaults\nHost *\n  User y\n");
     }
 
+    /// Shared-block and multiply-defined hosts are read-only with an explanation;
+    /// `aliases` lists each name once.
     #[test]
     fn shared_and_duplicate_hosts_are_read_only() {
         let (_d, _p, s) = setup("Host a b\n  User x\nHost c\n  User y\nHost c\n  Port 2\nHost d\n");
@@ -834,6 +892,7 @@ mod tests {
         assert_eq!(s.aliases(), ["a", "b", "c", "d"]);
     }
 
+    /// Repeated saves keep only the newest ten backups and clear the dirty flag.
     #[test]
     fn save_backs_up_and_rotates() {
         let (d, p, mut s) = setup("Host a\n  Port 1\n");
@@ -849,6 +908,7 @@ mod tests {
         assert!(!s.docs[0].is_dirty());
     }
 
+    /// Backups of two files both named `config` rotate independently.
     #[test]
     fn backups_of_same_named_files_rotate_separately() {
         let d = tempfile::tempdir().unwrap();
@@ -865,6 +925,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&backups).unwrap().count(), KEEP_BACKUPS + 1, "b's backup doesn't push out a's");
     }
 
+    /// Save refuses, and writes nothing, when the file changed on disk.
     #[test]
     fn save_refuses_after_external_change() {
         let (d, p, mut s) = setup("Host a\n  Port 1\n");
@@ -877,6 +938,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "Host other\n");
     }
 
+    /// Saving to a missing file creates it (and its directory) privately.
     #[test]
     fn add_creates_missing_file() {
         let d = tempfile::tempdir().unwrap();
@@ -893,6 +955,7 @@ mod tests {
         }
     }
 
+    /// Saving keeps the file's existing permissions.
     #[cfg(unix)]
     #[test]
     fn save_keeps_mode() {
@@ -904,6 +967,8 @@ mod tests {
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o640);
     }
 
+    /// Validation rejects empty or unsafe aliases, taken names, port 0, and
+    /// block-starting keywords in other options.
     #[test]
     fn validate_rejects_bad_input() {
         let taken = vec!["web".to_string()];
@@ -926,6 +991,7 @@ mod tests {
 mod edge_tests {
     use super::*;
 
+    /// Writes `text` as `config` in a temp dir and loads it.
     fn setup(text: &str) -> (tempfile::TempDir, PathBuf, ConfigSet) {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("config");
@@ -934,6 +1000,7 @@ mod edge_tests {
         (dir, p, set)
     }
 
+    /// Loads `p`, sets `hidden` on `alias` and applies the edit in memory.
     fn set_hidden(p: &Path, alias: &str, hidden: bool) -> ConfigSet {
         let mut s = ConfigSet::load(p).unwrap();
         let mut f = s.fields(alias).unwrap();
@@ -942,6 +1009,8 @@ mod edge_tests {
         s
     }
 
+    /// A host with no options can be hidden, unhidden (removing the comment) and
+    /// deleted together with its comment.
     #[test]
     fn bare_host_hide_unhide_delete() {
         let (d, p, _) = setup("Host a\n    HostName 1.1.1.1\n\nHost bare\n");
@@ -957,6 +1026,7 @@ mod edge_tests {
         assert_eq!(text, "Host a\n    HostName 1.1.1.1\n");
     }
 
+    /// A host with only a name and tags keeps its tags after a save and reload.
     #[test]
     fn name_only_host_keeps_tags() {
         let (d, p, mut s) = setup("");
@@ -966,6 +1036,8 @@ mod edge_tests {
         assert_eq!(ConfigSet::load(&p).unwrap().fields("n").unwrap().tags, ["prod"]);
     }
 
+    /// An `Include` already inside a host block survives an edit, but a newly
+    /// added one is refused.
     #[test]
     fn existing_include_line_survives_update() {
         let (_d, p, _) = setup("Host web\n    HostName 1.1.1.1\n    Include extra.conf\n");
@@ -976,10 +1048,13 @@ mod edge_tests {
         assert!(validate_update(&s, "web", &f).is_err(), "a newly typed Include is still refused");
     }
 
+    /// Runs `update_host` on a copy, to check only its validation result.
     fn validate_update(s: &ConfigSet, alias: &str, f: &HostFields) -> Result<(), String> {
         s.clone().update_host(alias, f)
     }
 
+    /// When writing the target file of a move fails, the source file still has
+    /// the host (the gaining file is written first).
     #[test]
     fn failed_move_keeps_host_in_source() {
         let (d, p, _) = setup("");
@@ -1032,6 +1107,7 @@ mod edge_tests {
         assert!(std::fs::read_to_string(&p).unwrap().contains("Host web"), "source untouched when the target write fails");
     }
 
+    /// Saving through a symlink updates the target and keeps the link.
     #[cfg(unix)]
     #[test]
     fn save_through_symlink_keeps_link() {

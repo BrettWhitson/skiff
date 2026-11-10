@@ -11,6 +11,7 @@ use skiff_core::fs::transfer::{self, OverwriteDecision, OverwritePolicy, Transfe
 use skiff_testserver::{FixtureAuth, TestFixture};
 use tokio::sync::mpsc::unbounded_channel;
 
+/// SFTP launch for the fixture; `batch` adds `BatchMode=yes` so ssh never prompts.
 fn launch(fx: &TestFixture, batch: bool) -> SshLaunch {
     let mut args = fx.ssh_options();
     if batch {
@@ -20,10 +21,12 @@ fn launch(fx: &TestFixture, batch: bool) -> SshLaunch {
     SshLaunch { program: "ssh".into(), args, env: vec![], start_dir: None }
 }
 
+/// Connects to the fixture and wraps the session as an endpoint.
 async fn remote(fx: &TestFixture) -> Endpoint {
     Endpoint::Remote(Arc::new(connect_sftp(launch(fx, true)).await.expect("connect")))
 }
 
+/// `n` bytes of deterministic pseudo-random data (xorshift seeded by `seed`).
 fn data(n: usize, seed: u32) -> Vec<u8> {
     let mut x = seed.wrapping_mul(2654435761).max(1);
     (0..n)
@@ -37,7 +40,8 @@ fn data(n: usize, seed: u32) -> Vec<u8> {
 }
 
 /// Runs a transfer to completion. `decide` answers overwrite questions;
-/// `on_progress` may cancel or kill things once progress starts.
+/// `on_first_progress` may cancel or kill things once progress starts.
+/// Returns the result and how many questions were asked.
 async fn run_transfer(
     req: TransferRequest,
     policy: OverwritePolicy,
@@ -66,14 +70,17 @@ async fn run_transfer(
     }
 }
 
+/// A transfer request with id 1.
 fn req(src: &Endpoint, src_path: &str, dst: &Endpoint, dst_dir: &str) -> TransferRequest {
     TransferRequest { id: 1, src: src.clone(), src_path: src_path.into(), dst: dst.clone(), dst_dir: dst_dir.into() }
 }
 
+/// A local path as a string.
 fn p(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// A 3 MB file uploads and downloads unchanged.
 #[tokio::test(flavor = "multi_thread")]
 async fn upload_download_roundtrip() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -100,6 +107,7 @@ async fn upload_download_roundtrip() {
     assert_eq!(std::fs::read(local_b.path().join("big.bin")).unwrap(), bytes);
 }
 
+/// A directory tree copies between two servers, relayed through this machine.
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_to_remote_relay() {
     let fa = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -116,6 +124,7 @@ async fn remote_to_remote_relay() {
     assert_eq!(std::fs::read_to_string(fb.root().join("a").join("sub").join("y.txt")).unwrap(), "why");
 }
 
+/// Cancelling mid-upload reports cancelled and leaves no partial file.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancel_mid_transfer() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -134,6 +143,7 @@ async fn cancel_mid_transfer() {
     assert!(!fx.root().join("huge.bin").exists(), "partial file left behind");
 }
 
+/// A cancelled overwrite keeps the original; a completed one replaces it without leftovers.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelled_overwrite_keeps_original_and_completed_one_replaces() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -161,6 +171,7 @@ async fn cancelled_overwrite_keeps_original_and_completed_one_replaces() {
     assert_eq!(parts.count(), 0, "temp file left behind");
 }
 
+/// Answers to overwrite questions apply per file, and "all" answers stop the questions.
 #[tokio::test(flavor = "multi_thread")]
 async fn overwrite_ask_skip_and_all() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -197,6 +208,7 @@ async fn overwrite_ask_skip_and_all() {
     }
 }
 
+/// One "overwrite all" answer covers every later conflict.
 #[tokio::test(flavor = "multi_thread")]
 async fn overwrite_all_stops_asking() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -222,6 +234,7 @@ async fn overwrite_all_stops_asking() {
     }
 }
 
+/// Copying a file onto an existing directory fails and leaves the directory alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn copy_file_onto_directory_errors() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -238,6 +251,7 @@ async fn copy_file_onto_directory_errors() {
     assert_eq!(std::fs::read_to_string(fx.root().join("same").join("keep.txt")).unwrap(), "keep");
 }
 
+/// Names with spaces and non-ASCII characters survive upload, listing, download and delete.
 #[tokio::test(flavor = "multi_thread")]
 async fn transfers_names_with_spaces_and_unicode() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -262,6 +276,7 @@ async fn transfers_names_with_spaces_and_unicode() {
     assert!(!fx.root().join(name).exists());
 }
 
+/// Killing the server mid-transfer ends the transfer with an error, promptly.
 #[tokio::test(flavor = "multi_thread")]
 async fn transfer_fails_when_server_dies() {
     let mut fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -276,6 +291,7 @@ async fn transfer_fails_when_server_dies() {
     assert!(started.elapsed() < Duration::from_secs(20));
 }
 
+/// Remote mkdir, rename, stat and recursive remove work.
 #[tokio::test(flavor = "multi_thread")]
 async fn endpoint_ops_mkdir_rename_remove() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -290,6 +306,7 @@ async fn endpoint_ops_mkdir_rename_remove() {
     assert!(!fx.root().join("z").exists());
 }
 
+/// A failed connect reports ssh's own stderr.
 #[tokio::test(flavor = "multi_thread")]
 async fn connect_error_shows_ssh_stderr() {
     let fx = TestFixture::new(FixtureAuth::Password("pw".into())).unwrap();
@@ -297,6 +314,7 @@ async fn connect_error_shows_ssh_stderr() {
     assert!(err.contains("Permission denied"), "{err}");
 }
 
+/// Copying a local file or directory onto or into itself is refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn self_copy_is_rejected() {
     let d = tempfile::tempdir().unwrap();
@@ -325,6 +343,7 @@ async fn self_copy_is_rejected() {
     assert!(!d.path().join("a").join("a").exists());
 }
 
+/// Copying a remote directory into itself on the same session is refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn same_remote_self_copy_is_rejected() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -351,6 +370,7 @@ fn symlink_dir(target: &Path, link: &Path) -> bool {
     }
 }
 
+/// A directory symlink inside a tree is skipped and counted, not followed.
 #[tokio::test(flavor = "multi_thread")]
 async fn symlinked_dir_in_tree_is_skipped_not_fatal() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -368,6 +388,7 @@ async fn symlinked_dir_in_tree_is_skipped_not_fatal() {
     assert_eq!(std::fs::read_to_string(local.path().join("t").join("real").join("file")).unwrap(), "f");
 }
 
+/// Removing a remote directory symlink removes the link, not the target's contents.
 #[tokio::test(flavor = "multi_thread")]
 async fn deleting_remote_dir_symlink_keeps_target() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -382,6 +403,7 @@ async fn deleting_remote_dir_symlink_keeps_target() {
     assert!(std::fs::symlink_metadata(fx.root().join("link")).is_err());
 }
 
+/// Copying a directory onto an existing file fails and leaves the file alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn copy_directory_onto_file_errors() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -396,6 +418,7 @@ async fn copy_directory_onto_file_errors() {
     assert_eq!(std::fs::read_to_string(fx.root().join("same")).unwrap(), "file");
 }
 
+/// The SFTP session behind a remote endpoint.
 fn sftp(ep: &Endpoint) -> &russh_sftp::client::SftpSession {
     match ep {
         Endpoint::Remote(c) => &c.sftp,
@@ -412,6 +435,7 @@ fn symlink_file(target: &Path, link: &Path) -> bool {
     r.map_err(|e| eprintln!("skipping symlink part: cannot create symlinks here ({e})")).is_ok()
 }
 
+/// Overwrites keep the destination's mode, owner and group, and write through symlinks.
 #[tokio::test(flavor = "multi_thread")]
 async fn overwrite_keeps_dest_mode_owner_and_symlink() {
     use russh_sftp::client::fs::Metadata;
@@ -460,6 +484,7 @@ async fn overwrite_keeps_dest_mode_owner_and_symlink() {
     }
 }
 
+/// When the directory refuses new files, an overwrite rewrites the file in place.
 #[tokio::test(flavor = "multi_thread")]
 async fn overwrite_in_unwritable_dir_writes_in_place() {
     use russh_sftp::client::fs::Metadata;
@@ -476,6 +501,7 @@ async fn overwrite_in_unwritable_dir_writes_in_place() {
     assert_eq!(std::fs::read_to_string(fx.root().join("ro").join("f")).unwrap(), "new");
 }
 
+/// Temp files from interrupted transfers (current and legacy suffix) are not copied.
 #[tokio::test(flavor = "multi_thread")]
 async fn directory_copy_skips_part_files() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -494,6 +520,7 @@ async fn directory_copy_skips_part_files() {
     assert!(!fx.root().join("d").join(".a.txt.1-2.termax-part").exists());
 }
 
+/// The temp file is 0600 while written; if its mode can't be set, the copy goes in place.
 #[tokio::test(flavor = "multi_thread")]
 async fn temp_is_private_and_unverified_mode_falls_back_in_place() {
     use russh_sftp::client::fs::Metadata;
@@ -538,6 +565,7 @@ async fn temp_is_private_and_unverified_mode_falls_back_in_place() {
     assert_eq!(parts.count(), 0, "temp file left behind");
 }
 
+/// A cancelled in-place overwrite has not truncated the destination.
 #[tokio::test(flavor = "multi_thread")]
 async fn in_place_overwrite_never_truncates_first() {
     use russh_sftp::client::fs::Metadata;
@@ -553,6 +581,7 @@ async fn in_place_overwrite_never_truncates_first() {
     assert_eq!(std::fs::metadata(fx.root().join("owned")).unwrap().len(), old.len() as u64, "cancelled copy truncated the file");
 }
 
+/// Special files, symlinks owned by others, and broken symlinks are refused untouched.
 #[tokio::test(flavor = "multi_thread")]
 async fn refuses_foreign_broken_and_special_destinations() {
     use russh_sftp::client::fs::Metadata;
@@ -586,6 +615,7 @@ async fn refuses_foreign_broken_and_special_destinations() {
     assert!(std::fs::symlink_metadata(fx.root().join("broken")).unwrap().file_type().is_symlink());
 }
 
+/// A read-only local destination fails with a clear message and no temp file.
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn readonly_local_destination_fails_clearly() {

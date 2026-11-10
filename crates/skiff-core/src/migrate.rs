@@ -21,6 +21,8 @@ pub fn legacy_config_dir() -> Option<PathBuf> {
 /// copies the old one over. Returns a message to show the user once (the new
 /// directory exists afterwards, so it is never repeated).
 pub fn migrate_legacy(config_path: &Path) -> Option<String> {
+    // SKIFF_CONFIG or TERMAX_CONFIG set (and non-empty) means the user picked the
+    // location, so there is no default-place directory to fill.
     if [crate::config::CONFIG_ENV, LEGACY_CONFIG_ENV].iter().any(|v| std::env::var_os(v).is_some_and(|p| !p.is_empty())) {
         return None; // an explicit config path: nothing to move
     }
@@ -41,6 +43,8 @@ pub fn copy_legacy(old: &Path, new: &Path) -> std::io::Result<bool> {
     if new.symlink_metadata().is_ok() || !old.is_dir() {
         return Ok(false);
     }
+    // Copy into a hidden per-process staging directory beside `new`, then rename
+    // it into place in one step.
     let parent = new.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let name = new.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -52,6 +56,7 @@ pub fn copy_legacy(old: &Path, new: &Path) -> std::io::Result<bool> {
         }
         std::fs::rename(&staging, new).map(|()| true)
     });
+    // Clean up the staging copy on failure or when another instance won the race.
     if done.as_ref().map_or(true, |copied| !copied) {
         let _ = std::fs::remove_dir_all(&staging);
     }
@@ -62,6 +67,8 @@ pub fn copy_legacy(old: &Path, new: &Path) -> std::io::Result<bool> {
 /// (private directories stay private while they are filled) and, on Unix,
 /// symlinks as symlinks.
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    // Create the target private first; its real permissions are applied after
+    // the contents are copied.
     let meta = std::fs::metadata(from)?;
     #[cfg(unix)]
     {
@@ -81,6 +88,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
                 continue;
             }
         }
+        // A symlink (non-Unix here) is followed: copy what it points to.
         let is_dir = if kind.is_symlink() { src.is_dir() } else { kind.is_dir() };
         if is_dir {
             copy_tree(&src, &dst)?;
@@ -95,6 +103,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Builds a fake `termax` data directory with a config, history and a backup.
     fn old_dir(root: &Path) -> PathBuf {
         let old = root.join("termax");
         std::fs::create_dir_all(old.join("backups")).unwrap();
@@ -104,6 +113,8 @@ mod tests {
         old
     }
 
+    /// Copies everything once, leaves the old directory intact, leaves no staging
+    /// directory behind, and does nothing on a second run.
     #[test]
     fn copies_old_data_once_and_leaves_it_intact() {
         let d = tempfile::tempdir().unwrap();
@@ -121,6 +132,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(new.join("config.toml")).unwrap(), "theme = \"x\"\n");
     }
 
+    /// An existing new directory is never overwritten, and a missing old
+    /// directory copies nothing.
     #[test]
     fn never_touches_an_existing_new_dir_or_a_missing_old_one() {
         let d = tempfile::tempdir().unwrap();
@@ -135,6 +148,7 @@ mod tests {
         assert!(!d.path().join("other").exists());
     }
 
+    /// A 0700 directory is still 0700 after the copy.
     #[cfg(unix)]
     #[test]
     fn keeps_private_dirs_private() {

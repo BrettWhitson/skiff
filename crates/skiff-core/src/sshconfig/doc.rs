@@ -13,34 +13,48 @@ pub fn text_hash(text: &str) -> u64 {
     h.finish()
 }
 
+/// One ssh config file held as lines, so it can be edited and written back
+/// without disturbing anything not edited.
 #[derive(Debug, Clone)]
 pub struct Doc {
+    /// The file this text came from.
     pub path: PathBuf,
     /// Line content (no terminator) and its terminator (`"\n"`, `"\r\n"` or `""`).
     pub(crate) lines: Vec<(String, &'static str)>,
+    /// Line ending for new lines: CRLF if the file used any, else LF.
     pub(crate) eol: &'static str,
+    /// The file started with a UTF-8 byte-order mark (kept on render).
     pub(crate) bom: bool,
+    /// The file ended with a newline (or was empty).
     pub(crate) final_newline: bool,
+    /// `text_hash` of the text as loaded, to detect outside changes.
     pub(crate) loaded_hash: u64,
+    /// Changed in memory since loading.
     pub(crate) dirty: bool,
 }
 
+/// What kind of run of lines a `Block` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind {
+    /// Lines before the first `Host`/`Match`.
     Preamble,
+    /// A `Host` block.
     Host,
+    /// A `Match` block.
     Match,
 }
 
 /// A run of lines: the lines before the first `Host`/`Match`, or one block.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
+    /// Preamble, Host or Match.
     pub kind: BlockKind,
     /// First line (the `Host`/`Match` line).
     pub start: usize,
     /// One past the last option line; blank lines and comments after it
     /// belong to the gap before the next block.
     pub end: usize,
+    /// `Host` patterns (unquoted); empty for Preamble and Match.
     pub patterns: Vec<String>,
     /// 1-based line number of the `Host`/`Match` line.
     pub line: usize,
@@ -49,7 +63,9 @@ pub struct Block {
 /// The editable view of one `Host` block.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostFields {
+    /// The `Host` patterns, space-separated.
     pub alias: String,
+    /// The rest are the first value of each option; empty means unset.
     pub hostname: String,
     pub user: String,
     pub port: String,
@@ -57,7 +73,9 @@ pub struct HostFields {
     pub proxy_jump: String,
     pub proxy_command: String,
     pub remote_dir: String,
+    /// Tags from the `# skiff:` comment.
     pub tags: Vec<String>,
+    /// `hidden` from the `# skiff:` comment.
     pub hidden: bool,
     /// Every other option line, as written (`"ForwardAgent yes"`).
     pub other: Vec<String>,
@@ -66,6 +84,7 @@ pub struct HostFields {
 /// Lower-case option keys that have their own form field, in field order.
 pub(crate) const FIELD_KEYS: [&str; 6] = ["hostname", "user", "port", "identityfile", "proxyjump", "proxycommand"];
 
+/// True for a blank line or a `#` comment.
 pub(crate) fn is_comment_or_blank(s: &str) -> bool {
     let t = s.trim();
     t.is_empty() || t.starts_with('#')
@@ -84,6 +103,7 @@ impl HostFields {
         }
     }
 
+    /// Mutable access to field `i` of `FIELD_KEYS`.
     fn field_mut(&mut self, i: usize) -> &mut String {
         match i {
             0 => &mut self.hostname,
@@ -97,6 +117,8 @@ impl HostFields {
 }
 
 impl Doc {
+    /// Splits `text` into lines, remembering each line's terminator, the BOM
+    /// and the dominant line ending so `render` reproduces it exactly.
     pub fn parse(path: PathBuf, text: &str) -> Doc {
         let loaded_hash = text_hash(text);
         let (bom, body) = match text.strip_prefix('\u{feff}') {
@@ -126,6 +148,7 @@ impl Doc {
         Doc { path, lines, eol, bom, final_newline, loaded_hash, dirty: false }
     }
 
+    /// The file's text: identical to what was parsed unless lines were edited.
     pub fn render(&self) -> String {
         let mut s = String::new();
         if self.bom {
@@ -138,14 +161,18 @@ impl Doc {
         s
     }
 
+    /// Hash of the text as it was loaded.
     pub fn loaded_hash(&self) -> u64 {
         self.loaded_hash
     }
 
+    /// Whether there are unsaved edits.
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 
+    /// Splits the file into a preamble and `Host`/`Match` blocks, in order. Each
+    /// block ends at its last option line (or `# skiff:` comment).
     pub fn blocks(&self) -> Vec<Block> {
         let mut out: Vec<Block> = Vec::new();
         let mut cur = Block { kind: BlockKind::Preamble, start: 0, end: 0, patterns: vec![], line: 0 };
@@ -165,6 +192,7 @@ impl Doc {
             };
             match kind {
                 Some(kind) => {
+                    // A preamble with no option lines is not reported.
                     if cur.kind != BlockKind::Preamble || cur.end > 0 {
                         out.push(cur);
                     }
@@ -183,6 +211,8 @@ impl Doc {
         out
     }
 
+    /// The form fields of `Host` block `b`: the first value of each known option,
+    /// the `# skiff:` extras, and every other option line as written.
     pub fn host_fields(&self, b: &Block) -> HostFields {
         let mut f = HostFields { alias: b.patterns.join(" "), ..Default::default() };
         let mut seen = [false; FIELD_KEYS.len()];
@@ -199,6 +229,7 @@ impl Doc {
             let Some((k, v)) = split_kv(t) else { continue };
             let k = k.to_ascii_lowercase();
             match FIELD_KEYS.iter().position(|x| *x == k) {
+                // Repeats of a known key go to `other`, like unknown options.
                 Some(i) if !seen[i] => {
                     seen[i] = true;
                     *f.field_mut(i) = unquote(v).to_string();
@@ -216,6 +247,7 @@ pub fn parse_extras(comment: &str) -> Option<(Vec<String>, bool, Option<String>)
     let body = comment.trim().strip_prefix('#')?.trim_start();
     let body = body.strip_prefix("skiff:").or_else(|| body.strip_prefix("termax:"))?;
     let (mut tags, mut hidden, mut dir) = (Vec::new(), false, None);
+    // `;`-separated parts; unknown parts are ignored.
     for part in body.split(';').map(str::trim) {
         if let Some(t) = part.strip_prefix("tags=") {
             tags = t.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect();
@@ -248,8 +280,10 @@ pub fn format_extras(tags: &[String], hidden: bool, dir: &str) -> Option<String>
 mod tests {
     use super::*;
 
+    /// BOM, CRLF, tabs, `=`, quotes, comments and no final newline, all at once.
     const FIXTURE: &str = "\u{feff}# global\r\nInclude \"~/.ssh/conf.d/*\"\r\n\r\nHost web\r\n\tHostName=10.0.0.5\r\n\tIdentityFile \"C:/my keys/id\"\r\n  # note\r\n\r\nHost *\r\n    User x\r\nMatch host foo\r\n    Port 1";
 
+    /// Parsing then rendering reproduces the text exactly.
     #[test]
     fn doc_round_trip_is_exact() {
         for t in [FIXTURE, "", "Host a\n", "Host a\n  User b", "\n\n", "Host a\r\n  User b\n"] {
@@ -257,6 +291,8 @@ mod tests {
         }
     }
 
+    /// Block boundaries, line numbers, field values, extras and `other` are read
+    /// correctly, including from the CRLF fixture.
     #[test]
     fn blocks_and_fields() {
         let d = Doc::parse(
@@ -284,6 +320,8 @@ mod tests {
         assert_eq!(f.identity_file, "C:/my keys/id");
     }
 
+    /// Extras format and parse back, empty extras give no comment, and the old
+    /// `# termax:` prefix is still read.
     #[test]
     fn extras_round_trip() {
         let s = format_extras(&["a".into()], true, "").unwrap();

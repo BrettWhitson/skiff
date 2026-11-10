@@ -11,8 +11,11 @@ use super::path::{self, FileEntry};
 /// What a path is, links not followed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
+    /// A regular file.
     File,
+    /// A directory.
     Dir,
+    /// A symbolic link.
     Symlink,
     /// A FIFO, device, socket and the like.
     Other,
@@ -27,6 +30,7 @@ pub struct WriteMeta {
     pub target: Option<FileKind>,
     /// Owner user and group ids, where the file system reports them (Unix, SFTP).
     pub uid: Option<u32>,
+    /// Group id, where the file system reports it (Unix, SFTP).
     pub gid: Option<u32>,
     /// Permission bits (`0o7777`), where the file system has them.
     pub mode: Option<u32>,
@@ -34,6 +38,7 @@ pub struct WriteMeta {
     pub readonly: bool,
 }
 
+/// Maps a local file type to a `FileKind`.
 fn local_kind(ft: std::fs::FileType) -> FileKind {
     if ft.is_symlink() {
         FileKind::Symlink
@@ -47,6 +52,7 @@ fn local_kind(ft: std::fs::FileType) -> FileKind {
 }
 
 /// A server that sends no permissions is taken to mean a regular file.
+/// Maps SFTP metadata to a `FileKind`.
 fn remote_kind(m: &russh_sftp::client::fs::Metadata) -> FileKind {
     use russh_sftp::protocol::FileType;
     if m.permissions.is_none() {
@@ -60,17 +66,22 @@ fn remote_kind(m: &russh_sftp::client::fs::Metadata) -> FileKind {
     }
 }
 
+/// Whether an SFTP error is "no such file".
 fn no_such_file(e: &russh_sftp::client::error::Error) -> bool {
     matches!(e, russh_sftp::client::error::Error::Status(s) if s.status_code == russh_sftp::protocol::StatusCode::NoSuchFile)
 }
 
+/// Where files live: this computer or a remote SFTP connection.
 #[derive(Clone)]
 pub enum Endpoint {
+    /// The local file system.
     Local,
+    /// A remote file system over a shared SFTP connection.
     Remote(Arc<RemoteConn>),
 }
 
 impl Endpoint {
+    /// Whether this is an SFTP endpoint.
     pub fn is_remote(&self) -> bool {
         matches!(self, Endpoint::Remote(_))
     }
@@ -84,6 +95,7 @@ impl Endpoint {
         }
     }
 
+    /// Joins `name` onto `base` using this side's path rules.
     pub fn join(&self, base: &str, name: &str) -> String {
         path::join(self.is_remote(), base, name)
     }
@@ -91,6 +103,7 @@ impl Endpoint {
     /// Directory entries (without `.`/`..`), unsorted.
     pub async fn list(&self, dir: &str) -> Result<Vec<FileEntry>> {
         match self {
+            // Local listing does blocking I/O, so it runs off the async threads.
             Endpoint::Local => {
                 let dir = dir.to_string();
                 tokio::task::spawn_blocking(move || path::list_local(std::path::Path::new(&dir)))
@@ -120,6 +133,7 @@ impl Endpoint {
         }
     }
 
+    /// Basic info about `p` (links followed); `None` if nothing exists at `p`.
     /// `None` if nothing exists at `p`.
     pub async fn stat(&self, p: &str) -> Result<Option<FileEntry>> {
         let name = path::parent(self.is_remote(), p).map(|(_, n)| n).unwrap_or_else(|| p.to_string());
@@ -139,6 +153,7 @@ impl Endpoint {
         }
     }
 
+    /// Creates one directory (parents must exist).
     pub async fn mkdir(&self, p: &str) -> Result<()> {
         match self {
             Endpoint::Local => tokio::fs::create_dir(p).await.with_context(|| format!("mkdir {p}")),
@@ -146,6 +161,7 @@ impl Endpoint {
         }
     }
 
+    /// Renames `from` to `to` on this side.
     pub async fn rename(&self, from: &str, to: &str) -> Result<()> {
         match self {
             Endpoint::Local => tokio::fs::rename(from, to).await.with_context(|| format!("rename {from}")),
@@ -163,6 +179,7 @@ impl Endpoint {
         match self {
             Endpoint::Local => self.rename(from, to).await,
             Endpoint::Remote(c) => {
+                // Try a plain rename first; servers that allow overwriting succeed here.
                 if c.sftp.rename(from, to).await.is_ok() {
                     return Ok(());
                 }
@@ -180,6 +197,7 @@ impl Endpoint {
         let entry = self.stat(p).await?.ok_or_else(|| anyhow!("{p} does not exist"))?;
         match self {
             Endpoint::Local => {
+                // Local: check the path itself (not its target) to see if it is a link.
                 let link = std::fs::symlink_metadata(p).map(|m| m.file_type().is_symlink()).unwrap_or(false);
                 if link {
                     // A directory link on Windows must be removed with remove_dir.
@@ -195,6 +213,7 @@ impl Endpoint {
                 }
             }
             Endpoint::Remote(c) => {
+                // Remote: a file or a link is removed directly; a directory needs care.
                 let link = c.sftp.symlink_metadata(p).await?.file_type().is_symlink();
                 if !entry.is_dir || link {
                     return Ok(c.sftp.remove_file(p).await?);
@@ -243,6 +262,7 @@ impl Endpoint {
                     },
                     _ => None,
                 };
+                // Owner and mode come from Unix metadata; elsewhere they are unknown.
                 #[cfg(unix)]
                 let (uid, gid, mode) = {
                     use std::os::unix::fs::MetadataExt;
@@ -330,6 +350,7 @@ impl Endpoint {
         }
     }
 
+    /// Opens file `p` for reading.
     pub async fn open_read(&self, p: &str) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
         Ok(match self {
             Endpoint::Local => Box::new(tokio::fs::File::open(p).await.with_context(|| format!("open {p}"))?),
@@ -357,6 +378,7 @@ impl Endpoint {
             Endpoint::Remote(c) => {
                 use russh_sftp::protocol::OpenFlags;
                 let attrs = russh_sftp::client::fs::Metadata { permissions: private.then_some(0o600), ..Default::default() };
+                // EXCLUDE makes the server fail if the path already exists.
                 let flags = OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE;
                 Box::new(c.sftp.open_with_flags_and_attributes(p, flags, attrs).await.with_context(|| format!("create {p}"))?)
             }

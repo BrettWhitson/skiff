@@ -9,6 +9,7 @@ use skiff_core::hosts::{HostEntry, collect};
 use skiff_testserver::{FixtureAuth, TestFixture};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// The fixture as a host entry (named `fx`), ignoring the user's ssh config.
 fn host(fx: &TestFixture) -> HostEntry {
     let mut cfg = Config::default();
     cfg.settings.load_ssh_config = false;
@@ -16,10 +17,12 @@ fn host(fx: &TestFixture) -> HostEntry {
     collect(&cfg).0.remove(0)
 }
 
+/// A local TCP port that is free right now.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// Polls the forward's state until `done` holds or `secs` pass; returns the last state.
 async fn wait(h: &ForwardHandle, secs: u64, done: impl Fn(&ForwardState) -> bool) -> ForwardState {
     let start = Instant::now();
     loop {
@@ -31,15 +34,18 @@ async fn wait(h: &ForwardHandle, secs: u64, done: impl Fn(&ForwardState) -> bool
     }
 }
 
+/// A local forward on `listen` through host `fx` to `target`.
 fn local(listen: u16, target: String) -> Forward {
     Forward { name: None, host: "fx".into(), kind: ForwardKind::Local, bind: None, listen, target: Some(target) }
 }
 
+/// A local forward comes up, carries data to an echo server, and stops on request.
 #[tokio::test(flavor = "multi_thread")]
 async fn local_forward_reaches_echo() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
     let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let echo_port = echo.local_addr().unwrap().port();
+    // A tiny echo server as the forward's target.
     tokio::spawn(async move {
         while let Ok((mut c, _)) = echo.accept().await {
             tokio::spawn(async move {
@@ -68,6 +74,7 @@ async fn local_forward_reaches_echo() {
     assert_eq!(wait(&h, 5, |s| *s == ForwardState::Stopped).await, ForwardState::Stopped);
 }
 
+/// A listen port already in use makes the forward fail, naming the port.
 #[tokio::test(flavor = "multi_thread")]
 async fn forward_port_in_use_fails() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();

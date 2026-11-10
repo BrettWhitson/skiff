@@ -19,6 +19,7 @@ use super::path::is_safe_name;
 
 /// True if `dst` is `src` itself or a path inside it.
 fn is_same_or_inside(ep: &Endpoint, dst: &str, src: &str) -> bool {
+    // Remote paths compare as `/`-separated strings.
     if ep.is_remote() {
         let (d, s) = (dst.trim_end_matches('/'), src.trim_end_matches('/'));
         return d == s || d.starts_with(&format!("{s}/")) || s.is_empty();
@@ -48,6 +49,7 @@ fn part_path(ep: &Endpoint, d: &str, job: u64) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let tag = format!(".{}-{job}-{}{PART_SUFFIX}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let (dir, name) = super::path::parent(ep.is_remote(), d).unwrap_or_default();
+    // Cut the name (on a char boundary) so the whole file name fits in 255 bytes.
     let mut end = name.len().min(255 - 1 - tag.len());
     while !name.is_char_boundary(end) {
         end -= 1;
@@ -99,73 +101,86 @@ fn is_permission_denied(e: &anyhow::Error) -> bool {
     })
 }
 
+/// Read/write buffer size.
 const CHUNK: usize = 256 * 1024;
+/// Minimum gap between progress events.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
+/// One copy job: a file or directory from one endpoint into a directory on another.
 pub struct TransferRequest {
+    /// Caller-chosen id echoed in every event.
     pub id: u64,
+    /// Where the source lives.
     pub src: Endpoint,
     /// The file or directory to copy.
     pub src_path: String,
+    /// Where the copy goes.
     pub dst: Endpoint,
     /// The directory to copy it into.
     pub dst_dir: String,
 }
 
+/// What to do when a destination file already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverwritePolicy {
+    /// Ask the front-end each time (`TransferEvent::NeedsDecision`).
     Ask,
+    /// Replace every existing file.
     Overwrite,
+    /// Keep every existing file.
     Skip,
 }
 
+/// The front-end's answer to one overwrite question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverwriteDecision {
+    /// Replace this file.
     Overwrite,
+    /// Keep this file.
     Skip,
+    /// Replace this and every later file.
     OverwriteAll,
+    /// Keep this and every later file.
     SkipAll,
 }
 
+/// What a finished transfer did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TransferSummary {
+    /// Files copied.
     pub files: u64,
+    /// Bytes written.
     pub bytes: u64,
+    /// Files kept, plus entries skipped as unsafe, linked directories or temp leftovers.
     pub skipped: u64,
+    /// The transfer was cancelled before the end.
     pub cancelled: bool,
 }
 
+/// Messages from a running transfer to the front-end.
 pub enum TransferEvent {
     /// `current` is the file being copied; `total` is known for single files.
-    Progress {
-        id: u64,
-        done: u64,
-        total: Option<u64>,
-        current: String,
-    },
+    Progress { id: u64, done: u64, total: Option<u64>, current: String },
     /// The destination file exists; answer on `reply` (dropping it cancels).
-    NeedsDecision {
-        id: u64,
-        path: String,
-        reply: oneshot::Sender<OverwriteDecision>,
-    },
-    Done {
-        id: u64,
-        result: Result<TransferSummary, String>,
-    },
+    NeedsDecision { id: u64, path: String, reply: oneshot::Sender<OverwriteDecision> },
+    /// The transfer ended; `Err` holds the message to show.
+    Done { id: u64, result: Result<TransferSummary, String> },
 }
 
+/// Lets the front-end cancel a running transfer.
 #[derive(Clone)]
 pub struct TransferHandle {
     token: CancellationToken,
 }
 
 impl TransferHandle {
+    /// Stops the transfer at the next chunk; the current file's temp copy is removed.
     pub fn cancel(&self) {
         self.token.cancel();
     }
 }
 
+/// Starts `req` on `rt`; events (ending with `Done`) go to `events`.
 pub fn start(rt: &Handle, req: TransferRequest, policy: OverwritePolicy, events: UnboundedSender<TransferEvent>) -> TransferHandle {
     let token = CancellationToken::new();
     let id = req.id;
@@ -187,24 +202,35 @@ pub fn start(rt: &Handle, req: TransferRequest, policy: OverwritePolicy, events:
     TransferHandle { token }
 }
 
+/// State of one running transfer.
 struct Job {
+    /// Request id, echoed in events.
     id: u64,
+    /// Current overwrite policy; an "all" answer changes it.
     policy: OverwritePolicy,
     events: UnboundedSender<TransferEvent>,
     token: CancellationToken,
     summary: TransferSummary,
+    /// Bytes copied so far, for progress.
     done: u64,
+    /// Total bytes, known only for a single-file transfer.
     total: Option<u64>,
+    /// When progress was last sent.
     last_emit: Instant,
+    /// Destination path of the file being copied.
     current: String,
 }
 
+/// How a single file copy ended.
 enum Copied {
+    /// The whole file was written.
     Done,
+    /// Cancelled part way.
     Cancelled,
 }
 
 impl Job {
+    /// Walks the source tree depth-first, creating directories and copying files.
     async fn run(&mut self, req: TransferRequest) -> Result<TransferSummary> {
         let (src, dst) = (&req.src, &req.dst);
         let root = src.stat(&req.src_path).await?.ok_or_else(|| anyhow!("{} does not exist", req.src_path))?;
@@ -253,6 +279,7 @@ impl Job {
                 if e.is_dir {
                     bail!("{d} is a directory");
                 }
+                // An existing file: overwrite or skip according to the policy or the user.
                 if !self.should_overwrite(&d).await? {
                     self.summary.skipped += 1;
                     // Cancelled while asking: say so even when this was the last file.
@@ -275,6 +302,8 @@ impl Job {
         Ok(self.summary.clone())
     }
 
+    /// Whether to replace existing `path`: from the policy, or by asking the
+    /// front-end (cancelling counts as no).
     async fn should_overwrite(&mut self, path: &str) -> Result<bool> {
         match self.policy {
             OverwritePolicy::Overwrite => return Ok(true),
@@ -328,10 +357,12 @@ impl Job {
         }
         let reader = src.open_read(s).await?;
         let tmp = part_path(dst, d, self.id);
+        // No destination yet: write a temp file and move it into place.
         let Some(dest) = dest else {
             let writer = dst.create_new(&tmp, false).await?;
             return self.finish_via_temp(reader, writer, dst, &tmp, d).await;
         };
+        // Replacing: the temp starts private; if the directory won't take new files, write in place.
         let writer = match dst.create_new(&tmp, true).await {
             Ok(w) => w,
             Err(e) if is_permission_denied(&e) => {
@@ -342,6 +373,7 @@ impl Job {
             }
             Err(e) => return Err(e),
         };
+        // Write through a symlink or to another user's file in place rather than replacing it.
         let mine = dst.write_meta(&tmp).await.ok().flatten();
         let foreign = matches!((dest.uid, mine.and_then(|m| m.uid)), (Some(a), Some(b)) if a != b);
         let Some(mine) = mine.filter(|_| dest.kind != FileKind::Symlink && !foreign) else {
@@ -360,6 +392,7 @@ impl Job {
                 return other;
             }
         }
+        // Metadata didn't take: drop the temp, rewind the counters and rewrite in place.
         if !adopt_meta(dst, &tmp, &dest, &mine).await {
             let _ = dst.remove(&tmp, false).await;
             (self.done, self.summary.bytes) = start;
@@ -369,6 +402,8 @@ impl Job {
         self.replace_with(dst, &tmp, d).await
     }
 
+    /// Streams into the temp file and moves it over `d`; on failure or cancel
+    /// the temp file is removed.
     async fn finish_via_temp(
         &mut self,
         reader: Box<dyn AsyncRead + Send + Unpin>,
@@ -410,6 +445,7 @@ impl Job {
         Ok(copied)
     }
 
+    /// Copies `reader` into `writer` in chunks, sending progress; stops on cancel.
     async fn stream(
         &mut self,
         mut reader: Box<dyn AsyncRead + Send + Unpin>,
@@ -433,6 +469,7 @@ impl Job {
         Ok(Copied::Done)
     }
 
+    /// Sends a progress event, at most every `PROGRESS_EVERY` unless `force`.
     fn emit(&mut self, force: bool) {
         if !force && self.last_emit.elapsed() < PROGRESS_EVERY {
             return;
@@ -447,6 +484,7 @@ impl Job {
 mod tests {
     use super::*;
 
+    /// Temp names are distinct per copy, hidden, end in the suffix, and fit 255 bytes.
     #[test]
     fn part_paths_are_unique_hidden_and_bounded() {
         let ep = Endpoint::Local;

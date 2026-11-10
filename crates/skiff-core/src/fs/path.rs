@@ -4,12 +4,18 @@
 use std::path::Path;
 use std::time::SystemTime;
 
+/// One item in a directory listing.
 #[derive(Debug, Clone)]
 pub struct FileEntry {
+    /// File name only, not a path.
     pub name: String,
+    /// A directory, or a symlink that points to one.
     pub is_dir: bool,
+    /// The entry itself is a symlink.
     pub is_symlink: bool,
+    /// Size in bytes (0 if unknown).
     pub size: u64,
+    /// Last modification time, when known.
     pub modified: Option<SystemTime>,
 }
 
@@ -68,6 +74,7 @@ pub fn list_local(dir: &Path) -> std::io::Result<Vec<FileEntry>> {
     Ok(out)
 }
 
+/// A short size with a binary unit, e.g. `512B` or `2.0K`.
 pub fn human_size(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut v = n as f64;
@@ -83,6 +90,7 @@ pub fn human_size(n: u64) -> String {
 mod tests {
     use super::*;
 
+    /// Remote join and parent handle `/` and the root.
     #[test]
     fn remote_paths() {
         assert_eq!(join(true, "/", "etc"), "/etc");
@@ -92,6 +100,7 @@ mod tests {
         assert_eq!(parent(true, "/"), None);
     }
 
+    /// Traversal, separators, drive prefixes and NUL are rejected as child names.
     #[test]
     fn unsafe_child_names_rejected() {
         assert!(is_safe_name("ok.txt"));
@@ -102,6 +111,7 @@ mod tests {
         }
     }
 
+    /// Sizes format with one decimal above bytes.
     #[test]
     fn sizes() {
         assert_eq!(human_size(512), "512B");

@@ -2,6 +2,7 @@
 
 use crate::hosts::{HostEntry, Source, fuzzy_score};
 
+/// Shells `skiff completion` can print a script for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
     Bash,
@@ -10,32 +11,48 @@ pub enum Shell {
     PowerShell,
 }
 
+/// What the command line asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cli {
     /// Start the TUI, optionally opening a host (`true` = file transfer).
     Tui {
+        /// Host name and whether to open the file browser instead of a terminal.
         open: Option<(String, bool)>,
     },
     /// Run a command on a host and exit with its status.
     Exec {
+        /// Host to run on.
         host: String,
+        /// The command and its arguments, passed to ssh as given.
         cmd: Vec<String>,
+        /// Allocate a remote terminal (`-t`), for interactive commands.
         tty: bool,
     },
+    /// `skiff list`: print the host list.
     List {
+        /// Print JSON instead of tab-separated text.
         json: bool,
+        /// Include hidden hosts.
         all: bool,
     },
+    /// `skiff info <host>`: print one host's details.
     Info {
+        /// Host to show.
         host: String,
+        /// Print JSON instead of text.
         json: bool,
     },
+    /// `skiff completion <shell>`: print a completion script.
     Completion(Shell),
+    /// `-h` / `--help`.
     Help,
+    /// `-V` / `--version`.
     Version,
+    /// `--config-path`: print the config file path.
     ConfigPath,
 }
 
+/// The `--help` text.
 pub const HELP: &str = "\
 Skiff — SSH and SFTP from one place
 
@@ -59,6 +76,7 @@ Options:
 Host names come from ~/.ssh/config and Skiff's own connections.
 ";
 
+/// Parses a shell name for `skiff completion`.
 fn shell(s: &str) -> Result<Shell, String> {
     match s {
         "bash" => Ok(Shell::Bash),
@@ -70,9 +88,14 @@ fn shell(s: &str) -> Result<Shell, String> {
 }
 
 /// Parses the arguments after the program name.
+/// Parses the arguments after the program name. Leading options come first;
+/// the first non-option word is a subcommand or a host, and any words after a
+/// host are a command to run.
 pub fn parse(args: &[String]) -> Result<Cli, String> {
     let (mut files, mut tty, mut host) = (false, false, None::<String>);
     let mut i = 0;
+    // Leading options. `--host` takes the next word as the host verbatim, so a
+    // host can be named like a subcommand; it ends option parsing.
     while i < args.len() {
         let a = args[i].as_str();
         match a {
@@ -96,6 +119,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     let host = match host {
         Some(h) => h,
         None => {
+            // No host given: with no more words start the TUI, unless an option needed
+            // a host.
             let Some(word) = rest.first() else {
                 if files {
                     return Err("--files needs a host name".into());
@@ -105,6 +130,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 }
                 return Ok(Cli::Tui { open: None });
             };
+            // Subcommands accept only the listed flags after them.
             let extra = &rest[1..];
             let flags = |allowed: &[&str]| -> Result<Vec<&str>, String> {
                 extra
@@ -133,6 +159,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 }
                 _ => {}
             }
+            // Any other word is the host; the remaining words are the command.
             let h = word.clone();
             return finish(h, &rest[1..], files, tty);
         }
@@ -140,6 +167,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     finish(host, rest, files, tty)
 }
 
+/// Turns a host plus optional command into a TUI open (no command) or an
+/// exec (with one), rejecting flag combinations that make no sense.
 fn finish(host: String, cmd: &[String], files: bool, tty: bool) -> Result<Cli, String> {
     if cmd.is_empty() {
         if tty {
@@ -153,6 +182,8 @@ fn finish(host: String, cmd: &[String], files: bool, tty: bool) -> Result<Cli, S
     Ok(Cli::Exec { host, cmd: cmd.to_vec(), tty })
 }
 
+/// Parses `skiff-gui` arguments: `skiff-gui [<host>] [--files <host>]`.
+/// Returns the host to open and whether to open its files.
 /// `skiff-gui [<host>] [--files <host>]`.
 pub fn parse_gui(args: &[String]) -> Result<Option<(String, bool)>, String> {
     match args {
@@ -165,9 +196,11 @@ pub fn parse_gui(args: &[String]) -> Result<Option<(String, bool)>, String> {
 
 /// Finds a host by name (hidden hosts too); unknown names get suggestions.
 pub fn resolve<'a>(hosts: &'a [HostEntry], name: &str) -> Result<&'a HostEntry, String> {
+    // Exact name first, then a case-insensitive match.
     if let Some(h) = hosts.iter().find(|h| h.name == name).or_else(|| hosts.iter().find(|h| h.name.eq_ignore_ascii_case(name))) {
         return Ok(h);
     }
+    // No match: suggest the three best fuzzy matches.
     let mut scored: Vec<(i64, &str)> = hosts.iter().filter_map(|h| fuzzy_score(name, h).map(|s| (s, h.name.as_str()))).collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
     let names: Vec<&str> = scored.iter().take(3).map(|s| s.1).collect();
@@ -178,6 +211,7 @@ pub fn resolve<'a>(hosts: &'a [HostEntry], name: &str) -> Result<&'a HostEntry, 
     Err(msg)
 }
 
+/// The hosts a listing shows: all of them, or only non-hidden ones.
 fn shown(hosts: &[HostEntry], all: bool) -> impl Iterator<Item = &HostEntry> {
     hosts.iter().filter(move |h| all || !h.hidden)
 }
@@ -187,6 +221,7 @@ pub fn list_text(hosts: &[HostEntry], all: bool) -> String {
     shown(hosts, all).map(|h| format!("{}\t{}\t{}\n", h.name, h.target(), h.tags.join(","))).collect()
 }
 
+/// A host as a JSON object (shared by `list --json` and `info --json`).
 fn host_json(h: &HostEntry) -> serde_json::Value {
     serde_json::json!({
         "name": h.name,
@@ -204,11 +239,13 @@ fn host_json(h: &HostEntry) -> serde_json::Value {
     })
 }
 
+/// `skiff list --json`: a pretty-printed JSON array of hosts.
 pub fn list_json(hosts: &[HostEntry], all: bool) -> String {
     let v: Vec<serde_json::Value> = shown(hosts, all).map(host_json).collect();
     serde_json::to_string_pretty(&v).unwrap_or_default() + "\n"
 }
 
+/// `skiff info`: one `Label: value` line per field, `-` for unset values.
 pub fn info_text(h: &HostEntry) -> String {
     let o = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".into());
     let mut s =
@@ -222,10 +259,12 @@ pub fn info_text(h: &HostEntry) -> String {
     s
 }
 
+/// `skiff info --json`: one host as a pretty-printed JSON object.
 pub fn info_json(h: &HostEntry) -> String {
     serde_json::to_string_pretty(&host_json(h)).unwrap_or_default() + "\n"
 }
 
+/// The completion script for `s`, ready to print.
 pub fn completion_script(s: Shell) -> &'static str {
     match s {
         Shell::Bash => BASH,
@@ -235,6 +274,7 @@ pub fn completion_script(s: Shell) -> &'static str {
     }
 }
 
+/// Bash completion: subcommands, options and host names from `skiff list`.
 const BASH: &str = r##"# skiff bash completion. Add to ~/.bashrc:  eval "$(skiff completion bash)"
 _skiff() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
@@ -253,6 +293,7 @@ _skiff() {
 complete -F _skiff skiff
 "##;
 
+/// Zsh completion, same behaviour as the bash script.
 const ZSH: &str = r##"#compdef skiff
 # skiff zsh completion. Add to ~/.zshrc:  eval "$(skiff completion zsh)"
 _skiff() {
@@ -271,6 +312,7 @@ _skiff() {
 compdef _skiff skiff
 "##;
 
+/// Fish completion, same behaviour as the bash script.
 const FISH: &str = r##"# skiff fish completion. Save as ~/.config/fish/completions/skiff.fish:
 #   skiff completion fish > ~/.config/fish/completions/skiff.fish
 complete -c skiff -f
@@ -282,6 +324,7 @@ complete -c skiff -l files -d "open a file transfer" -a "(skiff list 2>/dev/null
 complete -c skiff -l host -d "use this host name" -a "(skiff list 2>/dev/null | cut -f1)"
 "##;
 
+/// PowerShell completion, same behaviour as the bash script.
 const POWERSHELL: &str = r##"# skiff PowerShell completion. Add to $PROFILE:
 #   skiff completion powershell | Out-String | Invoke-Expression
 Register-ArgumentCompleter -Native -CommandName skiff -ScriptBlock {
@@ -303,14 +346,18 @@ Register-ArgumentCompleter -Native -CommandName skiff -ScriptBlock {
 mod tests {
     use super::*;
 
+    /// Parses a space-separated argument string.
     fn p(s: &str) -> Result<Cli, String> {
         parse(&s.split_whitespace().map(String::from).collect::<Vec<_>>())
     }
 
+    /// The expected result for opening `h` in the TUI.
     fn open(h: &str, files: bool) -> Cli {
         Cli::Tui { open: Some((h.into(), files)) }
     }
 
+    /// Covers every command form, `--host` overriding subcommand words, and the
+    /// error cases.
     #[test]
     fn parse_cases() {
         assert_eq!(p(""), Ok(Cli::Tui { open: None }));
@@ -339,6 +386,7 @@ mod tests {
         assert!(p("list extra").is_err());
     }
 
+    /// `skiff-gui` accepts no args, a host, or `--files <host>`, and nothing else.
     #[test]
     fn gui_args() {
         let g = |s: &str| parse_gui(&s.split_whitespace().map(String::from).collect::<Vec<_>>());
@@ -348,6 +396,7 @@ mod tests {
         assert!(g("web extra").is_err());
     }
 
+    /// Exact names (hidden ones too) resolve; an unknown name lists close matches.
     #[test]
     fn resolve_suggests() {
         let mut cfg = crate::config::Config::default();
@@ -364,6 +413,8 @@ mod tests {
         assert!(e.starts_with("unknown host: web\ndid you mean: web-prod, web-stage"), "{e}");
     }
 
+    /// Text listing hides hidden hosts and JSON escapes names and includes them
+    /// with `--all`; `info` shows tags.
     #[test]
     fn list_formats() {
         let mut cfg = crate::config::Config::default();

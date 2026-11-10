@@ -3,35 +3,57 @@
 //! skiff never needs to fully *evaluate* the config: sessions for these hosts
 //! are started as `ssh <alias>`, so OpenSSH itself applies every option. This
 //! parser only extracts enough to list hosts and show their details.
+//!
+//! Submodules: `doc` keeps one file's exact text for lossless edits, `edit`
+//! edits hosts across a config and its `Include`d files, and `resolve` works
+//! out where a status check for a host should connect.
 
 use std::path::{Path, PathBuf};
 
+/// Lossless single-file view used for editing.
 pub mod doc;
+/// Host editing across the main file and its includes, and safe saving.
 pub mod edit;
+/// Where a status check for a host connects.
 pub mod resolve;
 
+/// How deep `Include` files are followed (guards against include loops).
 pub(crate) const MAX_INCLUDE_DEPTH: usize = 16;
 
+/// One connectable host from the ssh config (wildcard patterns excluded),
+/// with the first value found for each option skiff shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SshHost {
+    /// The `Host` pattern, used as `ssh <alias>`.
     pub alias: String,
+    /// `HostName`, if set.
     pub hostname: Option<String>,
+    /// `User`, if set.
     pub user: Option<String>,
+    /// `Port`, if set and numeric.
     pub port: Option<u16>,
+    /// First `IdentityFile`, if set.
     pub identity_file: Option<String>,
+    /// `ProxyJump`, if set.
     pub proxy_jump: Option<String>,
+    /// `ProxyCommand`, if set.
     pub proxy_command: Option<String>,
     /// From the `# skiff:` comment of the host's first block.
     pub tags: Vec<String>,
+    /// Hidden via the `# skiff:` comment.
     pub hidden: bool,
+    /// SFTP start directory from the `# skiff:` comment.
     pub remote_dir: Option<String>,
+    /// The file whose `Host` line first declared this alias.
     pub source: PathBuf,
 }
 
+/// The user's home directory, if the platform reports one.
 pub fn home_dir() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf())
 }
 
+/// `~/.ssh/config`, the default OpenSSH user config.
 pub fn default_path() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".ssh").join("config"))
 }
@@ -56,6 +78,8 @@ pub fn parse_file(path: &Path) -> anyhow::Result<Vec<SshHost>> {
     Ok(out)
 }
 
+/// Parses one file into `out`, ignoring missing files and includes nested
+/// deeper than `MAX_INCLUDE_DEPTH`.
 fn parse_file_into(path: &Path, depth: usize, out: &mut Vec<SshHost>) -> anyhow::Result<()> {
     if depth > MAX_INCLUDE_DEPTH || !path.is_file() {
         return Ok(());
@@ -75,6 +99,8 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
 
     for raw in text.lines() {
         let line = raw.trim();
+        // Comments: only a `# skiff:` comment matters, applied to hosts this block
+        // declared first.
         if line.starts_with('#') {
             if let Some((tags, hidden, dir)) = doc::parse_extras(line) {
                 for &i in &fresh {
@@ -96,6 +122,8 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
             "host" => {
                 current.clear();
                 fresh.clear();
+                // A `Host` line starts a new block covering its literal aliases; an alias
+                // already seen keeps its earlier entry (and its extras).
                 for pattern in value.split_whitespace() {
                     let pattern = unquote(pattern);
                     // Wildcard and negated patterns are defaults, not connectable hosts.
@@ -114,10 +142,12 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
                 }
             }
             "match" => {
+                // Options under `Match` apply conditionally; skiff ignores them.
                 current.clear();
                 fresh.clear();
             }
             "include" => {
+                // Included files are parsed in place; unreadable ones are skipped.
                 for pat in value.split_whitespace() {
                     for file in resolve_include(unquote(pat)) {
                         let _ = parse_file_into(&file, depth + 1, out);
@@ -125,6 +155,7 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
                 }
             }
             _ => {
+                // Any other option applies to every host of the current block.
                 let value = unquote(value).to_string();
                 for &i in &current {
                     let h = &mut out[i];
@@ -148,6 +179,7 @@ pub fn parse_str(text: &str, source: &Path, depth: usize, out: &mut Vec<SshHost>
     }
 }
 
+/// Stores `value` unless the slot already has one (ssh's first-value-wins).
 fn set_once(slot: &mut Option<String>, value: &str) {
     if slot.is_none() {
         *slot = Some(value.to_string());
@@ -166,10 +198,14 @@ pub(crate) fn split_kv(line: &str) -> Option<(&str, &str)> {
     Some((key, rest))
 }
 
+/// Strips one pair of surrounding double quotes, if present.
 pub(crate) fn unquote(s: &str) -> &str {
     s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s)
 }
 
+/// The files an `Include` pattern names: `~` expanded, relative paths taken
+/// from `~/.ssh`, and `*`/`?` in the file name matched against its directory
+/// (sorted). Wildcards in directory parts are not expanded.
 pub(crate) fn resolve_include(pattern: &str) -> Vec<PathBuf> {
     let mut path = expand_tilde(pattern);
     if path.is_relative()
@@ -197,6 +233,8 @@ pub(crate) fn resolve_include(pattern: &str) -> Vec<PathBuf> {
 pub fn glob_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
+    // Backtracking match: on a mismatch, retry from the last `*` consuming one
+    // more character of the text.
     let (mut pi, mut ti) = (0, 0);
     let (mut star, mut mark) = (None, 0);
     while ti < t.len() {
@@ -225,12 +263,15 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Parses config text with no source file.
     fn parse(text: &str) -> Vec<SshHost> {
         let mut out = Vec::new();
         parse_str(text, Path::new("test"), 0, &mut out);
         out
     }
 
+    /// Multiple aliases per `Host`, `Key=value`, quoted values, and the main
+    /// fields are read.
     #[test]
     fn parses_basic_hosts() {
         let hosts = parse(
@@ -246,6 +287,7 @@ mod tests {
         assert_eq!(hosts[2].proxy_jump.as_deref(), Some("bastion"));
     }
 
+    /// Wildcard/negated patterns are not listed and `Match` options are ignored.
     #[test]
     fn skips_wildcards_and_match_blocks() {
         let hosts = parse("Host *\n  User everyone\nHost a !b c*\n  User x\nMatch host a\n  User y\n");
@@ -254,6 +296,7 @@ mod tests {
         assert_eq!(hosts[0].user.as_deref(), Some("x"));
     }
 
+    /// The first value for an option wins, even across repeated `Host` blocks.
     #[test]
     fn first_value_wins() {
         let hosts = parse("Host a\n  User one\n  User two\nHost a\n  User three\n");
@@ -261,6 +304,8 @@ mod tests {
         assert_eq!(hosts[0].user.as_deref(), Some("one"));
     }
 
+    /// The `# skiff:` comment and ProxyCommand are read; a later block's comment
+    /// doesn't override the first block's.
     #[test]
     fn reader_sees_extras_and_proxycommand() {
         let hosts = parse(
@@ -279,6 +324,7 @@ Host b
         assert!(hosts[1].tags.is_empty() && !hosts[1].hidden);
     }
 
+    /// `*` and `?` match as in shell globs; `*` matches the empty string.
     #[test]
     fn glob() {
         assert!(glob_match("*.conf", "work.conf"));

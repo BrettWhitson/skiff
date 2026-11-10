@@ -1,3 +1,7 @@
+//! skiff's own config file (`config.toml`): settings, GUI options, key
+//! bindings, forwards, snippets, custom connections and themes. Saving edits
+//! the file in place so comments, unknown keys and other front-ends' changes
+//! survive.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -11,11 +15,17 @@ use crate::theme::ThemeDef;
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct Connection {
+    /// Display name; also the key used to match this block when saving.
     pub name: String,
+    /// Host name or address to connect to.
     pub host: String,
+    /// Login user; `None` leaves it to ssh.
     pub user: Option<String>,
+    /// Port; `None` leaves it to ssh (normally 22).
     pub port: Option<u16>,
+    /// Private key file (`-i`).
     pub identity_file: Option<String>,
+    /// Jump host(s) (`-J`).
     pub proxy_jump: Option<String>,
     /// Passed as `-o ProxyCommand=…`.
     pub proxy_command: Option<String>,
@@ -24,6 +34,7 @@ pub struct Connection {
     pub extra_args: Vec<String>,
     /// Directory the SFTP browser opens in on the remote side.
     pub remote_dir: Option<String>,
+    /// Free-form labels shown in host lists and matched by search.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     /// Left out of host lists unless "Show hidden hosts" is on.
@@ -59,6 +70,7 @@ impl Connection {
     /// Parses and validates the editor's fields (name and host required,
     /// port 1-65535 when given). `hidden` is not a text field and stays false.
     pub fn from_fields(fields: &[String; CONNECTION_FIELDS]) -> Result<Connection, String> {
+        // `v` is the trimmed field text; `opt` is the same but `None` when empty.
         let v = |i: usize| fields[i].trim().to_string();
         let opt = |i: usize| Some(v(i)).filter(|s| !s.is_empty());
         if v(0).is_empty() {
@@ -69,8 +81,10 @@ impl Connection {
         }
         let port = match opt(3) {
             None => None,
+            // Port 0 is rejected along with non-numbers.
             Some(p) => Some(p.parse::<u16>().ok().filter(|&n| n > 0).ok_or_else(|| format!("Invalid port: {p}"))?),
         };
+        // Extra args are split with shell quoting rules, so quoted spaces survive.
         let extra_args = shell_words::split(&v(7)).map_err(|e| format!("Extra ssh args: {e}"))?;
         Ok(Connection {
             name: v(0),
@@ -88,6 +102,7 @@ impl Connection {
     }
 }
 
+/// General settings (`[settings]`), used by both front-ends.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -104,6 +119,7 @@ pub struct Settings {
     /// Pass `-o BatchMode=yes` to SFTP connections so they fail instead of
     /// prompting (the SFTP channel has no terminal to type a password into).
     pub sftp_batch_mode: bool,
+    /// Show dot-files in the SFTP browser.
     pub show_hidden_files: bool,
     /// Directory the local pane of the SFTP browser starts in (default: home).
     pub local_start_dir: Option<String>,
@@ -125,18 +141,24 @@ pub struct Settings {
 #[serde(rename_all = "snake_case")]
 pub enum TuiMouse {
     #[default]
+    /// Capture only while a program in the active terminal asks for the mouse.
     Auto,
+    /// Always capture the mouse.
     Always,
 }
 
+/// `status_checks`: when host reachability probes run.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusChecks {
     #[default]
+    /// Only when the user asks.
     Manual,
+    /// Also once at startup.
     OnStart,
 }
 
+/// The defaults a fresh install uses (matching the first-run template).
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -167,6 +189,7 @@ pub enum Announce {
 }
 
 impl Serialize for Announce {
+    /// Writes `All`/`Off` as booleans and `Focused` as `"focused"`.
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
             Announce::All => s.serialize_bool(true),
@@ -177,7 +200,9 @@ impl Serialize for Announce {
 }
 
 impl<'de> Deserialize<'de> for Announce {
+    /// Accepts a boolean or the string `"focused"` (any case).
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        /// Either form `announce_output` accepts in the file.
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Repr {
@@ -197,12 +222,15 @@ impl<'de> Deserialize<'de> for Announce {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GuiSettings {
+    /// Font family name to use.
     pub font_family: Option<String>,
     /// Terminal (monospace) font file to use instead of the bundled fonts.
     pub font_path: Option<String>,
     /// Interface font file to use instead of the bundled fonts.
     pub ui_font_path: Option<String>,
+    /// Terminal font size in points.
     pub font_size: f32,
+    /// Multiplier for the whole interface's size.
     pub ui_scale: f32,
     /// New terminal output read out by screen readers.
     pub announce_output: Announce,
@@ -210,6 +238,7 @@ pub struct GuiSettings {
     pub cursor_blink: bool,
 }
 
+/// 14 pt terminal font, 100% scale, all output announced, blinking on.
 impl Default for GuiSettings {
     fn default() -> Self {
         Self {
@@ -224,10 +253,13 @@ impl Default for GuiSettings {
     }
 }
 
+/// The whole `config.toml`. Missing sections and keys take their defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct Config {
+    /// `[settings]`.
     pub settings: Settings,
+    /// `[gui]`.
     pub gui: GuiSettings,
     /// Action name → key chord (e.g. `quick_switcher = "Ctrl+Shift+K"`). Parsed by the GUI.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -235,13 +267,16 @@ pub struct Config {
     /// Action name → key chord for the terminal UI (e.g. `close_tab = "alt+x"`). Parsed by the TUI.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tui_keys: BTreeMap<String, String>,
+    /// Port forwards (`[[forward]]`).
     #[serde(rename = "forward", skip_serializing_if = "Vec::is_empty")]
     pub forwards: Vec<crate::forward::Forward>,
     /// Saved commands (`[[snippet]]`).
     #[serde(rename = "snippet", skip_serializing_if = "Vec::is_empty")]
     pub snippets: Vec<crate::termx::Snippet>,
+    /// Custom connections (`[[connection]]`).
     #[serde(rename = "connection", skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<Connection>,
+    /// Custom themes (`[[theme]]`), alongside the built-in ones.
     #[serde(rename = "theme", skip_serializing_if = "Vec::is_empty")]
     pub themes: Vec<ThemeDef>,
 }
@@ -249,6 +284,7 @@ pub struct Config {
 /// The variable that overrides where the config file lives.
 pub const CONFIG_ENV: &str = "SKIFF_CONFIG";
 
+/// Written as the config on first run: the defaults plus commented examples.
 const TEMPLATE: &str = r##"# Skiff configuration
 # Skiff only rewrites the settings you change in the app; comments and
 # formatting here are kept.
@@ -296,6 +332,7 @@ impl Config {
     /// `$SKIFF_CONFIG` (or the pre-rename `$TERMAX_CONFIG`), or the platform
     /// config dir (`%APPDATA%\skiff\config\config.toml`, `~/.config/skiff/config.toml`, ...).
     pub fn default_path() -> PathBuf {
+        // Either variable wins when set to a non-empty value.
         for var in [CONFIG_ENV, crate::migrate::LEGACY_CONFIG_ENV] {
             if let Some(p) = std::env::var_os(var).filter(|p| !p.is_empty()) {
                 return PathBuf::from(p);
@@ -318,6 +355,7 @@ impl Config {
         Self::parse(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
+    /// Parses config text; unknown keys are ignored, missing ones defaulted.
     pub fn parse(text: &str) -> Result<Self> {
         Ok(toml::from_str(text)?)
     }
@@ -327,6 +365,8 @@ impl Config {
     /// file — comments, unknown keys, and changes made meanwhile by another
     /// front-end — is kept.
     pub fn save(&self, baseline: &Config, path: &Path) -> Result<()> {
+        // Diff via `toml::Value` (baseline vs. new) but edit `doc`, a format-preserving
+        // parse of the file as it is now; `new_doc` supplies the formatted values.
         let existing = std::fs::read_to_string(path).unwrap_or_default();
         let mut doc: DocumentMut = existing.parse().context("parsing existing config")?;
         let old = toml::Value::try_from(baseline)?;
@@ -334,6 +374,7 @@ impl Config {
         let new_doc: DocumentMut = toml::to_string(self)?.parse()?;
         let section = |v: &toml::Value, k: &str| v.get(k).and_then(|t| t.as_table()).cloned().unwrap_or_default();
 
+        // Plain tables: rewrite only the keys whose values changed.
         for name in ["settings", "gui", "keys", "tui_keys"] {
             let (old_t, new_t) = (section(&old, name), section(&new, name));
             if old_t == new_t {
@@ -347,6 +388,7 @@ impl Config {
             apply_key_changes(table, &old_t, &new_t, new_table);
         }
 
+        // Arrays of tables, matched by their `name` key.
         for name in ["connection", "theme", "forward", "snippet"] {
             let list = |v: &toml::Value| -> Vec<toml::Table> {
                 v.get(name).and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|t| t.as_table().cloned()).collect()).unwrap_or_default()
@@ -410,6 +452,7 @@ impl Config {
         if text == existing {
             return Ok(());
         }
+        // Write to a temp file and rename, so a reader never sees half a file.
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, path)?;
@@ -420,12 +463,15 @@ impl Config {
 /// Sets or removes, in `target`, each key whose value differs between `old`
 /// and `new`. Values come from `new_items` (the serialized new config).
 fn apply_key_changes(target: &mut dyn TableLike, old: &toml::Table, new: &toml::Table, new_items: Option<&dyn TableLike>) {
+    // Every key present in either version.
     let keys: std::collections::BTreeSet<&String> = old.keys().chain(new.keys()).collect();
     for key in keys {
         if old.get(key) == new.get(key) {
             continue;
         }
         match new_items.and_then(|t| t.get(key)) {
+            // Changed or added: copy the formatted value from `new_items`. Anything else
+            // (removed in `new`) is deleted from the file.
             Some(item) if new.contains_key(key) => {
                 // Keep the existing key (and its leading comment) when it's there.
                 match target.get_mut(key) {
@@ -443,17 +489,22 @@ fn apply_key_changes(target: &mut dyn TableLike, old: &toml::Table, new: &toml::
 }
 
 /// Detects changes to a file by modification time.
+/// Detects changes to a file by modification time.
 pub struct FileWatcher {
+    /// The watched file.
     path: PathBuf,
+    /// Modification time last seen; `None` if the file was missing.
     last: Option<std::time::SystemTime>,
 }
 
 impl FileWatcher {
+    /// Starts watching `path`, taking its current mtime as the baseline.
     pub fn new(path: &Path) -> Self {
         let last = Self::mtime(path);
         Self { path: path.to_path_buf(), last }
     }
 
+    /// The file's modification time, or `None` if it can't be read.
     fn mtime(path: &Path) -> Option<std::time::SystemTime> {
         std::fs::metadata(path).and_then(|m| m.modified()).ok()
     }
@@ -474,6 +525,7 @@ impl FileWatcher {
 mod tests {
     use super::*;
 
+    /// Writes `text` to `config.toml` in a fresh temp dir; keep the dir alive.
     fn write_tmp(text: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -481,6 +533,7 @@ mod tests {
         (dir, path)
     }
 
+    /// Changing one setting keeps the file's comments and unknown keys.
     #[test]
     fn save_preserves_comments_and_unknown_keys() {
         let (_d, path) = write_tmp("# top\n[settings]\n# pick one\ntheme = \"nord\"\nfuture_key = 1\n");
@@ -495,6 +548,7 @@ mod tests {
         assert!(text.contains("theme = \"dracula\""), "{text}");
     }
 
+    /// A config written before newer fields existed still loads with defaults.
     #[test]
     fn old_config_loads() {
         let old = format!(
@@ -507,6 +561,7 @@ mod tests {
         assert!(cfg.keys.is_empty());
     }
 
+    /// `tui_mouse` defaults to auto, accepts "always", rejects other values.
     #[test]
     fn tui_mouse_setting() {
         assert_eq!(Config::parse("").unwrap().settings.tui_mouse, TuiMouse::Auto);
@@ -531,6 +586,7 @@ tui_mouse = \"sometimes\"
         );
     }
 
+    /// Saving an unchanged config leaves the file byte-for-byte the same.
     #[test]
     fn save_unchanged_is_noop() {
         let (_d, path) = write_tmp(TEMPLATE);
@@ -540,6 +596,8 @@ tui_mouse = \"sometimes\"
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
+    /// Adding and then removing connections (plus key/GUI changes) round-trips
+    /// through the file.
     #[test]
     fn connections_array_replaced_on_change() {
         let (_d, path) = write_tmp(TEMPLATE);
@@ -557,6 +615,7 @@ tui_mouse = \"sometimes\"
         assert_eq!(Config::load_or_create(&path).unwrap(), cfg);
     }
 
+    /// `poll` reports an mtime change once, then nothing until the next change.
     #[test]
     fn watcher_detects_change() {
         let (_d, path) = write_tmp("[settings]\n");
@@ -570,6 +629,8 @@ tui_mouse = \"sometimes\"
         assert!(!w.poll());
     }
 
+    /// Two front-ends saving different settings from the same baseline both keep
+    /// their change.
     #[test]
     fn save_keeps_other_frontends_changes() {
         let (_d, path) = write_tmp("[settings]\ntheme = \"nord\"\n");
@@ -586,9 +647,11 @@ tui_mouse = \"sometimes\"
         assert_eq!(now.gui.font_size, 16.0);
     }
 
+    /// Two connection blocks; the second has a comment and an unknown key.
     const TWO_CONNS: &str =
         "[[connection]]\nname = \"a\"\nhost = \"ha\"\n\n[[connection]]\n# note b\nname = \"b\"\nhost = \"hb\"\nfuture = 1\n";
 
+    /// Editing one connection leaves the other block's comment and unknown key.
     #[test]
     fn connection_edit_keeps_comments_in_other_blocks() {
         let (_d, path) = write_tmp(TWO_CONNS);
@@ -602,6 +665,8 @@ tui_mouse = \"sometimes\"
         assert_eq!(Config::load_or_create(&path).unwrap().connections[0].host, "ha2");
     }
 
+    /// One front-end adds a connection while another edits and deletes others:
+    /// all three changes survive.
     #[test]
     fn concurrent_connection_add_survives() {
         let (_d, path) = write_tmp(TWO_CONNS);
@@ -619,11 +684,13 @@ tui_mouse = \"sometimes\"
         assert_eq!(names, [("b".into(), "hb2".into()), ("c".into(), "hc".into())]);
     }
 
+    /// The first-run template is exactly the defaults.
     #[test]
     fn template_parses_to_defaults() {
         assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
     }
 
+    /// A config with settings, a connection and a theme survives serialize/parse.
     #[test]
     fn roundtrip() {
         let mut cfg = Config::default();

@@ -10,27 +10,37 @@ use serde::{Deserialize, Serialize};
 use crate::hosts::HostEntry;
 use crate::state::SortMode;
 
+/// How a host was last used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnKind {
+    /// An interactive terminal tab.
     #[default]
     Terminal,
+    /// The file browser (SFTP).
     Files,
+    /// A port forward.
     Forward,
+    /// A one-off command or snippet run on the host.
     Command,
 }
 
+/// History for one host.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct HostHistory {
     /// Unix seconds (UTC).
     pub last: u64,
+    /// Number of connections made.
     pub count: u32,
+    /// How the most recent connection was made.
     pub kind: ConnKind,
 }
 
+/// Everything in `history.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct History {
+    /// Per-host history keyed by host name.
     pub hosts: BTreeMap<String, HostHistory>,
 }
 
@@ -40,6 +50,7 @@ pub fn now() -> u64 {
 }
 
 impl History {
+    /// `history.toml` next to the config file.
     pub fn path_for(config_path: &Path) -> PathBuf {
         config_path.with_file_name("history.toml")
     }
@@ -56,9 +67,13 @@ impl History {
         let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir)?;
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // The temp name is hidden and unique per process so concurrent writers
+        // don't clobber each other's temp file.
         let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
         std::fs::write(&tmp, toml::to_string(self)?)?;
         let mut tries = 0;
+        // Rename over the old file; retried briefly on Windows, where replacing a
+        // file another process has open can fail transiently.
         loop {
             match std::fs::rename(&tmp, path) {
                 Ok(()) => return Ok(()),
@@ -75,6 +90,7 @@ impl History {
         }
     }
 
+    /// Notes a connection to `name` at time `now` (Unix seconds).
     pub fn record(&mut self, name: &str, kind: ConnKind, now: u64) {
         let h = self.hosts.entry(name.to_string()).or_default();
         h.last = now;
@@ -85,6 +101,7 @@ impl History {
     /// Moves host `old`'s history to `new` (after a rename), merging with
     /// any history `new` already has.
     pub fn rename(&mut self, old: &str, new: &str) {
+        // When both have history, add the counts and keep whichever was used last.
         let Some(o) = self.hosts.remove(old) else { return };
         match self.hosts.get_mut(new) {
             Some(n) => {
@@ -121,6 +138,7 @@ impl History {
         v.into_iter().take(n).map(|(k, _)| k.clone()).collect()
     }
 
+    /// Forgets all hosts.
     pub fn clear(&mut self) {
         self.hosts.clear();
     }
@@ -128,6 +146,7 @@ impl History {
     /// "5 min ago" style text for when `name` was last connected.
     pub fn ago(&self, name: &str, now: u64) -> Option<String> {
         let secs = now.saturating_sub(self.hosts.get(name)?.last);
+        // Ranges are half-open: under a minute is "just now", and so on.
         Some(match secs {
             0..60 => "just now".into(),
             60..3600 => format!("{} min ago", secs / 60),
@@ -137,6 +156,8 @@ impl History {
     }
 }
 
+/// Sorts host indices `idx` for display. Name order ignores case; Recent puts
+/// connected hosts newest first, then the rest by name.
 /// Sorts host indices `idx` for display.
 pub fn order(hosts: &[HostEntry], idx: &mut [usize], mode: SortMode, h: &History) {
     let name = |i: usize| hosts[i].name.to_lowercase();
@@ -154,6 +175,7 @@ mod tests {
     use super::*;
     use crate::config::{Config, Connection};
 
+    /// Builds a host list containing only config connections with these names.
     fn hosts(names: &[&str]) -> Vec<HostEntry> {
         let mut cfg = Config::default();
         cfg.settings.load_ssh_config = false;
@@ -161,6 +183,8 @@ mod tests {
         crate::hosts::collect(&cfg).0
     }
 
+    /// Recording updates count, time and kind; `recent` is newest first and
+    /// `clear` empties it.
     #[test]
     fn record_and_recent() {
         let mut h = History::default();
@@ -175,6 +199,8 @@ mod tests {
         assert!(h.recent(5).is_empty());
     }
 
+    /// Recent order puts connected hosts first (newest first), then the rest by
+    /// name; Name order is case-insensitive.
     #[test]
     fn order_recent_then_name() {
         let list = hosts(&["delta", "Alpha", "charlie", "bravo"]);
@@ -190,6 +216,7 @@ mod tests {
         assert_eq!(names, ["Alpha", "bravo", "charlie", "delta"]);
     }
 
+    /// `ago` picks minutes, hours or days and returns `None` for unknown hosts.
     #[test]
     fn ago_strings() {
         let mut h = History::default();
@@ -202,6 +229,7 @@ mod tests {
         assert_eq!(h.ago("zz", 0), None);
     }
 
+    /// A missing file loads empty, and a saved history loads back unchanged.
     #[test]
     fn load_missing_is_empty_and_round_trips() {
         let d = tempfile::tempdir().unwrap();
@@ -213,6 +241,8 @@ mod tests {
         assert_eq!(History::load(&p), h);
     }
 
+    /// Two writers interleaving `update` keep each other's entries, and a rename
+    /// merges counts and keeps the latest time.
     #[test]
     fn update_keeps_other_processes_changes() {
         let d = tempfile::tempdir().unwrap();

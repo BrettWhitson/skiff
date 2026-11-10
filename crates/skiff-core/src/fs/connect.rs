@@ -11,12 +11,15 @@ use tokio::process::{Child, Command};
 
 /// Effectively unlimited: if ssh gives up it exits, which ends the handshake.
 const HANDSHAKE_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+/// Per-request timeout once the session is up.
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 
 /// How to start one `ssh` process.
 #[derive(Debug, Clone, Default)]
 pub struct SshLaunch {
+    /// The ssh executable.
     pub program: String,
+    /// Arguments to ssh, including the SFTP subsystem request (`-s host sftp`).
     pub args: Vec<String>,
     /// Extra environment variables (e.g. for askpass).
     pub env: Vec<(String, String)>,
@@ -26,9 +29,11 @@ pub struct SshLaunch {
 
 /// A live SFTP session. The `ssh` process is killed when this is dropped.
 pub struct RemoteConn {
+    /// The SFTP client, shared by tasks that use the connection.
     pub sftp: Arc<SftpSession>,
     /// Absolute path of the starting directory.
     pub home: String,
+    /// The ssh process, held so it lives (and is killed) with the connection.
     _child: Mutex<Child>,
 }
 
@@ -52,6 +57,7 @@ pub async fn connect_sftp(launch: SshLaunch) -> Result<RemoteConn, String> {
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
 
+    // Keep ssh's last 20 stderr lines to explain a failure.
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
     let log2 = log.clone();
     tokio::spawn(async move {

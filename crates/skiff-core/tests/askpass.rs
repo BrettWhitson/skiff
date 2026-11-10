@@ -9,14 +9,16 @@ use skiff_core::askpass::{AskKind, Broker};
 use skiff_core::fs::connect::{SshLaunch, connect_sftp};
 use skiff_testserver::{FixtureAuth, TestFixture};
 
+/// Path of the test askpass helper binary built with this crate.
 fn helper() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_askpass-shim"))
 }
 
-/// Starts a broker whose requests are answered by `answer(kind, prompt)`.
-/// Returns the broker and a log of (kind, prompt) seen.
+/// The (kind, prompt) pairs a test broker has been asked.
 type AskLog = Arc<Mutex<Vec<(AskKind, String)>>>;
 
+/// Starts a broker whose requests are answered by `answer(kind, prompt)`.
+/// Returns the broker and a log of (kind, prompt) seen.
 fn broker(answer: impl Fn(AskKind, &str) -> Option<String> + Send + 'static) -> (Broker, AskLog) {
     let (broker, mut rx) = Broker::start(&tokio::runtime::Handle::current(), helper()).unwrap();
     let log = Arc::new(Mutex::new(vec![]));
@@ -30,6 +32,7 @@ fn broker(answer: impl Fn(AskKind, &str) -> Option<String> + Send + 'static) -> 
     (broker, log)
 }
 
+/// SFTP launch for the fixture: `pre` options first, prompts routed to `broker` under `tag`.
 fn launch(pre: Vec<String>, fx: &TestFixture, broker: &Broker, tag: &str) -> SshLaunch {
     let mut args = pre;
     args.extend(fx.ssh_options());
@@ -37,6 +40,7 @@ fn launch(pre: Vec<String>, fx: &TestFixture, broker: &Broker, tag: &str) -> Ssh
     SshLaunch { program: "ssh".into(), args, env: broker.env(tag), start_dir: None }
 }
 
+/// A password prompt reaches the front-end and its answer logs ssh in.
 #[tokio::test(flavor = "multi_thread")]
 async fn password_prompt_roundtrip() {
     let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
@@ -50,6 +54,7 @@ async fn password_prompt_roundtrip() {
     assert_eq!(log.lock().unwrap().len(), 1);
 }
 
+/// Cancelling the prompt makes the connection fail quickly.
 #[tokio::test(flavor = "multi_thread")]
 async fn askpass_cancel_fails_fast() {
     let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
@@ -60,6 +65,7 @@ async fn askpass_cancel_fails_fast() {
     assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
 }
 
+/// A wrong password surfaces ssh's "Permission denied".
 #[tokio::test(flavor = "multi_thread")]
 async fn wrong_password_fails() {
     let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
@@ -70,6 +76,7 @@ async fn wrong_password_fails() {
     assert!(!log.lock().unwrap().is_empty());
 }
 
+/// An unknown host key is a yes/no prompt; "yes" connects and records the key.
 #[tokio::test(flavor = "multi_thread")]
 async fn host_key_confirm() {
     let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -89,6 +96,7 @@ async fn host_key_confirm() {
     assert!(std::fs::read_to_string(&kh).unwrap().contains("ssh-ed25519"));
 }
 
+/// The broker's environment points ssh at the helper and the endpoint.
 #[test]
 fn env_names_helper_and_endpoint() {
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -100,6 +108,7 @@ fn env_names_helper_and_endpoint() {
     assert!(!env["SKIFF_ASKPASS_ENDPOINT"].is_empty());
 }
 
+/// A slow answer does not hit the handshake timeout.
 #[tokio::test(flavor = "multi_thread")]
 async fn slow_answer_still_connects() {
     // A person may take a while to type a password; the handshake must wait.
@@ -112,6 +121,7 @@ async fn slow_answer_still_connects() {
     assert_eq!(conn.home, "/");
 }
 
+/// A helper with the wrong token is refused and never reaches the front-end.
 #[tokio::test(flavor = "multi_thread")]
 async fn wrong_token_is_refused() {
     let (b, mut rx) = Broker::start(&tokio::runtime::Handle::current(), helper()).unwrap();
@@ -126,6 +136,7 @@ async fn wrong_token_is_refused() {
     assert!(rx.try_recv().is_err(), "a request with a bad token must not reach the front-end");
 }
 
+/// Retiring a tag cancels its pending prompt and refuses later ones.
 #[tokio::test(flavor = "multi_thread")]
 async fn retire_cancels_pending_prompt() {
     let fx = TestFixture::new(FixtureAuth::Password("s3cret".into())).unwrap();
@@ -150,6 +161,7 @@ async fn retire_cancels_pending_prompt() {
     watcher.abort();
 }
 
+/// Confirm hints become yes/no questions; "none" hints become notices withdrawn when the helper dies.
 #[tokio::test(flavor = "multi_thread")]
 async fn touch_notice_is_not_a_prompt_and_closes_with_the_helper() {
     let (b, mut rx) = Broker::start(&tokio::runtime::Handle::current(), helper()).unwrap();

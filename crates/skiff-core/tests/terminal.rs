@@ -8,6 +8,7 @@ use skiff_core::sshver::{client_version, parse_version, supports_askpass_require
 use skiff_core::terminal::TerminalSession;
 use skiff_testserver::{FixtureAuth, TestFixture};
 
+/// Output from an ssh session fires the notify callback and bumps the generation.
 #[test]
 fn notify_fires_on_output() {
     let fx = TestFixture::with_shell(FixtureAuth::Key).unwrap();
@@ -30,6 +31,7 @@ fn notify_fires_on_output() {
     assert!(s.generation() > g0);
 }
 
+/// OpenSSH version strings parse, and askpass-require support starts at 8.4.
 #[test]
 fn parses_ssh_version_strings() {
     assert_eq!(parse_version("OpenSSH_for_Windows_9.5p1, LibreSSL 3.8.2"), Ok((9, 5)));
@@ -40,6 +42,7 @@ fn parses_ssh_version_strings() {
     assert!(parse_version("garbage").is_err());
 }
 
+/// The installed ssh client reports a usable version.
 #[test]
 fn local_ssh_client_version_is_readable() {
     // Runs `ssh -V` only (no connection).
@@ -47,6 +50,7 @@ fn local_ssh_client_version_is_readable() {
     assert!(v.0 >= 7, "{v:?}");
 }
 
+/// Pasted text cannot smuggle bracketed-paste end markers.
 #[test]
 fn paste_cannot_end_bracketed_paste_early() {
     let evil = "ls\x1b[201~rm -rf ~\n\x1b[200~x";

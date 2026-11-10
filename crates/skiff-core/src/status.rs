@@ -19,17 +19,21 @@ pub const TIMEOUT: Duration = Duration::from_secs(3);
 /// Checks running at once.
 pub const MAX_CHECKS: usize = 16;
 
+/// The result of a reachability check, as shown next to a host.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum Status {
+    /// Not checked yet (checks are opt-in).
     #[default]
     Unchecked,
+    /// A check is in progress.
     Checking,
-    Online {
-        ms: u32,
-    },
+    /// An SSH server answered; `ms` is the TCP connect time.
+    Online { ms: u32 },
     /// Something answered, but not an SSH server.
     NotSsh,
+    /// Could not connect; the reason in plain words.
     Offline(String),
+    /// Could not be checked (e.g. reached through a proxy command); the reason.
     Unknown(String),
     /// The host is reached through jump host `.0`; `.1` is that jump
     /// host's own status (the host behind it isn't checked).
@@ -54,6 +58,7 @@ impl Status {
     }
 }
 
+/// A short, readable reason for a connect error.
 fn reason(e: &std::io::Error) -> String {
     use std::io::ErrorKind::*;
     match e.kind() {
@@ -83,6 +88,7 @@ where
             last = "timed out".into();
             break;
         }
+        // Split the remaining time evenly among the addresses still to try.
         let share = left / (n - i) as u32;
         let start = Instant::now();
         match tokio::time::timeout(share, connect(a)).await {
@@ -108,6 +114,7 @@ pub async fn check(probe: Probe, timeout: Duration) -> Status {
     }
 }
 
+/// Resolves `host`, connects, and checks for an `SSH-` banner, all within `timeout`.
 async fn check_direct(host: &str, port: u16, timeout: Duration) -> Status {
     let start = Instant::now();
     let addrs: Vec<SocketAddr> = match tokio::time::timeout(timeout, tokio::net::lookup_host((host, port))).await {
@@ -145,6 +152,7 @@ async fn check_direct(host: &str, port: u16, timeout: Duration) -> Status {
 pub fn check_all(rt: &tokio::runtime::Handle, items: Vec<(String, Probe)>, done: Arc<dyn Fn(String, Status) + Send + Sync>) {
     let sem = Arc::new(Semaphore::new(MAX_CHECKS));
     for (name, probe) in items {
+        // Unknown probes need no I/O and are reported straight away.
         if let Probe::Unknown(r) = probe {
             done(name, Status::Unknown(r));
             continue;
@@ -163,12 +171,15 @@ mod tests {
     use super::*;
     use skiff_testserver::{FixtureAuth, TestFixture};
 
+    /// Time limit for checks in tests.
     const T: Duration = Duration::from_secs(3);
 
+    /// A direct probe of a port on 127.0.0.1.
     fn local(port: u16) -> Probe {
         Probe::Direct { host: "127.0.0.1".into(), port }
     }
 
+    /// A real SSH server reports online with a timing.
     #[tokio::test]
     async fn online_against_fixture() {
         let fx = TestFixture::new(FixtureAuth::Key).unwrap();
@@ -177,6 +188,7 @@ mod tests {
         assert!(s.label().starts_with("online, "));
     }
 
+    /// A closed port is offline with "connection refused".
     #[tokio::test]
     async fn offline_on_closed_port() {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
@@ -185,6 +197,7 @@ mod tests {
         assert_eq!(s.label(), "offline: connection refused");
     }
 
+    /// A server that answers with a non-SSH line is reported as not SSH.
     #[tokio::test]
     async fn not_ssh_when_no_banner() {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -197,6 +210,7 @@ mod tests {
         assert_eq!(check(local(port), T).await, Status::NotSsh);
     }
 
+    /// An address that never answers only gets its share of the budget, and is not timed.
     #[tokio::test]
     async fn dead_address_gets_only_its_share() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -216,6 +230,7 @@ mod tests {
         assert!(took < Duration::from_millis(500), "only the good connect is timed: {took:?}");
     }
 
+    /// A host behind a jump host reports the jump host's status.
     #[tokio::test]
     async fn via_checks_the_jump_host() {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -231,6 +246,7 @@ mod tests {
         assert!(s.label().starts_with("via bastion: reachable, "), "{}", s.label());
     }
 
+    /// Unknown probes return at once without touching the network.
     #[tokio::test]
     async fn unknown_is_not_probed() {
         let start = std::time::Instant::now();

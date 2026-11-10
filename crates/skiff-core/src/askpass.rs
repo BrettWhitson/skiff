@@ -26,12 +26,15 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
+/// Variable holding the broker's endpoint (`ns:<name>` or `fs:<path>`); its presence marks a helper run.
 pub const ENV_ENDPOINT: &str = "SKIFF_ASKPASS_ENDPOINT";
+/// Variable naming which connection is asking.
 pub const ENV_TAG: &str = "SKIFF_ASKPASS_TAG";
 /// Per-broker secret; a question without it is refused, so another local
 /// user who finds the socket can't pose as ssh and collect a password.
 pub const ENV_TOKEN: &str = "SKIFF_ASKPASS_TOKEN";
 
+/// What kind of answer a prompt wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskKind {
     /// A password or code: input should be masked.
@@ -48,6 +51,7 @@ pub enum AskKind {
 pub const ENV_PROMPT_HINT: &str = "SSH_ASKPASS_PROMPT";
 
 impl AskKind {
+    /// Classifies a prompt from its text alone.
     pub fn of(prompt: &str) -> Self {
         Self::with_hint(prompt, "")
     }
@@ -63,10 +67,13 @@ impl AskKind {
     }
 }
 
+/// One question from ssh, handed to the front-end to answer.
 pub struct AskRequest {
     /// Identifies which connection is asking (whatever the caller passed to [`Broker::env`]).
     pub tag: String,
+    /// The prompt text from ssh.
     pub prompt: String,
+    /// How to present the prompt.
     pub kind: AskKind,
     /// `None` cancels.
     pub reply: oneshot::Sender<Option<String>>,
@@ -75,36 +82,53 @@ pub struct AskRequest {
     pub cancelled: CancellationToken,
 }
 
+/// The helper's request to the broker, one JSON line.
 #[derive(Serialize, Deserialize)]
 struct Question {
+    /// Must match the broker's token or the question is refused.
     token: String,
+    /// The connection tag from `SKIFF_ASKPASS_TAG`.
     tag: String,
+    /// The prompt text from ssh.
     prompt: String,
     /// ssh's `SSH_ASKPASS_PROMPT`, if set.
     #[serde(default)]
     hint: String,
 }
 
+/// The broker's reply, one JSON line.
 #[derive(Serialize, Deserialize, Default)]
 struct Answer {
+    /// The user's answer, when given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     answer: Option<String>,
+    /// True when the question was cancelled, refused or withdrawn.
     #[serde(default)]
     cancel: bool,
 }
 
+/// Listens on a local socket for questions from askpass helpers and forwards
+/// them to the front-end as [`AskRequest`]s.
 pub struct Broker {
+    /// Socket name, as `ns:<name>` or `fs:<path>`.
     endpoint: String,
+    /// Executable ssh runs as `SSH_ASKPASS`.
     helper: PathBuf,
+    /// State shared with the accept loop.
     shared: Arc<Shared>,
 }
 
+/// State shared between the broker and its connection handlers.
 struct Shared {
+    /// Secret every question must carry.
     token: String,
+    /// Tags whose questions are refused.
     retired: Mutex<HashSet<String>>,
+    /// Cancellation tokens of questions still waiting, by tag.
     pending: Mutex<HashMap<String, Vec<CancellationToken>>>,
 }
 
+/// A 128-bit hex secret for authenticating helpers.
 fn random_token() -> String {
     // RandomState is seeded from the OS's random source.
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -118,6 +142,7 @@ fn random_token() -> String {
         .collect()
 }
 
+/// Makes socket names unique when one process starts several brokers.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Endpoint strings carry their kind so the helper can rebuild the name:
@@ -134,6 +159,7 @@ impl Broker {
     /// Starts listening. `helper` is the executable ssh should run (one that
     /// calls [`helper_main`] when [`is_helper_invocation`] is true).
     pub fn start(rt: &Handle, helper: PathBuf) -> Result<(Self, UnboundedReceiver<AskRequest>)> {
+        // A unique socket name: process id, a counter and the time.
         let unique = format!(
             "skiff-askpass-{}-{}-{}.sock",
             std::process::id(),
@@ -153,6 +179,7 @@ impl Broker {
             ListenerOptions::new().name(endpoint_name(&endpoint)?).create_tokio()?
         };
         let shared2 = shared.clone();
+        // Accept loop: each helper connection is served on its own task.
         rt.spawn(async move {
             loop {
                 let Ok(conn) = listener.accept().await else { continue };
@@ -193,12 +220,15 @@ impl Broker {
     }
 }
 
+/// Handles one helper connection: checks the token and tag, passes the
+/// question to the front-end, and writes back its answer (or a cancel).
 async fn serve(conn: TokioStream, tx: UnboundedSender<AskRequest>, shared: Arc<Shared>) -> Result<()> {
     let mut line = String::new();
     let mut read = TokioBufReader::new(&conn);
     read.read_line(&mut line).await?;
     let mut write = &conn;
     let q: Question = serde_json::from_str(line.trim())?;
+    // Refuse a wrong token (not from our ssh) or a retired connection.
     let refused = q.token != shared.token || shared.retired.lock().unwrap().contains(&q.tag);
     let answer = if refused {
         None
@@ -220,6 +250,7 @@ async fn serve(conn: TokioStream, tx: UnboundedSender<AskRequest>, shared: Arc<S
                 None
             }
         };
+        // Forget this question's token now that it is settled.
         if let Some(list) = shared.pending.lock().unwrap().get_mut(&tag) {
             list.retain(|t| !t.is_cancelled() && !std::ptr::eq(t, &cancelled));
         }
@@ -241,7 +272,7 @@ pub fn is_helper_invocation() -> bool {
     std::env::var_os(ENV_ENDPOINT).is_some()
 }
 
-/// Body of the askpass helper process: relays argv[1] to the broker and prints
+/// Body of the askpass helper process: relays `argv[1]` to the broker and prints
 /// the answer for ssh. Returns the process exit code (0 = answered).
 pub fn helper_main() -> i32 {
     match run_helper() {
@@ -255,6 +286,8 @@ pub fn helper_main() -> i32 {
     }
 }
 
+/// Connects to the broker named in the environment, sends the prompt and
+/// waits for the answer; `None` if cancelled.
 fn run_helper() -> Result<Option<String>> {
     let endpoint = std::env::var(ENV_ENDPOINT)?;
     let tag = std::env::var(ENV_TAG).unwrap_or_default();
@@ -275,6 +308,7 @@ fn run_helper() -> Result<Option<String>> {
 mod tests {
     use super::*;
 
+    /// Prompts are classified by ssh's hint, or by "(yes/no" in the text.
     #[test]
     fn classifies_prompts() {
         assert_eq!(AskKind::of("tester@127.0.0.1's password: "), AskKind::Secret);

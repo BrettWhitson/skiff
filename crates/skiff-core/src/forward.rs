@@ -12,18 +12,24 @@ use tokio::sync::Notify;
 
 use crate::hosts::HostEntry;
 
+/// Which direction a forward carries connections (ssh's `-L`, `-R` or `-D`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ForwardKind {
     #[default]
+    /// `-L`: a local port reaches a target through the host.
     Local,
+    /// `-R`: a port on the host reaches a target through this computer.
     Remote,
+    /// `-D`: a local SOCKS proxy that connects out through the host.
     Dynamic,
 }
 
 impl ForwardKind {
+    /// Every kind, in the order the form lists them.
     pub const ALL: [ForwardKind; 3] = [ForwardKind::Local, ForwardKind::Remote, ForwardKind::Dynamic];
 
+    /// Short name for the kind.
     pub fn label(self) -> &'static str {
         match self {
             ForwardKind::Local => "Local",
@@ -45,20 +51,25 @@ impl ForwardKind {
     }
 }
 
+/// One saved port forward.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Forward {
+    /// Optional display name; the host is shown when unset.
     pub name: Option<String>,
     /// Host name from the host list.
     pub host: String,
+    /// Direction of the forward.
     pub kind: ForwardKind,
     /// Address to listen on (default 127.0.0.1; for remote forwards, the server's default).
     pub bind: Option<String>,
+    /// Port to listen on.
     pub listen: u16,
     /// `host:port` (not used by dynamic forwards).
     pub target: Option<String>,
 }
 
+/// Whether `t` is `host:port` (host may be `[ipv6]`) with a nonzero port.
 fn valid_target(t: &str) -> bool {
     let Some((h, p)) = t.rsplit_once(':') else { return false };
     let h = h.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(h);
@@ -66,6 +77,7 @@ fn valid_target(t: &str) -> bool {
 }
 
 impl Forward {
+    /// Checks the form's fields; the error is a message for the user.
     pub fn validate(&self) -> Result<(), String> {
         if self.host.trim().is_empty() {
             return Err("Choose a host".into());
@@ -132,16 +144,21 @@ impl Forward {
     }
 }
 
+/// Where a forward's ssh process is in its life.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForwardState {
+    /// ssh started; the forward is not known to be up yet.
     Starting,
+    /// The forward is up (or ssh has stayed alive past `RUNNING_FALLBACK`).
     Running,
     /// ssh's own error line.
     Failed(String),
+    /// Stopped on request.
     Stopped,
 }
 
 impl ForwardState {
+    /// Plain words for the state.
     pub fn label(&self) -> String {
         match self {
             ForwardState::Starting => "starting".into(),
@@ -151,6 +168,7 @@ impl ForwardState {
         }
     }
 
+    /// Whether ssh is (or should soon be) running.
     pub fn is_live(&self) -> bool {
         matches!(self, ForwardState::Starting | ForwardState::Running)
     }
@@ -167,6 +185,7 @@ fn is_up_marker(line: &str) -> bool {
 /// The line that best explains why ssh exited.
 pub fn error_line(lines: &[String]) -> Option<String> {
     let useful: Vec<&String> =
+        // Skip debug output and the version banner; prefer a line naming a known cause.
         lines.iter().filter(|l| !l.starts_with("debug") && !l.starts_with("OpenSSH_") && !l.trim().is_empty()).collect();
     let key = ["bind", "listen", "address already in use", "could not", "error", "refused", "denied", "failed"];
     useful
@@ -181,11 +200,15 @@ pub fn error_line(lines: &[String]) -> Option<String> {
 
 /// A running forward. Dropping it stops ssh.
 pub struct ForwardHandle {
+    /// Current state, updated by the background task.
     state: Arc<Mutex<ForwardState>>,
+    /// Signalled to ask the task to kill ssh.
     stop: Arc<Notify>,
 }
 
 impl ForwardHandle {
+    /// Spawns `program args` in the background on `rt` and tracks its state
+    /// from its stderr and exit; the process is tied to skiff's lifetime.
     pub fn start(rt: &tokio::runtime::Handle, program: &str, args: Vec<String>, env: Vec<(String, String)>) -> ForwardHandle {
         let state = Arc::new(Mutex::new(ForwardState::Starting));
         let stop = Arc::new(Notify::new());
@@ -204,6 +227,7 @@ impl ForwardHandle {
                 }
             };
             adopt(&child);
+            // Read stderr: flip to Running on an "up" marker, and keep the last 200 lines.
             let lines = Arc::new(Mutex::new(Vec::<String>::new()));
             let reader = child.stderr.take().map(|err| {
                 let (lines, st) = (lines.clone(), st.clone());
@@ -227,6 +251,7 @@ impl ForwardHandle {
             let fallback = tokio::time::sleep(RUNNING_FALLBACK);
             tokio::pin!(fallback);
             let mut stopped = false;
+            // Wait for exit; meanwhile assume Running after the fallback delay, and kill on stop.
             let status = loop {
                 tokio::select! {
                     s = child.wait() => break s,
@@ -242,9 +267,11 @@ impl ForwardHandle {
                     }
                 }
             };
+            // Give the stderr reader a moment to collect the final lines.
             if let Some(r) = reader {
                 let _ = tokio::time::timeout(Duration::from_secs(1), r).await;
             }
+            // A requested stop is Stopped; any other exit is a failure with ssh's reason.
             let end = if stopped {
                 ForwardState::Stopped
             } else {
@@ -259,16 +286,19 @@ impl ForwardHandle {
         ForwardHandle { state, stop }
     }
 
+    /// The forward's current state.
     pub fn state(&self) -> ForwardState {
         self.state.lock().unwrap().clone()
     }
 
+    /// Asks the background task to kill ssh; the state becomes Stopped.
     pub fn stop(&self) {
         self.stop.notify_one();
     }
 }
 
 impl Drop for ForwardHandle {
+    /// Stops ssh when the handle goes away.
     fn drop(&mut self) {
         self.stop();
     }
@@ -313,9 +343,11 @@ fn adopt(child: &tokio::process::Child) {
     }
 }
 
+/// Non-Windows: nothing to do after spawning.
 #[cfg(not(windows))]
 fn adopt(_child: &tokio::process::Child) {}
 
+/// The process-wide kill-on-close job object.
 #[cfg(windows)]
 mod job {
     use std::sync::OnceLock;
@@ -326,11 +358,13 @@ mod job {
         SetInformationJobObject,
     };
 
+    /// An owned job handle, stored in a static.
     struct Job(HANDLE);
     // SAFETY: a job handle can be used from any thread.
     unsafe impl Send for Job {}
     unsafe impl Sync for Job {}
 
+    /// The job, created on first use (`None` if creation failed).
     static JOB: OnceLock<Option<Job>> = OnceLock::new();
 
     /// skiff's job object, created once and never closed (the system
@@ -367,10 +401,12 @@ mod job {
 mod tests {
     use super::*;
 
+    /// A forward to host `web` on port 8080.
     fn fwd(kind: ForwardKind, target: Option<&str>) -> Forward {
         Forward { name: None, host: "web".into(), kind, bind: None, listen: 8080, target: target.map(Into::into) }
     }
 
+    /// ssh spec arguments, titles, and validation messages for each kind.
     #[test]
     fn spec_args_and_validation() {
         assert_eq!(fwd(ForwardKind::Local, Some("localhost:80")).spec_args(), ["-L", "127.0.0.1:8080:localhost:80"]);
@@ -387,6 +423,7 @@ mod tests {
         assert_eq!(zero.validate().unwrap_err(), "Listen port must be 1–65535");
     }
 
+    /// Forwards survive saving and reloading config.toml, including removals.
     #[test]
     fn forwards_round_trip_through_config_save() {
         let d = tempfile::tempdir().unwrap();
@@ -403,6 +440,7 @@ mod tests {
         assert_eq!(crate::config::Config::load_or_create(&p).unwrap().forwards, fewer.forwards);
     }
 
+    /// On Windows, a forward's child process is placed in the kill-on-close job.
     #[cfg(windows)]
     #[tokio::test]
     async fn forward_ssh_is_killed_with_skiff() {
@@ -418,6 +456,7 @@ mod tests {
         assert_ne!(inside, 0, "the child is in skiff's kill-on-close job");
     }
 
+    /// The cause line is picked over ssh's generic follow-up and debug noise.
     #[test]
     fn error_line_prefers_the_cause() {
         let l = |v: &[&str]| error_line(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());

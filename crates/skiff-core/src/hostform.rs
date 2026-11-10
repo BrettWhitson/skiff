@@ -7,6 +7,8 @@ use crate::hosts::{HostEntry, Source};
 use crate::sshconfig::doc::HostFields;
 use crate::sshconfig::edit::{ConfigSet, Locate, validate_with};
 
+/// One text field of the host form. The discriminant is the index into the
+/// form's values and into `CONNECTION_LABELS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Name,
@@ -36,6 +38,7 @@ impl Field {
         Field::Tags,
     ];
 
+    /// The field's label, shared with the connection editor.
     pub fn label(self) -> &'static str {
         crate::config::CONNECTION_LABELS[self as usize]
     }
@@ -64,21 +67,28 @@ pub enum Dest {
     SshConfig(usize),
 }
 
+/// Which host the form is editing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Editing {
+    /// A host being added.
     New,
+    /// The custom connection at this index in `Config::connections`.
     Custom(usize),
+    /// The ssh config host with this alias (as it was when the form opened).
     Ssh(String),
 }
 
 /// What a successful save changed, so the caller writes the right file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Saved {
+    /// Saved to `config.toml`; holds the host's name.
     Skiff(String),
+    /// Saved to an ssh config file; holds the host's alias.
     Ssh(String),
 }
 
 impl Saved {
+    /// The saved host's name.
     pub fn name(&self) -> &str {
         match self {
             Saved::Skiff(n) | Saved::Ssh(n) => n,
@@ -86,11 +96,17 @@ impl Saved {
     }
 }
 
+/// State of an add/edit host form: where it saves, what it edits, and the
+/// text of each field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostForm {
+    /// Where the host is saved.
     pub dest: Dest,
+    /// What is being edited (or `New`).
     pub editing: Editing,
+    /// Field text, indexed by `Field as usize`.
     values: [String; CONNECTION_FIELDS],
+    /// Hide the host from lists.
     pub hidden: bool,
     /// Other ssh options, one per line (ssh config hosts only).
     pub other: String,
@@ -99,10 +115,12 @@ pub struct HostForm {
 }
 
 impl HostForm {
+    /// An empty form for adding a host to `dest`.
     pub fn new_host(dest: Dest) -> HostForm {
         HostForm { dest, editing: Editing::New, values: Default::default(), hidden: false, other: String::new(), after: None }
     }
 
+    /// A form editing custom connection `i`.
     pub fn for_custom(i: usize, c: &Connection) -> HostForm {
         HostForm {
             dest: Dest::Skiff,
@@ -114,6 +132,8 @@ impl HostForm {
         }
     }
 
+    /// A form editing ssh config host `alias` in document `doc`, filled from its
+    /// current settings.
     pub fn for_ssh(doc: usize, alias: &str, f: &HostFields) -> HostForm {
         let mut form = HostForm::new_host(Dest::SshConfig(doc));
         form.editing = Editing::Ssh(alias.to_string());
@@ -152,10 +172,12 @@ impl HostForm {
         Field::ALL.into_iter().filter(|f| !(matches!(self.dest, Dest::SshConfig(_)) && *f == Field::ExtraArgs)).collect()
     }
 
+    /// The current text of field `f`.
     pub fn get(&self, f: Field) -> &str {
         &self.values[f as usize]
     }
 
+    /// Mutable access to field `f`'s text, for typing into it.
     pub fn get_mut(&mut self, f: Field) -> &mut String {
         &mut self.values[f as usize]
     }
@@ -175,6 +197,7 @@ impl HostForm {
         }
     }
 
+    /// The ssh alias being edited, if this form edits an ssh config host.
     fn current_name(&self) -> Option<&str> {
         match &self.editing {
             Editing::New => None,
@@ -183,6 +206,8 @@ impl HostForm {
         }
     }
 
+    /// The form's values as ssh config host fields (trimmed; blank "other"
+    /// lines dropped).
     fn host_fields(&self) -> HostFields {
         let v = |f: Field| self.get(f).trim().to_string();
         HostFields {
@@ -205,6 +230,8 @@ impl HostForm {
     pub fn save(&self, cfg: &mut Config, set: &mut ConfigSet, taken: &[String]) -> Result<Saved, String> {
         match self.dest {
             Dest::Skiff => {
+                // skiff config: parse the fields, then refuse a name another host already
+                // uses (keeping its own name is fine).
                 let mut c = Connection::from_fields(&self.values)?;
                 c.hidden = self.hidden;
                 let own = match self.editing {
@@ -221,6 +248,8 @@ impl HostForm {
                 }
                 Ok(Saved::Skiff(name))
             }
+            // ssh config: validate against taken names and the host's existing extra
+            // options, then update in place or add a new block.
             Dest::SshConfig(doc) => {
                 let f = self.host_fields();
                 let existing = self.current_name().and_then(|a| set.fields(a)).map(|h| h.other).unwrap_or_default();
@@ -250,6 +279,7 @@ pub fn rename_forwards(cfg: &mut Config, old: &str, new: &str) -> bool {
     changed
 }
 
+/// Splits a comma-separated tag list, trimming and dropping empty tags.
 pub fn split_tags(s: &str) -> Vec<String> {
     s.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect()
 }
@@ -273,6 +303,7 @@ fn custom_index(h: &HostEntry, cfg: &Config) -> Result<usize, String> {
 pub fn set_hidden(h: &HostEntry, hidden: bool, cfg: &mut Config, set: &mut ConfigSet) -> Result<Saved, String> {
     let mut form = HostForm::for_entry(h, cfg, set)?;
     form.hidden = hidden;
+    // Only `hidden` changes, so the name check has nothing to compare against.
     let taken: Vec<String> = Vec::new();
     form.save(cfg, set, &taken)
 }
@@ -303,6 +334,7 @@ pub fn duplicate_name(name: &str, taken: &[String]) -> String {
 /// A new form pre-filled from host `h`, named [`duplicate_name`].
 pub fn duplicate(h: &HostEntry, cfg: &Config, set: &ConfigSet, taken: &[String]) -> Result<HostForm, String> {
     let mut form = HostForm::for_entry(h, cfg, set)?;
+    // A duplicate of an ssh host is placed right after the original.
     if let Editing::Ssh(alias) = &form.editing {
         form.after = Some(alias.clone());
     }
@@ -315,6 +347,7 @@ pub fn duplicate(h: &HostEntry, cfg: &Config, set: &ConfigSet, taken: &[String])
 mod tests {
     use super::*;
 
+    /// Copies are named `-copy`, then `-copy-2` when that is taken.
     #[test]
     fn duplicate_names() {
         let taken = vec!["web".to_string(), "web-copy".to_string()];
@@ -322,6 +355,8 @@ mod tests {
         assert_eq!(duplicate_name("web", &taken), "web-copy-2");
     }
 
+    /// A duplicated ssh host lands after the original, unless it is saved to a
+    /// different file.
     #[test]
     fn ssh_duplicate_goes_after_the_original() {
         let d = tempfile::tempdir().unwrap();
@@ -350,6 +385,8 @@ mod tests {
         assert!(set.docs[1].render().contains("Host a-copy"), "{}", set.docs[1].render());
     }
 
+    /// A host list built before the connections changed still deletes the right
+    /// one by name, and fails once it is gone.
     #[test]
     fn stale_custom_index_never_touches_another_connection() {
         let mut cfg = Config::default();
@@ -364,6 +401,8 @@ mod tests {
         assert!(delete(&b, &mut cfg, &mut set).is_err());
     }
 
+    /// Renaming a host retargets only its forwards, and reports whether any
+    /// changed.
     #[test]
     fn rename_points_forwards_at_the_new_name() {
         let mut cfg = Config::default();
@@ -377,6 +416,8 @@ mod tests {
         assert!(!rename_forwards(&mut cfg, "old", "new"));
     }
 
+    /// Saving rejects a taken name, and an ssh config save writes the hidden
+    /// marker and extra options into a new block.
     #[test]
     fn saves_to_either_destination_and_rejects_taken_names() {
         let d = tempfile::tempdir().unwrap();

@@ -9,21 +9,16 @@ use super::{MAX_INCLUDE_DEPTH, glob_match, resolve_include, split_kv, unquote};
 /// Where to probe a host.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Probe {
-    Direct {
-        host: String,
-        port: u16,
-    },
+    /// Check `host:port` directly.
+    Direct { host: String, port: u16 },
     /// The host is reached through jump host `jump` (as written in
     /// `ProxyJump`); only the jump host, at `host:port`, is checked.
-    Via {
-        jump: String,
-        host: String,
-        port: u16,
-    },
+    Via { jump: String, host: String, port: u16 },
     /// Not probed; the reason is shown to the user.
     Unknown(String),
 }
 
+/// The reason shown when a host is behind a ProxyCommand.
 pub const VIA_PROXY: &str = "via proxy";
 
 /// How many jump hosts deep `ProxyJump` chains are followed.
@@ -44,9 +39,12 @@ pub fn host_matches(patterns: &[String], alias: &str) -> bool {
     hit
 }
 
+/// The first value of each option that matters for a probe.
 #[derive(Default)]
 struct Found {
+    /// First `HostName`.
     hostname: Option<String>,
+    /// First `Port`, unparsed.
     port: Option<String>,
     /// The first `ProxyJump` or `ProxyCommand` value, and whether it was a jump.
     proxy: Option<(bool, String)>,
@@ -58,6 +56,8 @@ struct Found {
 /// `Include` line is, so "first value wins" follows OpenSSH.
 /// `in_match` is set for a file included from inside a `Match` block.
 fn walk(set: &ConfigSet, di: usize, alias: &str, mut active: bool, mut in_match: bool, depth: usize, found: &mut Found) {
+    // Block state carries into included files and is not restored after them,
+    // matching OpenSSH's line-by-line reading.
     if depth > MAX_INCLUDE_DEPTH {
         return;
     }
@@ -87,6 +87,8 @@ fn walk(set: &ConfigSet, di: usize, alias: &str, mut active: bool, mut in_match:
                     }
                 }
             }
+            // Settings that could change the target inside a `Match` make the result
+            // unknowable; other `Match` options are harmless.
             "hostname" | "port" | "proxyjump" | "proxycommand" if in_match => found.match_blocks = true,
             _ if !active => {}
             "hostname" => {
@@ -114,8 +116,10 @@ pub fn probe_target_all(sets: &[ConfigSet], alias: &str) -> Probe {
     probe_at_depth(sets, alias, 0)
 }
 
+/// Resolves `alias`; `depth` counts jump hosts followed so far.
 fn probe_at_depth(sets: &[ConfigSet], alias: &str, depth: usize) -> Probe {
     let mut f = Found::default();
+    // Each set's first doc is its top-level file; includes are reached from it.
     for set in sets.iter().filter(|s| !s.docs.is_empty()) {
         walk(set, 0, alias, true, false, 0, &mut f);
     }
@@ -123,6 +127,7 @@ fn probe_at_depth(sets: &[ConfigSet], alias: &str, depth: usize) -> Probe {
         return Probe::Unknown("Match rules".into());
     }
     match f.proxy {
+        // `none` (any case) disables the proxy.
         Some((_, p)) if p.eq_ignore_ascii_case("none") => {}
         // ssh ignores a ProxyJump that points at the host itself (the usual
         // `Host *` + `ProxyJump bastion` setup, as seen from bastion).
@@ -131,6 +136,7 @@ fn probe_at_depth(sets: &[ConfigSet], alias: &str, depth: usize) -> Probe {
         Some((false, _)) => return Probe::Unknown(VIA_PROXY.into()),
         None => {}
     }
+    // Only `%h` can be substituted here; other tokens make the target unknown.
     let host = f.hostname.unwrap_or_else(|| alias.to_string());
     let host = host.replace("%h", alias);
     if host.contains('%') {
@@ -151,6 +157,8 @@ fn probe_at_depth(sets: &[ConfigSet], alias: &str, depth: usize) -> Probe {
 fn first_hop(spec: &str) -> Option<(String, Option<u16>)> {
     let hop = spec.split(',').next()?.trim();
     let hop = hop.strip_prefix("ssh://").unwrap_or(hop);
+    // `[addr]:port` bracket form (IPv6), otherwise `host:port` when there is a
+    // single colon (a bare IPv6 address has several and is taken whole).
     let hop = hop.rsplit_once('@').map_or(hop, |(_, h)| h);
     let (host, port) = if let Some(rest) = hop.strip_prefix('[') {
         let (h, after) = rest.split_once(']')?;
@@ -178,6 +186,8 @@ pub fn jump_probe(sets: &[ConfigSet], spec: &str) -> Probe {
     jump_at_depth(sets, spec, 1)
 }
 
+/// Resolves jump host `spec` at chain depth `depth`; an explicit port in the
+/// spec overrides the jump host's configured port.
 fn jump_at_depth(sets: &[ConfigSet], spec: &str, depth: usize) -> Probe {
     if depth > MAX_JUMP_DEPTH {
         return Probe::Unknown("jump hosts loop".into());
@@ -193,6 +203,7 @@ fn jump_at_depth(sets: &[ConfigSet], spec: &str, depth: usize) -> Probe {
 mod tests {
     use super::*;
 
+    /// Probes `alias` against a config written to a temp file.
     fn probe(text: &str, alias: &str) -> Probe {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("config");
@@ -200,10 +211,13 @@ mod tests {
         probe_target(&ConfigSet::load(&p).unwrap(), alias)
     }
 
+    /// A direct probe to `h:port`.
     fn direct(h: &str, port: u16) -> Probe {
         Probe::Direct { host: h.into(), port }
     }
 
+    /// HostName and Port come from the first matching block, wildcards apply,
+    /// negation excludes, and `ProxyJump none` means direct.
     #[test]
     fn direct_uses_hostname_and_wildcard_port() {
         assert_eq!(probe("Host web\n HostName 10.0.0.5\nHost *\n Port 2200\n", "web"), direct("10.0.0.5", 2200));
@@ -212,6 +226,9 @@ mod tests {
         assert_eq!(probe("Host *.lan\n ProxyJump none\n", "a.lan"), direct("a.lan", 22));
     }
 
+    /// ProxyCommand is unknown; ProxyJump probes the first hop (user, port, URI
+    /// and IPv6 forms), follows jump chains, and reports loops and proxied jumps
+    /// as unknown.
     #[test]
     fn proxy_command_is_unknown_and_jumps_probe_the_first_hop() {
         assert!(matches!(probe("Host web\n ProxyCommand nc %h 22\n", "web"), Probe::Unknown(_)));
@@ -226,12 +243,15 @@ mod tests {
         assert!(matches!(probe("Host web\n ProxyJump a\nHost a\n ProxyCommand nc\n", "web"), Probe::Unknown(_)));
     }
 
+    /// A `Match` block setting a proxy makes the probe unknown; one setting only
+    /// other options doesn't.
     #[test]
     fn match_with_proxy_makes_all_unknown() {
         assert!(matches!(probe("Host web\n HostName x\nMatch host x\n ProxyJump b\n", "web"), Probe::Unknown(_)));
         assert_eq!(probe("Host web\n HostName x\nMatch host x\n User b\n", "web"), direct("x", 22));
     }
 
+    /// `%h` in HostName becomes the alias; other `%` tokens are unknown.
     #[test]
     fn percent_h_substituted_other_tokens_unknown() {
         assert_eq!(probe("Host web\n HostName %h.example.com\n", "web"), direct("web.example.com", 22));
@@ -243,6 +263,7 @@ mod tests {
 mod edge_tests {
     use super::*;
 
+    /// A proxy setting in a file included from a `Match` block is unknown too.
     #[test]
     fn match_then_include_is_unknown() {
         let dir = tempfile::tempdir().unwrap();
