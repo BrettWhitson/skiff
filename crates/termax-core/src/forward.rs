@@ -197,6 +197,7 @@ impl ForwardHandle {
         cmd.args(&args).envs(env).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        tie_to_parent(&mut cmd);
         let (st, stop2, program) = (state.clone(), stop.clone(), program.to_string());
         rt.spawn(async move {
             let mut child = match cmd.spawn() {
@@ -206,6 +207,7 @@ impl ForwardHandle {
                     return;
                 }
             };
+            adopt(&child);
             let lines = Arc::new(Mutex::new(Vec::<String>::new()));
             let reader = child.stderr.take().map(|err| {
                 let (lines, st) = (lines.clone(), st.clone());
@@ -276,6 +278,95 @@ impl Drop for ForwardHandle {
     }
 }
 
+// A forward's ssh must not outlive termax, even when termax is killed
+// (dropping the handle covers a normal exit).
+
+/// Linux: the child gets SIGTERM when termax dies.
+#[cfg(target_os = "linux")]
+fn tie_to_parent(cmd: &mut Command) {
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: only async-signal-safe calls (prctl, getppid) run in the child.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // termax died before the prctl took effect.
+            if libc::getppid() != parent {
+                return Err(std::io::Error::other("termax exited"));
+            }
+            Ok(())
+        });
+    }
+}
+
+/// Other systems: handled after the spawn (Windows), or best effort (macOS
+/// and the BSDs have no parent-death signal; ssh exits on its own once its
+/// stderr pipe is gone and it next writes to it).
+#[cfg(not(target_os = "linux"))]
+fn tie_to_parent(_cmd: &mut Command) {}
+
+/// Windows: puts the child in a job object that kills its processes when
+/// the job's last handle closes, which happens when termax exits in any way.
+#[cfg(windows)]
+fn adopt(child: &tokio::process::Child) {
+    if let (Some(job), Some(h)) = (job::get(), child.raw_handle()) {
+        // Best effort: a failure leaves the old behavior (stopped on drop).
+        // SAFETY: both handles are valid for the duration of the call.
+        unsafe { windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(job, h as _) };
+    }
+}
+
+#[cfg(not(windows))]
+fn adopt(_child: &tokio::process::Child) {}
+
+#[cfg(windows)]
+mod job {
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+    };
+
+    struct Job(HANDLE);
+    // SAFETY: a job handle can be used from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    /// termax's job object, created once and never closed (the system
+    /// closes it, and so kills the forwards, when termax exits).
+    pub fn get() -> Option<HANDLE> {
+        JOB.get_or_init(|| {
+            // SAFETY: plain Win32 calls; the handle is checked before use.
+            unsafe {
+                let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if h.is_null() {
+                    return None;
+                }
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    h,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    CloseHandle(h);
+                    return None;
+                }
+                Some(Job(h))
+            }
+        })
+        .as_ref()
+        .map(|j| j.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +405,21 @@ mod tests {
         fewer.forwards.remove(0);
         fewer.save(&back, &p).unwrap();
         assert_eq!(crate::config::Config::load_or_create(&p).unwrap().forwards, fewer.forwards);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn forward_ssh_is_killed_with_termax() {
+        // A stand-in for ssh that waits; ping only talks to this machine.
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "30", "127.0.0.1"]).stdout(Stdio::null()).kill_on_drop(true);
+        let child = cmd.spawn().unwrap();
+        adopt(&child);
+        let mut inside = 0;
+        let h = child.raw_handle().unwrap();
+        // SAFETY: valid handles; `inside` is written by the call.
+        unsafe { windows_sys::Win32::System::JobObjects::IsProcessInJob(h as _, job::get().unwrap(), &mut inside) };
+        assert_ne!(inside, 0, "the child is in termax's kill-on-close job");
     }
 
     #[test]
