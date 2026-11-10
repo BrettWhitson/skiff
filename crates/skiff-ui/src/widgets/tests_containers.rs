@@ -307,8 +307,11 @@ fn is_menu_open(h: &mut Harness, id: Id) -> bool {
     open.get()
 }
 
-/// A full 1920x1080 repaint of the demo stays under 50ms.
+/// A full 1920x1080 repaint of the demo stays under 50ms. Wall-clock timing
+/// fails on a busy machine, so it runs with the other perf checks:
+/// `cargo test -p skiff-ui --release -- --ignored`.
 #[test]
+#[ignore = "timing check; run in release with --ignored"]
 fn full_frame_render_time_1080p() {
     let mut h = Harness::new(1920, 1080, 1.0);
     let mut demo = crate::demo::Demo::default();
