@@ -98,7 +98,7 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
         WindowEvent::ModifiersChanged(m) => {
             let s = m.state();
             st.mods = Modifiers { ctrl: s.control_key(), shift: s.shift_key(), alt: s.alt_key(), logo: s.super_key() };
-            vec![]
+            vec![Event::Modifiers(st.mods)]
         }
         WindowEvent::KeyboardInput { event, .. } => {
             let key = match &event.logical_key {

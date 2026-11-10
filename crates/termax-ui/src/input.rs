@@ -83,6 +83,8 @@ pub enum Event {
     Paste(String),
     FileDropped(PathBuf),
     FocusLost,
+    /// The held modifier keys changed (needed for Ctrl/Shift-click).
+    Modifiers(Modifiers),
 }
 
 pub fn map_named_key(k: &NamedKey) -> Option<Key> {

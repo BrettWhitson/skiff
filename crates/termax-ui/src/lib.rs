@@ -11,6 +11,7 @@ pub mod color;
 #[doc(hidden)]
 pub mod demo;
 pub mod display;
+pub mod dnd;
 pub mod geom;
 pub mod input;
 pub mod layout;
