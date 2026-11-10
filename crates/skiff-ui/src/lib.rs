@@ -55,7 +55,7 @@
 //! # Modules
 //!
 //! - `ui`: the per-frame context, input, focus, overlays, drag-and-drop.
-//! - `widgets`: buttons, inputs, lists, menus, tabs, scroll areas...
+//! - `widgets`: buttons, inputs, lists, menus, tabs, tooltips, scroll areas...
 //! - `display`, `canvas`: drawing commands and the tiled CPU renderer.
 //! - `text`: fonts, fallbacks, glyph cache, single-line layout.
 //! - `shell`: the winit / softbuffer window and event loop.

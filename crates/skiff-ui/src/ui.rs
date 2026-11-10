@@ -107,11 +107,13 @@ pub struct Response {
 /// A rectangle registered by `interact`, used for hit-testing next frame.
 #[derive(Debug, Clone, Copy)]
 struct Hit {
+    /// The widget that registered the rect.
     id: Id,
     /// The widget's rect clipped to the clip area it was registered in.
     rect: Rect,
     /// 0 for normal widgets, higher for overlays.
     layer: u8,
+    /// What the widget responds to (e.g. whether a press may focus it).
     sense: Sense,
 }
 
@@ -241,7 +243,9 @@ struct FrameHits {
     hovered: Option<Id>,
     /// Widgets clicked this frame (pointer or screen reader).
     clicked: HashSet<Id>,
+    /// Widgets whose left click this frame completed a double click.
     double_clicked: HashSet<Id>,
+    /// Widgets right-pressed and right-released this frame.
     right_clicked: HashSet<Id>,
     /// The widget being dragged and the pointer movement since last frame.
     drag: Option<(Id, Point)>,
@@ -249,8 +253,11 @@ struct FrameHits {
 
 /// Draws into the current layer's display list.
 pub struct Painter<'p> {
+    /// Where primitives are appended (the base or overlay list).
     list: &'p mut DisplayList,
+    /// Fonts used to shape text primitives.
     fonts: &'p Fonts,
+    /// Glyph cache shared with the frame.
     cache: &'p mut GlyphCache,
 }
 
@@ -308,14 +315,19 @@ impl Painter<'_> {
 /// One frame's UI context: widgets take `&mut Ui` to lay out, draw and
 /// read input. Created by `Ui::run`; borrows the persistent `UiState`.
 pub struct Ui<'a> {
+    /// State kept across frames (focus, pressed widget, memory, drag).
     st: &'a mut UiState,
     /// The frame's display list (layer 0).
     list: &'a mut DisplayList,
     /// Primitives drawn on overlay layers; appended after `list` at the end.
     overlay_list: DisplayList,
+    /// Loaded fonts, for measuring and drawing text.
     fonts: &'a Fonts,
+    /// Shared glyph cache.
     cache: &'a mut GlyphCache,
+    /// System (or test) clipboard.
     clipboard: &'a mut dyn Clipboard,
+    /// Colors, sizes and zoom for this frame.
     style: Style,
     /// Window size in physical pixels.
     size: Size,
@@ -329,7 +341,9 @@ pub struct Ui<'a> {
     clip: Rect,
     /// 0 for normal widgets; each `overlay` nesting adds 1.
     layer: u8,
+    /// This frame's events and pointer/key state.
     input: Input,
+    /// Clicks, hover and drag resolved from this frame's events.
     frame: FrameHits,
     /// Hit rectangles registered this frame (become `prev_hits`).
     hits: Vec<Hit>,
@@ -1039,18 +1053,27 @@ pub mod testing {
     /// A window without a window: runs frames against an in-memory display
     /// list, clipboard and accessibility tree.
     pub struct Harness {
+        /// State kept across frames, as an app would keep it.
         pub state: UiState,
+        /// Fonts frames run with (replaced if a frame asks to swap fonts).
         pub fonts: Fonts,
+        /// In-memory clipboard tests can inspect or prefill.
         pub clipboard: MemoryClipboard,
+        /// Style passed to every frame.
         pub style: Style,
         /// The repaint delay the last frame asked for.
         pub repaint_in: Option<Duration>,
         /// The cursor the last frame set.
         pub cursor: CursorIcon,
+        /// Window size in physical pixels.
         size: Size,
+        /// DPI scale frames run with.
         scale: f32,
+        /// The last frame's display list.
         list: DisplayList,
+        /// Glyph cache reused across frames.
         cache: GlyphCache,
+        /// The last frame's accessibility tree.
         tree: Tree,
     }
 

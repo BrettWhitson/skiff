@@ -1,4 +1,6 @@
 //! Tab strip with close buttons, drag-to-reorder and a "+" button.
+//! The caller owns the tab list and the active index; `tabs` reports what
+//! the user did (close, move, drag out, "+") in a `TabsResponse`.
 
 use crate::a11y::Role;
 use crate::geom::{Point, Rect};
@@ -8,18 +10,23 @@ use crate::ui::{Id, Sense, Ui};
 
 use super::label::elide;
 
+/// One tab as the caller describes it for this frame.
 #[derive(Debug, Clone, Copy)]
 pub struct TabTitle<'a> {
+    /// Label shown on the tab (elided to fit) and used as its accessible name.
     pub text: &'a str,
+    /// Whether the tab draws a close ("×") button.
     pub closable: bool,
 }
 
+/// What happened to the tab strip this frame.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TabsResponse {
     /// The close button of this tab was clicked.
     pub closed: Option<usize>,
     /// A tab was dragged from `.0` to `.1`; the caller reorders its tabs.
     pub moved: Option<(usize, usize)>,
+    /// The "+" (new tab) button was clicked.
     pub plus_clicked: bool,
     /// The dragged tab left the strip (reported once per drag): the caller
     /// may start a drag-and-drop with it. The tab that was active before
@@ -29,8 +36,10 @@ pub struct TabsResponse {
     pub tab_rects: Vec<Rect>,
 }
 
+/// Per-strip drag state kept in widget memory between frames.
 #[derive(Debug, Clone, Copy, Default)]
 struct TabDrag {
+    /// Current index of the tab being dragged (follows it as it moves).
     dragging: Option<usize>,
     /// The tab active before the press.
     before: Option<usize>,
@@ -51,10 +60,15 @@ fn index_after_move(b: usize, from: usize, to: usize) -> usize {
     }
 }
 
+/// Index of the tab under x-coordinate `x`: the first tab whose right edge is
+/// past `x`, or the last tab when `x` is beyond the strip.
 fn index_at(rects: &[Rect], x: i32) -> usize {
     rects.iter().position(|r| x < r.right()).unwrap_or(rects.len().saturating_sub(1))
 }
 
+/// Draws a tab strip in `rect` and handles clicks, Left/Right keys,
+/// drag-to-reorder, drag-out, close buttons and the "+" button. `active` is
+/// updated in place; everything else is reported in the returned response.
 pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut usize) -> TabsResponse {
     let mut out = TabsResponse::default();
     let n = titles.len();
@@ -75,6 +89,7 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
         })
         .collect();
     let total: i32 = widths.iter().sum::<i32>() + gap * n.saturating_sub(1) as i32;
+    // Too wide: every tab gets the same share (this may go below `min_w`).
     if total > avail && n > 0 {
         let each = ((avail - gap * (n as i32 - 1)) / n as i32).max(0);
         widths.iter_mut().for_each(|w| *w = each);
@@ -89,6 +104,8 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
 
     // The whole strip is one widget, so a drag survives the reorder.
     let sr = ui.interact(id, strip, Sense { click: true, drag: true, focus: true });
+    // Accessibility: a tab list with one selectable tab node per tab; an
+    // a11y click activates that tab, and a11y focus goes to the active one.
     if ui.a11y_on() {
         ui.a11y_group(id, Role::TabList, "Tabs", |ui| {
             for (i, t) in titles.iter().enumerate() {
@@ -104,6 +121,7 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
             ui.a11y_focus_child(id, id.with(("tab", *active)));
         });
     }
+    // Keyboard: Left/Right move the active tab while the strip has focus.
     if sr.focused && n > 0 && ui.keys_for(id) {
         if ui.input_mut().take_key(&Key::Right, Modifiers::NONE) {
             *active = (*active + 1).min(n - 1);
@@ -118,6 +136,8 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
     if n > 0 {
         if sr.pressed {
             match drag.dragging {
+                // Held and moved above/below the strip: report the drag-out
+                // once and restore the tab that was active before the press.
                 Some(i) if !pressed_now && (mouse.y < rect.y || mouse.y >= rect.bottom()) => {
                     if !drag.out {
                         drag.out = true;
@@ -127,6 +147,8 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
                         }
                     }
                 }
+                // Held within the strip over another tab: report a move and
+                // re-index the dragged and "before" tabs to the new order.
                 Some(i) if !pressed_now => {
                     let target = index_at(&out.tab_rects, mouse.x);
                     if target != i {
@@ -138,6 +160,8 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
                         drag.dragging = Some(target);
                     }
                 }
+                // Fresh press (or no drag yet): start dragging the tab under
+                // the mouse and activate it, remembering the previous one.
                 _ => {
                     let i = index_at(&out.tab_rects, mouse.x);
                     drag = TabDrag { dragging: Some(i), before: Some(*active), out: false };
@@ -159,6 +183,8 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
     let p = ui.style().palette;
     let radius = ui.px(4) as f32;
     let accent_h = ui.px(2).max(1);
+    // Paint each tab: background by state, an accent bar on the active one,
+    // the elided title, and the close button when closable.
     for (i, t) in titles.iter().enumerate() {
         let tr = out.tab_rects[i];
         let hovered = sr.hovered && tr.contains(mouse);
@@ -199,12 +225,14 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
             if cr.hovered {
                 painter.rect(close, p.surface_alt.mix(p.fg, 0.1), radius);
             }
+            // The "×" only shows on the active or hovered tab.
             if cr.hovered || is_active || hovered {
                 painter.text(Point::new(close.x + (close.w - xw) / 2, close.y + (close.h - lh) / 2), "×", FontKind::Ui, px, p.muted);
             }
         }
     }
 
+    // The square "+" button right after the last tab.
     let plus = Rect::new(strip_right + ui.px(4), rect.y, plus_w, rect.h);
     let pr = ui.interact(id.with("plus"), plus, Sense::click());
     out.plus_clicked = pr.clicked;
@@ -219,6 +247,7 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
     out
 }
 
+/// Inset for the "+" button's hover background: 1/8 of its height, at least 1px.
 fn ui_px_inset(r: Rect) -> i32 {
     (r.h / 8).max(1)
 }

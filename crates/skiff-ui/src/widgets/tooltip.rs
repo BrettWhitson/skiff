@@ -13,6 +13,8 @@ pub fn tooltip(ui: &mut Ui, anchor: Rect, text: &str) {
     let w = ui.measure(text, FontKind::Ui, px).ceil() as i32 + 2 * pad;
     let h = ui.line_height(FontKind::Ui, px) + pad;
     let win = ui.window_rect();
+    // Prefer 4px below the anchor, flipping above it when that would leave
+    // the window; center on the anchor horizontally, clamped to the window.
     let below = anchor.bottom() + ui.px(4);
     let y = if below + h <= win.bottom() { below } else { (anchor.y - ui.px(4) - h).max(0) };
     let x = (anchor.x + anchor.w / 2 - w / 2).clamp(0, (win.right() - w).max(0));
