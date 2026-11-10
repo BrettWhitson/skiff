@@ -163,7 +163,8 @@ fn stopped_forwards_are_dropped() {
     let fwd = f.app.cfg.forwards[0].clone();
     // A local stand-in for ssh that just waits.
     let (prog, args) = if cfg!(windows) { ("ping", vec!["-n", "30", "127.0.0.1"]) } else { ("sleep", vec!["30"]) };
-    let handle = termax_core::forward::ForwardHandle::start(f.app.engine.rt.handle(), prog, args.into_iter().map(String::from).collect(), vec![]);
+    let handle =
+        termax_core::forward::ForwardHandle::start(f.app.engine.rt.handle(), prog, args.into_iter().map(String::from).collect(), vec![]);
     f.app.forwards.running.push(crate::forwards::Running { fwd: fwd.clone(), handle, tag: "fwd:x".into(), recorded: true });
     f.app.forwards.stop(&fwd);
     let start = Instant::now();

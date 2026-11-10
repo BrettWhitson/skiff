@@ -135,7 +135,10 @@ impl HostForm {
     /// The form for host `h`, or why it can't be edited.
     pub fn for_entry(h: &HostEntry, cfg: &Config, set: &ConfigSet) -> Result<HostForm, String> {
         match h.source {
-            Source::Custom(i) => Ok(HostForm::for_custom(i, &cfg.connections[i])),
+            Source::Custom(_) => {
+                let i = custom_index(h, cfg)?;
+                Ok(HostForm::for_custom(i, &cfg.connections[i]))
+            }
             Source::SshConfig => match set.locate(&h.name) {
                 Locate::Editable { doc, .. } => Ok(HostForm::for_ssh(doc, &h.name, &set.fields(&h.name).expect("editable"))),
                 Locate::ReadOnly(why) => Err(why),
@@ -253,6 +256,16 @@ pub fn taken_names(hosts: &[HostEntry]) -> Vec<String> {
     hosts.iter().map(|h| h.name.clone()).collect()
 }
 
+/// Where custom host `h` is in `cfg.connections` now. The entry's index is
+/// from when the host list was built; if the list is stale, it could point
+/// at another connection, so the name decides.
+fn custom_index(h: &HostEntry, cfg: &Config) -> Result<usize, String> {
+    match h.source {
+        Source::Custom(i) if cfg.connections.get(i).is_some_and(|c| c.name == h.name) => Ok(i),
+        _ => cfg.connections.iter().position(|c| c.name == h.name).ok_or_else(|| format!("{} is gone — reload", h.name)),
+    }
+}
+
 /// Hides or shows host `h`.
 pub fn set_hidden(h: &HostEntry, hidden: bool, cfg: &mut Config, set: &mut ConfigSet) -> Result<Saved, String> {
     let mut form = HostForm::for_entry(h, cfg, set)?;
@@ -264,11 +277,10 @@ pub fn set_hidden(h: &HostEntry, hidden: bool, cfg: &mut Config, set: &mut Confi
 /// Removes host `h`.
 pub fn delete(h: &HostEntry, cfg: &mut Config, set: &mut ConfigSet) -> Result<Saved, String> {
     match h.source {
-        Source::Custom(i) if i < cfg.connections.len() => {
-            let c = cfg.connections.remove(i);
+        Source::Custom(_) => {
+            let c = cfg.connections.remove(custom_index(h, cfg)?);
             Ok(Saved::Termax(c.name))
         }
-        Source::Custom(_) => Err("That connection is gone — reload".into()),
         Source::SshConfig => {
             set.delete_host(&h.name)?;
             Ok(Saved::Ssh(h.name.clone()))
@@ -320,6 +332,20 @@ mod tests {
         let a = hosts.iter().find(|h| h.name == "a").unwrap();
         duplicate(a, &cfg, &set, &taken).unwrap().save(&mut cfg, &mut set, &taken).unwrap();
         assert_eq!(set.docs[0].render(), "Host a\n    User x\n\nHost a-copy\n    User x\n\nHost *\n    User y\n");
+    }
+
+    #[test]
+    fn stale_custom_index_never_touches_another_connection() {
+        let mut cfg = Config::default();
+        cfg.settings.load_ssh_config = false;
+        let conn = |n: &str| Connection { name: n.into(), host: "h".into(), ..Default::default() };
+        cfg.connections = vec![conn("a"), conn("b")];
+        let b = crate::hosts::collect(&cfg).0.remove(1);
+        cfg.connections.insert(0, conn("new"));
+        let mut set = ConfigSet::default();
+        assert_eq!(delete(&b, &mut cfg, &mut set), Ok(Saved::Termax("b".into())));
+        assert_eq!(cfg.connections.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["new", "a"]);
+        assert!(delete(&b, &mut cfg, &mut set).is_err());
     }
 
     #[test]
