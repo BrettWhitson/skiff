@@ -158,8 +158,11 @@ fn list_keyboard_navigation() {
 #[test]
 fn tabs_close_and_reorder() {
     let mut h = Harness::new(600, 100, 1.0);
-    let titles =
-        [TabTitle { text: "one", closable: true }, TabTitle { text: "two", closable: true }, TabTitle { text: "three", closable: false }];
+    let titles = [
+        TabTitle { text: "one", ..TabTitle::DEFAULT },
+        TabTitle { text: "two", ..TabTitle::DEFAULT },
+        TabTitle { text: "three", closable: false, ..TabTitle::DEFAULT },
+    ];
     let active = Cell::new(0usize);
     let last = Cell::new(TabsResponse::default());
     let rects = Cell::new(Vec::<Rect>::new());

@@ -34,7 +34,9 @@ fn chord_parse_and_defaults() {
     let (mac, _) = Keymap::new(&BTreeMap::new(), true);
     assert_eq!(mac.match_event(&down(Key::Char('k'), false, false, false, true), true), Some(Action::QuickSwitcher));
     assert_eq!(mac.match_event(&down(Key::Char('k'), true, true, false, false), true), None);
-    assert_eq!(win.chords(Action::QuickSwitcher)[0].to_string(), "Ctrl+Shift+K");
+    assert_eq!(win.chords(Action::QuickSwitcher)[0].to_string(), "Ctrl+Shift+P", "the palette's chord leads");
+    assert_eq!(win.match_event(&down(Key::Char('p'), true, true, false, false), true), Some(Action::QuickSwitcher));
+    assert_eq!(mac.match_event(&down(Key::Char('p'), false, true, false, true), true), Some(Action::QuickSwitcher));
 }
 
 /// The plain Ctrl+K switcher alias works outside a terminal but goes to the

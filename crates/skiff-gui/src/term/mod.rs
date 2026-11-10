@@ -11,11 +11,11 @@ use skiff_core::hosts::HostEntry;
 use skiff_core::terminal::TerminalSession;
 use skiff_ui::a11y::Role;
 use skiff_ui::geom::{Point, Rect, Size};
+use skiff_ui::icons::Icon;
 use skiff_ui::input::{CursorIcon, Event, Key, Modifiers};
-use skiff_ui::layout::Size as L;
 use skiff_ui::text::FontKind;
 use skiff_ui::ui::{Id, Sense, Ui};
-use skiff_ui::widgets::{MenuItem, button, context_menu, label, open_context_menu};
+use skiff_ui::widgets::{ButtonKind, Dialog, DialogButton, DialogResult, MenuItem, context_menu, dialog, label, open_context_menu};
 
 use crate::engine::WakeFn;
 use crate::keys::{Action, Keymap};
@@ -40,6 +40,8 @@ const WHEEL_PX_PER_LINE: f32 = 16.0;
 const MIN_FONT: f32 = 8.0;
 /// Largest terminal font size zoom-in reaches, logical px.
 const MAX_FONT: f32 = 40.0;
+/// Lines of a multi-line paste shown in its confirmation.
+const PASTE_PREVIEW: usize = 4;
 /// Space between a terminal pane's edge and its cells, logical px.
 pub const PAD: i32 = 6;
 
@@ -213,7 +215,22 @@ impl TermTab {
         (self.cell.w, self.cell.h)
     }
 
-    /// Status-bar text.
+    /// The connection as a status dot and its words: failed, ended,
+    /// connected (output seen) or still connecting.
+    pub fn conn_state(&mut self) -> (skiff_ui::widgets::Status, &'static str) {
+        use skiff_ui::widgets::Status;
+        match (&mut self.session, &self.error) {
+            (_, Some(_)) => (Status::Error, "failed"),
+            (Some(s), None) => match (s.is_alive(), s.generation() > 0) {
+                (false, _) => (Status::Idle, "session ended"),
+                (true, true) => (Status::Ok, "connected"),
+                (true, false) => (Status::Connecting, "connecting"),
+            },
+            (None, None) => (Status::Connecting, "connecting"),
+        }
+    }
+
+    /// Status-bar text: "host: connected", or the error.
     pub fn status(&mut self) -> String {
         let state = match (&mut self.session, &self.error) {
             (_, Some(e)) => e.clone(),
@@ -355,7 +372,7 @@ pub fn view(
         if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
             n.value = Some(e);
         }
-        terminal_menu(ui, id, r.right_clicked, tab);
+        terminal_menu(ui, id, r.right_clicked, tab, keymap);
         return;
     }
     let Some(session) = tab.session.as_mut() else {
@@ -499,7 +516,7 @@ pub fn view(
         tab.select.resolve(p.screen(), offset);
     }
 
-    terminal_menu(ui, id, r.right_clicked && !report_mouse, tab);
+    terminal_menu(ui, id, r.right_clicked && !report_mouse, tab, keymap);
 
     // Cursor: hollow when unfocused, solid without blink, else on/off by half-period
     // (with a repaint scheduled for the next flip).
@@ -537,31 +554,43 @@ pub fn view(
         ui.painter().text(at, msg, FontKind::Mono, px, theme.palette.warning);
     }
     find_bar(ui, id, inner, tab, &parser);
-    paste_bar(ui, id, inner, tab);
+    paste_bar(ui, id, tab);
 }
 
-/// The right-click menu: Copy, Paste, and splitting or closing the pane.
-fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab) {
+/// The right-click menu: Copy, Paste, and splitting or closing the pane,
+/// with icons and each action's shortcut.
+fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab, keymap: &Keymap) {
     let menu = id.with("menu");
     if open {
-        open_context_menu(ui, menu, ui.input().mouse);
+        // Beside the pointer, not under it.
+        let m = ui.input().mouse;
+        open_context_menu(ui, menu, Point::new(m.x + ui.px(2), m.y + ui.px(2)));
     }
     let live = tab.session.is_some();
-    let item = |label, enabled| MenuItem { label, shortcut: None, enabled, ..MenuItem::DEFAULT };
     let split = tab.pane_label.is_some();
+    // Each item shows its shortcut (the first chord bound to it).
+    let keys: Vec<String> = [Action::Copy, Action::Paste, Action::SplitRight, Action::SplitDown, Action::ClosePane]
+        .iter()
+        .map(|a| keymap.chords(*a).first().map(|c| c.to_string()).unwrap_or_default())
+        .collect();
+    /// `m` with shortcut `k`, when there is one.
+    fn with_key<'a>(m: MenuItem<'a>, k: &'a str) -> MenuItem<'a> {
+        MenuItem { shortcut: (!k.is_empty()).then_some(k), ..m }
+    }
     let items = [
-        item("Copy", live && tab.select.sel.is_some()),
-        item("Paste", live),
-        item("Split right", true),
-        item("Split down", true),
-        item("Close pane", split),
+        with_key(MenuItem::new("Copy").icon(Icon::Copy).enabled(live && tab.select.sel.is_some()), &keys[0]),
+        with_key(MenuItem::new("Paste").enabled(live), &keys[1]),
+        MenuItem::SEPARATOR,
+        with_key(MenuItem::new("Split right").icon(Icon::SplitH), &keys[2]),
+        with_key(MenuItem::new("Split down").icon(Icon::SplitV), &keys[3]),
+        with_key(MenuItem::new("Close pane").icon(Icon::Close).enabled(split), &keys[4]),
     ];
     match context_menu(ui, menu, &items) {
         Some(0) => tab.queued.push(Action::Copy),
         Some(1) => tab.queued.push(Action::Paste),
-        Some(2) => tab.pane_request = Some(Action::SplitRight),
-        Some(3) => tab.pane_request = Some(Action::SplitDown),
-        Some(4) => tab.pane_request = Some(Action::ClosePane),
+        Some(3) => tab.pane_request = Some(Action::SplitRight),
+        Some(4) => tab.pane_request = Some(Action::SplitDown),
+        Some(5) => tab.pane_request = Some(Action::ClosePane),
         _ => {}
     }
     if !tab.queued.is_empty() {
@@ -577,42 +606,28 @@ fn paste_then_enter(s: &mut TerminalSession, text: &str, enter: bool) {
     }
 }
 
-/// "Paste n lines into host?" along the bottom of the terminal.
-fn paste_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab) {
-    let Some((_, n, _)) = tab.pending_paste.as_ref() else {
+/// The modal "Paste n lines into host?" dialog (with the first lines),
+/// while a multi-line paste waits for an answer.
+fn paste_bar(ui: &mut Ui, id: Id, tab: &mut TermTab) {
+    let Some((text, n, _)) = tab.pending_paste.as_ref() else {
         tab.paste_shown = false;
         return;
     };
     let what = if *n == 1 { "1 line".to_string() } else { format!("{n} lines") };
-    let msg = format!("Paste {what} into {}?", tab.host.name);
-    let (yes, no) = (id.with("paste-yes"), id.with("paste-no"));
-    // Focus starts on Cancel, so a reflexive Enter doesn't paste.
-    if !std::mem::replace(&mut tab.paste_shown, true) {
-        ui.request_focus(no);
+    let title = format!("Paste {what} into {}?", tab.host.name);
+    // The first lines, so the user sees what would run.
+    let mut preview: Vec<String> = text.lines().take(PASTE_PREVIEW).map(|l| l.chars().take(80).collect()).collect();
+    if *n > PASTE_PREVIEW {
+        preview.push(format!("\u{2026} and {} more", n - PASTE_PREVIEW));
     }
-    let h = ui.px(36);
-    let rect = Rect::new(inner.x, inner.bottom() - h, inner.w, h);
-    let mut answer = None;
-    ui.a11y_group(id.with("paste"), Role::Dialog, &msg, |ui| {
-        let p = ui.style().palette;
-        ui.interact(id.with("paste-panel"), rect, Sense::hover());
-        let (radius, bw) = (ui.px(6) as f32, ui.px(1).max(1));
-        ui.painter().rect(rect, p.surface_alt, radius);
-        ui.painter().border(rect, p.warning, bw, radius);
-        let parts = ui.split_h(rect.inset(ui.px(4)), &[L::Fill, L::Px(80), L::Px(80)], 6);
-        label(ui, parts[0], &msg, Some(p.fg));
-        if button(ui, yes, parts[1], "Paste").clicked {
-            answer = Some(true);
-        }
-        if button(ui, no, parts[2], "Cancel").clicked {
-            answer = Some(false);
-        }
-    });
-    if (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
-        answer = Some(false);
-    }
-    if let Some(yes) = answer {
-        tab.paste_answer(yes);
+    let body = format!("Each line runs as a command.\n\n{}", preview.join("\n"));
+    tab.paste_shown = true;
+    // Cancel has focus first, so a reflexive Enter doesn't paste.
+    let buttons =
+        [DialogButton { label: "Cancel", kind: ButtonKind::Secondary }, DialogButton { label: "Paste", kind: ButtonKind::Primary }];
+    let d = Dialog { title: &title, body: &body, buttons: &buttons, initial: 0, icon: Some(Icon::Warning), width: 480 };
+    if let Some(r) = dialog(ui, id.with("paste-dialog"), &d) {
+        tab.paste_answer(r == DialogResult::Button(1));
         ui.request_focus(id);
     }
 }

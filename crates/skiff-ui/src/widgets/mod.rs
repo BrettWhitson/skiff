@@ -30,7 +30,9 @@ mod toast;
 mod tooltip;
 
 pub use badge::{Status, Tone, badge, badge_width, status_color, status_dot, status_pill, tone_colors};
-pub use button::{ButtonKind, ButtonOpts, button, button_backgrounds, button_colors, button_width, button_with, icon_button};
+pub use button::{
+    ButtonKind, ButtonOpts, button, button_backgrounds, button_colors, button_width, button_with, icon_button, icon_button_tip,
+};
 pub use checkbox::checkbox;
 pub use dialog::{Dialog, DialogButton, DialogResult, dialog};
 pub use dropdown::{dropdown, dropdown_labeled};
@@ -47,9 +49,9 @@ pub use scroll::{ScrollState, scroll_area, scroll_into_view, scroll_to};
 pub use select_list::{SelectListResponse, Selection, select_list, select_list_named};
 pub use splitter::splitter_h;
 pub use stepper::{StepperOpts, parse_value, step_value, stepper};
-pub use tabs::{TabTitle, TabsResponse, tabs};
+pub use tabs::{TabTitle, TabsOpts, TabsResponse, tabs, tabs_with};
 pub use text_input::{TextInputOpts, TextInputResponse, text_input};
-pub use toast::{Toast, ToastEvent, ToastKind, Toasts, toasts};
+pub use toast::{Toast, ToastEvent, ToastKind, Toasts, toasts, toasts_in};
 pub use tooltip::tooltip;
 
 #[cfg(test)]

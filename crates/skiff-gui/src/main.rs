@@ -47,7 +47,7 @@ fn main() -> anyhow::Result<()> {
             let mut app = GuiApp::new(cfg, cfg_path, Some(waker));
             app.open = open;
             if let Some(note) = migration.note() {
-                app.warn(note.to_string());
+                app.notify(skiff_ui::widgets::ToastKind::Info, note.to_string());
             }
             app
         },

@@ -15,7 +15,7 @@
 //! - [`files`]: two-pane file-transfer tabs over local disk or SFTP.
 //! - [`forwards`]: the port-forward manager tab.
 //! - [`settings`]: the settings tab (connections, appearance, keys, snippets).
-//! - [`switcher`]: the quick switcher overlay.
+//! - [`palette`]: the command palette overlay.
 //! - [`gear`]: the Settings gear button at the end of the tab strip.
 //! - [`keys`]: app actions, default chords and `[keys]` overrides.
 //! - [`engine`]: the background tokio runtime and the UI wake-up hook.
@@ -31,9 +31,9 @@ pub mod forwards;
 pub mod gear;
 pub mod keys;
 pub mod os;
+pub mod palette;
 pub mod settings;
 pub mod sidebar;
-pub mod switcher;
 pub mod term;
 #[doc(hidden)]
 pub mod testing;

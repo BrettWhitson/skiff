@@ -3,7 +3,9 @@
 
 use crate::a11y::{A11yAction, Role};
 use crate::geom::{Point, Rect};
+use crate::icons::Icon;
 use crate::input::{CursorIcon, Event, Key, MouseButton};
+use crate::style::tokens;
 use crate::text::FontKind;
 use crate::ui::{Id, Response, Sense, Ui};
 
@@ -16,6 +18,11 @@ pub struct TextInputOpts<'a> {
     pub placeholder: &'a str,
     /// The name screen readers announce; the placeholder when empty.
     pub label: &'a str,
+    /// An icon inside the field before the text (e.g. `Icon::Search`).
+    pub icon: Option<Icon>,
+    /// No box or outline: the field sits on a surface that frames it (a
+    /// command palette's panel).
+    pub frameless: bool,
 }
 
 /// What happened to a text field this frame.
@@ -164,7 +171,10 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
 
     let px = ui.font_px();
     let pad = ui.px(6);
-    let inner = Rect::new(rect.x + pad, rect.y, rect.w - 2 * pad, rect.h);
+    // A leading icon takes its width plus a gap from the text area.
+    let icon_px = ui.px(tokens::ICON);
+    let lead = if opts.icon.is_some() { icon_px + ui.px(tokens::SPACE_SM) } else { 0 };
+    let inner = Rect::new(rect.x + pad + lead, rect.y, rect.w - 2 * pad - lead, rect.h);
     // What is drawn and measured: bullets for passwords so the caret lines up.
     let display = |chars: &[char]| -> String { if opts.password { "•".repeat(chars.len()) } else { chars.iter().collect() } };
 
@@ -340,8 +350,13 @@ pub fn text_input(ui: &mut Ui, id: Id, rect: Rect, value: &mut String, opts: Tex
     let x0 = inner.x - st.scroll.round() as i32;
     {
         let mut painter = ui.painter();
-        painter.rect(rect, p.surface, radius);
-        painter.border(rect, if r.focused { p.accent } else { p.control }, bw, radius);
+        if !opts.frameless {
+            painter.rect(rect, p.surface, radius);
+            painter.border(rect, if r.focused { p.accent } else { p.control }, bw, radius);
+        }
+        if let Some(icon) = opts.icon {
+            painter.icon(Rect::new(rect.x + pad, rect.y + (rect.h - icon_px) / 2, icon_px, icon_px), icon, p.muted);
+        }
     }
     ui.with_clip(inner, |ui| {
         let mut painter = ui.painter();

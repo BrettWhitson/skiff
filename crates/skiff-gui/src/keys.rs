@@ -14,7 +14,8 @@ pub use skiff_ui::input::{Event, Key, Modifiers};
 /// the split panes of the focused terminal tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
-    /// Open the quick switcher overlay.
+    /// Open the command palette (`[keys]` name `quick_switcher`, kept
+    /// from when it was the quick switcher).
     QuickSwitcher,
     NewTab,
     CloseTab,
@@ -128,7 +129,7 @@ impl Action {
     /// The human-readable name shown in menus and the settings keys list.
     pub fn label(self) -> &'static str {
         match self {
-            Action::QuickSwitcher => "Quick switcher",
+            Action::QuickSwitcher => "Command palette",
             Action::NewTab => "New tab",
             Action::CloseTab => "Close tab",
             Action::NextTab => "Next tab",
@@ -170,7 +171,7 @@ impl Action {
         use Action::*;
         if mac {
             return match self {
-                QuickSwitcher => &["cmd+k"],
+                QuickSwitcher => &["cmd+shift+p", "cmd+k"],
                 NewTab => &["cmd+t"],
                 CloseTab => &["cmd+w"],
                 NextTab => &["ctrl+tab", "cmd+shift+]"],
@@ -202,7 +203,7 @@ impl Action {
             };
         }
         match self {
-            QuickSwitcher => &["ctrl+shift+k", "ctrl+k"],
+            QuickSwitcher => &["ctrl+shift+p", "ctrl+shift+k", "ctrl+k"],
             NewTab => &["ctrl+shift+t"],
             CloseTab => &["ctrl+shift+w"],
             NextTab => &["ctrl+tab", "ctrl+pagedown"],

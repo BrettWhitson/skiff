@@ -1,22 +1,47 @@
-//! Tab strip with close buttons, drag-to-reorder and a "+" button.
-//! The caller owns the tab list and the active index; `tabs` reports what
-//! the user did (close, move, drag out, "+") in a `TabsResponse`.
+//! Tab strip (`tokens::TAB_H` tall): tabs with an optional status dot or
+//! icon, a middle-elided title and a close button (shown on the active,
+//! hovered or keyboard-focused tab), drag-to-reorder, drag-out, and a "+"
+//! icon button after the last tab. The active tab is raised (window
+//! background, joined to the content through the strip's bottom border)
+//! with a 2 px accent bar on top. The caller owns the tab list and the
+//! active index; `tabs` reports what the user did in a `TabsResponse`.
 
 use crate::a11y::Role;
 use crate::geom::{Point, Rect};
+use crate::icons::Icon;
 use crate::input::{CursorIcon, Event, Key, Modifiers, MouseButton};
-use crate::text::FontKind;
+use crate::style::{TextRole, tokens};
 use crate::ui::{Id, Sense, Ui};
 
-use super::label::elide;
+use super::badge::{Status, status_color};
+use super::button::{ButtonKind, icon_button_tip};
+use super::label::{Elide, elide_mode};
 
 /// One tab as the caller describes it for this frame.
 #[derive(Debug, Clone, Copy)]
 pub struct TabTitle<'a> {
-    /// Label shown on the tab (elided to fit) and used as its accessible name.
+    /// Label shown on the tab (elided in the middle to fit) and used as its
+    /// accessible name.
     pub text: &'a str,
-    /// Whether the tab draws a close ("×") button.
+    /// Whether the tab draws a close button.
     pub closable: bool,
+    /// A status dot before the title, with its words (added to the tab's
+    /// accessible name, so the state is not told by colour alone).
+    pub status: Option<(Status, &'a str)>,
+    /// An icon before the title (used when there is no status dot).
+    pub icon: Option<Icon>,
+}
+
+impl TabTitle<'_> {
+    /// A closable tab with no dot or icon (for `..` in literals).
+    pub const DEFAULT: TabTitle<'static> = TabTitle { text: "", closable: true, status: None, icon: None };
+}
+
+/// Options for `tabs_with`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TabsOpts<'a> {
+    /// Tooltip of the "+" button (e.g. with its shortcut); "New tab" if unset.
+    pub plus_tooltip: Option<&'a str>,
 }
 
 /// What happened to the tab strip this frame.
@@ -70,22 +95,33 @@ fn index_at(rects: &[Rect], x: i32) -> usize {
 /// drag-to-reorder, drag-out, close buttons and the "+" button. `active` is
 /// updated in place; everything else is reported in the returned response.
 pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut usize) -> TabsResponse {
+    tabs_with(ui, id, rect, titles, active, TabsOpts::default())
+}
+
+/// `tabs` with options (the "+" button's tooltip).
+pub fn tabs_with(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut usize, opts: TabsOpts) -> TabsResponse {
     let mut out = TabsResponse::default();
     let n = titles.len();
-    let px = ui.font_px();
-    let pad = ui.px(12);
-    let close_side = ui.px(16);
-    let gap = ui.px(2);
-    let plus_w = rect.h;
-    let avail = (rect.w - plus_w - ui.px(4)).max(0);
+    let (font, px) = ui.text_style(TextRole::Body);
+    let pad = ui.px(tokens::SPACE_MD);
+    let close_side = ui.px(tokens::ICON + tokens::SPACE_XS);
+    let icon_px = ui.px(tokens::ICON);
+    let lead = icon_px + ui.px(tokens::SPACE_XS + tokens::SPACE_2XS);
+    let gap = ui.px(tokens::SPACE_2XS);
+    // Tabs hang from a small top margin, so the raised one reads as a tab.
+    let top = ui.px(tokens::SPACE_XS + tokens::SPACE_2XS).min(rect.h / 4);
+    let edge = ui.px(tokens::SPACE_XS);
+    let plus_side = (rect.h - top).max(1);
+    let avail = (rect.w - plus_side - 3 * edge).max(0);
 
     // Widths: natural size within [min, max], shrunk evenly when crowded.
-    let (min_w, max_w) = (ui.px(72), ui.px(220));
+    let (min_w, max_w) = (ui.px(96), ui.px(240));
     let mut widths: Vec<i32> = titles
         .iter()
         .map(|t| {
-            let tw = ui.measure(t.text, FontKind::Ui, px).ceil() as i32;
-            (tw + 2 * pad + if t.closable { close_side + pad / 2 } else { 0 }).clamp(min_w, max_w)
+            let tw = ui.measure(t.text, font, px).ceil() as i32;
+            let has_lead = t.status.is_some() || t.icon.is_some();
+            (tw + 2 * pad + if has_lead { lead } else { 0 } + if t.closable { close_side } else { 0 }).clamp(min_w, max_w)
         })
         .collect();
     let total: i32 = widths.iter().sum::<i32>() + gap * n.saturating_sub(1) as i32;
@@ -94,7 +130,7 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
         let each = ((avail - gap * (n as i32 - 1)) / n as i32).max(0);
         widths.iter_mut().for_each(|w| *w = each);
     }
-    let mut x = rect.x;
+    let mut x = rect.x + edge;
     for w in &widths {
         out.tab_rects.push(Rect::new(x, rect.y, *w, rect.h));
         x += w + gap;
@@ -113,7 +149,11 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
                 if ui.a11y_clicked(tid) {
                     *active = i;
                 }
-                if let Some(nd) = ui.a11y_node(tid, Role::Tab, t.text) {
+                let name = match t.status {
+                    Some((_, words)) if !words.is_empty() => format!("{}, {words}", t.text),
+                    _ => t.text.to_string(),
+                };
+                if let Some(nd) = ui.a11y_node(tid, Role::Tab, &name) {
                     nd.bounds = out.tab_rects[i];
                     nd.selected = Some(i == *active);
                 }
@@ -181,34 +221,51 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
     }
 
     let p = ui.style().palette;
-    let radius = ui.px(4) as f32;
+    let radius = tokens::RADIUS_MD * ui.scale();
+    let bw = ui.px(1).max(1);
     let accent_h = ui.px(2).max(1);
-    // Paint each tab: background by state, an accent bar on the active one,
-    // the elided title, and the close button when closable.
+    let lh = ui.line_height(font, px);
+    let dot = ui.px(tokens::DOT).max(4);
+    // The strip's bottom border; the active tab covers it to join the content.
+    ui.painter().rect(Rect::new(rect.x, rect.bottom() - bw, rect.w, bw), p.border, 0.0);
+    let strip_focus = sr.focused && ui.focus_visible();
     for (i, t) in titles.iter().enumerate() {
         let tr = out.tab_rects[i];
+        // The tab face, below the top margin; its rounded rect runs past the
+        // strip's bottom and is clipped there, so only the top is rounded.
+        let face = Rect::new(tr.x, tr.y + top, tr.w, tr.h - top);
+        let long = Rect::new(face.x, face.y, face.w, face.h + radius.ceil() as i32 + bw);
         let hovered = sr.hovered && tr.contains(mouse);
         let is_active = i == *active;
-        let bg = if is_active {
-            p.surface
-        } else if hovered {
-            p.surface_alt
-        } else {
-            p.bg
-        };
-        let close = Rect::new(tr.right() - pad / 2 - close_side, tr.y + (tr.h - close_side) / 2, close_side, close_side);
-        let text_right = if t.closable { close.x - pad / 4 } else { tr.right() - pad };
-        let shown = elide(ui, t.text, FontKind::Ui, px, text_right - tr.x - pad);
-        let lh = ui.line_height(FontKind::Ui, px);
+        let close =
+            Rect::new(face.right() - ui.px(tokens::SPACE_SM) - close_side, face.y + (face.h - close_side) / 2, close_side, close_side);
+        let mut tx = face.x + pad;
+        let text_right = if t.closable { close.x - ui.px(tokens::SPACE_XS) } else { face.right() - pad };
         {
             let mut painter = ui.painter();
-            painter.rect(tr, bg, radius);
+            painter.push_clip(face);
             if is_active {
-                painter.rect(Rect::new(tr.x, tr.y, tr.w, accent_h), p.accent, 0.0);
+                painter.rect(long, p.border, radius);
+                painter.rect(long.inset(bw), p.bg, (radius - bw as f32).max(0.0));
+                painter.rect(Rect::new(face.x + bw, face.y, face.w - 2 * bw, accent_h), p.accent, 0.0);
+            } else if hovered {
+                painter.rect(long, p.hover, radius);
             }
-            let fg = if is_active { p.fg } else { p.muted };
-            painter.text(Point::new(tr.x + pad, tr.y + (tr.h - lh) / 2), &shown, FontKind::Ui, px, fg);
+            painter.pop_clip();
         }
+        if let Some((status, _)) = t.status {
+            let c = status_color(&p, status);
+            let d = Rect::new(tx + (icon_px - dot) / 2, face.y + (face.h - dot) / 2, dot, dot);
+            ui.painter().rect(d, c, dot as f32 / 2.0);
+            tx += lead;
+        } else if let Some(icon) = t.icon {
+            let c = if is_active { p.fg } else { p.muted };
+            ui.painter().icon(Rect::new(tx, face.y + (face.h - icon_px) / 2, icon_px, icon_px), icon, c);
+            tx += lead;
+        }
+        let shown = elide_mode(ui, t.text, font, px, text_right - tx, Elide::Middle);
+        let fg = if is_active || hovered { p.fg } else { p.muted };
+        ui.painter().text(Point::new(tx, face.y + (face.h - lh) / 2), &shown, font, px, fg);
         if t.closable {
             let cr = ui.interact(id.with(("close", i)), close, Sense::click());
             if ui.a11y_on() {
@@ -220,34 +277,25 @@ pub fn tabs(ui: &mut Ui, id: Id, rect: Rect, titles: &[TabTitle], active: &mut u
             if cr.hovered {
                 ui.set_cursor_icon(CursorIcon::Pointer);
             }
-            let xw = ui.measure("×", FontKind::Ui, px).ceil() as i32;
-            let mut painter = ui.painter();
-            if cr.hovered {
-                painter.rect(close, p.surface_alt.mix(p.fg, 0.1), radius);
-            }
-            // The "×" only shows on the active or hovered tab.
-            if cr.hovered || is_active || hovered {
-                painter.text(Point::new(close.x + (close.w - xw) / 2, close.y + (close.h - lh) / 2), "×", FontKind::Ui, px, p.muted);
+            // Shown on the active tab (so also while the strip has keyboard
+            // focus) and on the hovered one.
+            if cr.hovered || is_active || hovered || strip_focus {
+                let s = ui.px(tokens::ICON - 4).max(8);
+                let small_radius = tokens::RADIUS_SM * ui.scale();
+                let mut painter = ui.painter();
+                if cr.hovered {
+                    painter.rect(close, p.hover.mix(p.fg, 0.08), small_radius);
+                }
+                let ic = Rect::new(close.x + (close.w - s) / 2, close.y + (close.h - s) / 2, s, s);
+                painter.icon(ic, Icon::Close, if cr.hovered { p.fg } else { p.muted });
             }
         }
     }
 
-    // The square "+" button right after the last tab.
-    let plus = Rect::new(strip_right + ui.px(4), rect.y, plus_w, rect.h);
-    let pr = ui.interact(id.with("plus"), plus, Sense::click());
-    out.plus_clicked = pr.clicked;
-    ui.a11y_node(id.with("plus"), Role::Button, "New tab");
-    let pw = ui.measure("+", FontKind::Ui, px).ceil() as i32;
-    let lh = ui.line_height(FontKind::Ui, px);
-    let mut painter = ui.painter();
-    if pr.hovered {
-        painter.rect(plus.inset(ui_px_inset(plus)), p.surface_alt, radius);
-    }
-    painter.text(Point::new(plus.x + (plus.w - pw) / 2, plus.y + (plus.h - lh) / 2), "+", FontKind::Ui, px, p.muted);
+    // The "+" icon button right after the last tab.
+    let inset = ui.px(tokens::SPACE_2XS);
+    let plus = Rect::new(strip_right + edge, rect.y + top, plus_side, plus_side).inset(inset);
+    let tip = opts.plus_tooltip.unwrap_or("New tab");
+    out.plus_clicked = icon_button_tip(ui, id.with("plus"), plus, Icon::Plus, "New tab", tip, ButtonKind::Ghost).clicked;
     out
-}
-
-/// Inset for the "+" button's hover background: 1/8 of its height, at least 1px.
-fn ui_px_inset(r: Rect) -> i32 {
-    (r.h / 8).max(1)
 }

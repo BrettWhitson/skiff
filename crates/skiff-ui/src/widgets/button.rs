@@ -220,6 +220,12 @@ pub fn button_with(ui: &mut Ui, id: Id, rect: Rect, text: &str, opts: ButtonOpts
 /// keyboard focus). Ghost and secondary kinds draw the icon muted until
 /// hovered.
 pub fn icon_button(ui: &mut Ui, id: Id, rect: Rect, icon: Icon, name: &str, kind: ButtonKind) -> Response {
+    icon_button_tip(ui, id, rect, icon, name, name, kind)
+}
+
+/// `icon_button` whose tooltip `tip` differs from its accessible `name`
+/// (e.g. "Settings" with the tooltip "Settings (Ctrl+Shift+,)").
+pub fn icon_button_tip(ui: &mut Ui, id: Id, rect: Rect, icon: Icon, name: &str, tip: &str, kind: ButtonKind) -> Response {
     let mut r = ui.interact(id, rect, Sense::focusable());
     keyboard_activate(ui, id, &mut r);
     ui.a11y_node(id, Role::Button, name);
@@ -245,6 +251,6 @@ pub fn icon_button(ui: &mut Ui, id: Id, rect: Rect, icon: Icon, name: &str, kind
         painter.border(rect, p.control, bw, radius);
     }
     painter.icon(Rect::new(rect.x + (rect.w - s) / 2, rect.y + (rect.h - s) / 2, s, s), icon, fg);
-    delayed_tooltip(ui, id, &r, name);
+    delayed_tooltip(ui, id, &r, tip);
     r
 }

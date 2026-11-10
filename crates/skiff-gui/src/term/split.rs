@@ -4,7 +4,10 @@
 //! Dividers drag with the mouse (snapping to 25 / 33 / 50 / 67 / 75%; Alt
 //! drags freely; a double-click equalizes) and, focused (F6 reaches them),
 //! move with the arrow keys from snap point to snap point. Panes keep at
-//! least `MIN_COLS` x `MIN_ROWS` cells. A pane's grip (top centre) or Alt+Shift+drag drags it
+//! least `MIN_COLS` x `MIN_ROWS` cells. A divider is a 1 px line in a `GAP`-wide hit zone that
+//! turns accent on hover and drag. Panes without focus are dimmed a little
+//! (`gui.dim_inactive_panes`). A pane's grip (top centre, shown while the
+//! pointer is over the pane or it has keyboard focus) or Alt+Shift+drag drags it
 //! onto another pane's edge or centre (swap) or onto the tab strip (its own
 //! tab); a terminal tab dragged off the strip onto a pane joins this tab.
 //! Focus moves between panes by click, F6 and the `focus_next_pane`
@@ -43,8 +46,10 @@ pub enum Dir {
 // the 5% key step past the last snap point, and the snapping functions.
 pub use skiff_core::panes::{KEY_STEP, MIN_RATIO, SNAPS, snap, step_ratio};
 
-/// Divider thickness, logical px.
-pub const GAP: i32 = 5;
+/// Divider hit zone between panes, logical px (the line drawn is 1 px).
+pub const GAP: i32 = 7;
+/// How much a pane without focus is dimmed toward the background (0..=1).
+pub const DIM: f32 = 0.15;
 /// How close (logical px) a dragged divider must come to snap.
 pub const SNAP_PX: i32 = 8;
 /// The smallest pane width, in terminal cells.
@@ -495,6 +500,9 @@ pub struct TermSplit {
     next_key: u64,
     /// Keyboard focus moves to the focused pane next frame.
     focus_due: bool,
+    /// Dim the panes without focus (the app sets it from the config and
+    /// theme each frame).
+    pub dim_inactive: bool,
 }
 
 /// The widget id of pane `key`'s terminal in tab `tab`.
@@ -505,7 +513,14 @@ pub fn pane_id(tab: u64, key: u64) -> Id {
 impl TermSplit {
     /// A tab with `term` as its only pane (key 0).
     pub fn new(term: TermTab) -> TermSplit {
-        TermSplit { panes: vec![Pane { key: 0, term }], layout: Layout::Pane(0), focus: 0, next_key: 1, focus_due: false }
+        TermSplit {
+            panes: vec![Pane { key: 0, term }],
+            layout: Layout::Pane(0),
+            focus: 0,
+            next_key: 1,
+            focus_due: false,
+            dim_inactive: false,
+        }
     }
 
     /// The focused pane's host (what the tab is labelled with).
@@ -713,10 +728,11 @@ pub fn view(
         let region = id.with("region");
         let name = format!("Pane {} of {n}: {}", i + 1, p.term.host.name);
         ui.region(region, &name, |ui| super::view(ui, id, r, &mut p.term, theme, keymap, wake.clone(), &mut mine));
-        if ui.focus_in_region(region) {
+        let has_focus = ui.focus_in_region(region);
+        if has_focus {
             focused = Some(i);
         }
-        grip(ui, tab, p.key, i + 1, r, &p.term.host.name);
+        grip(ui, tab, p.key, i + 1, r, &p.term.host.name, has_focus && ui.focus_visible());
     }
     if let Some(i) = focused {
         split.focus = i;
@@ -730,11 +746,18 @@ pub fn view(
                 divider(ui, Id::new(("pane-divider", tab)).with(d.key), d, gap, &mut split.layout);
             }
         });
-        // Accent line around the focused pane, so it shows which one types.
-        let focus_rect = rects.iter().find(|(k, _)| *k == split.focused_key()).map(|(_, r)| *r);
-        if let Some(r) = focus_rect {
+        // The panes without focus fade a little toward the background, and an
+        // accent line goes round the focused one, so it shows which one types.
+        let focus_key = split.focused_key();
+        if split.dim_inactive {
+            let veil = theme.term_bg.with_alpha((DIM * 255.0).round() as u8);
+            for (_, r) in rects.iter().filter(|(k, _)| *k != focus_key) {
+                ui.painter().rect(*r, veil, 0.0);
+            }
+        }
+        if let Some((_, r)) = rects.iter().find(|(k, _)| *k == focus_key) {
             let w = ui.px(1).max(1);
-            ui.painter().border(r, theme.palette.accent, w, 0.0);
+            ui.painter().border(*r, theme.palette.accent, w, 0.0);
         }
     }
     drops(ui, tab, split, &rects, gap, min, theme)
@@ -761,9 +784,10 @@ fn alt_drag(ui: &mut Ui, tab: u64, split: &TermSplit, rects: &[(u64, Rect)]) {
     ui.start_drag(Box::new(PaneDrag::Pane { tab, key }), label);
 }
 
-/// The handle at the top centre of a pane that drags the pane (drawn as
-/// two rows of five dots).
-fn grip(ui: &mut Ui, tab: u64, key: u64, n: usize, pane: Rect, host: &str) {
+/// The handle at the top centre of a pane that drags the pane (two rows of
+/// dots), drawn while the pointer is over the pane or `focused` (keyboard
+/// focus in the pane); it can be grabbed whenever the pointer is there.
+fn grip(ui: &mut Ui, tab: u64, key: u64, n: usize, pane: Rect, host: &str, focused: bool) {
     // In the padding above the cells, centred (the find bar sits top right).
     let (w, h) = (ui.px(32), ui.px(super::PAD + 2));
     let r = Rect::new(pane.x + (pane.w - w) / 2, pane.y, w, h);
@@ -778,6 +802,9 @@ fn grip(ui: &mut Ui, tab: u64, key: u64, n: usize, pane: Rect, host: &str) {
     }
     if resp.hovered {
         ui.set_cursor_icon(CursorIcon::Grab);
+    }
+    if !(resp.hovered || resp.pressed || focused || pane.contains(ui.input().mouse)) {
+        return;
     }
     let p = ui.style().palette;
     let c = if resp.hovered || resp.pressed { p.fg } else { p.muted };
@@ -828,12 +855,7 @@ fn drops(
             continue;
         }
         let d = ui.drop_target::<PaneDrag>(r);
-        let p = theme.palette;
-        let show = zone.preview(r, gap);
-        let w = ui.px(2).max(1);
-        let mut painter = ui.painter();
-        painter.rect(show, p.accent.with_alpha(48), 0.0);
-        painter.border(show, p.accent, w, 0.0);
+        drop_zone(ui, zone.preview(r, gap), theme.palette.accent);
         if d.dropped.is_some() {
             match moving {
                 Some(k) => {
@@ -849,6 +871,29 @@ fn drops(
         }
     }
     out
+}
+
+/// A drop target's preview: a 10% accent tint inside a dashed accent outline.
+pub fn drop_zone(ui: &mut Ui, r: Rect, accent: skiff_ui::color::Color) {
+    let w = ui.px(2).max(1);
+    let (dash, space) = (ui.px(6).max(2), ui.px(4).max(2));
+    let mut painter = ui.painter();
+    painter.rect(r, accent.with_alpha(26), 0.0);
+    // Dashes along each edge, inside the rect.
+    let mut x = r.x;
+    while x < r.right() {
+        let len = dash.min(r.right() - x);
+        painter.rect(Rect::new(x, r.y, len, w), accent, 0.0);
+        painter.rect(Rect::new(x, r.bottom() - w, len, w), accent, 0.0);
+        x += dash + space;
+    }
+    let mut y = r.y;
+    while y < r.bottom() {
+        let len = dash.min(r.bottom() - y);
+        painter.rect(Rect::new(r.x, y, w, len), accent, 0.0);
+        painter.rect(Rect::new(r.right() - w, y, w, len), accent, 0.0);
+        y += dash + space;
+    }
 }
 
 /// Runs a split or close a pane's menu asked for, on that pane (which

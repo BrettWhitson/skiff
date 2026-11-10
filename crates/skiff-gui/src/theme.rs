@@ -1,6 +1,6 @@
 //! Turns core [`ThemeDef`]s into toolkit colours: a widget [`Palette`] plus
 //! the terminal's 16 ANSI colours, nudged where needed so text meets WCAG
-//! contrast targets.
+//! contrast targets (on light themes the ANSI colours too).
 
 use skiff_core::theme::{Rgb, ThemeDef, contrast, parse_color};
 use skiff_ui::color::Color;
@@ -108,7 +108,24 @@ pub fn from_def(d: &ThemeDef) -> GuiTheme {
     let min = if d.name.starts_with("high-contrast") { 7.0 } else { 4.5 };
     let warning = (!make_readable(&mut palette, min))
         .then(|| format!("theme {}: its colours are too close for {min}:1 text contrast; some text may be hard to read", d.name));
+    // After the palette: theme colours named by ANSI index mean the theme's own.
+    readable_ansi(&mut ansi, bg, fg);
     GuiTheme { name: d.name.clone(), palette, ansi, term_fg: fg, term_bg: bg, warning }
+}
+
+/// On a light background, darkens the ANSI colours that would be hard to
+/// read there (toward `fg`, keeping their hue): the colours 1-6 and 9-14 to
+/// 4.5:1, the greys and white (7, 8, 15) to 3:1. Bright colours meant for
+/// dark terminals (e.g. a pastel green) are the usual culprits. Dark
+/// themes are left as they are; slot 0 (black) always reads on light.
+pub fn readable_ansi(ansi: &mut [Color; 16], bg: Color, fg: Color) {
+    if bg.luminance() < 0.4 {
+        return;
+    }
+    for (i, c) in ansi.iter_mut().enumerate().skip(1) {
+        let min = if matches!(i, 7 | 8 | 15) { 3.0 } else { 4.5 };
+        *c = nudge(*c, fg, |c| ratio(c, bg) >= min);
+    }
 }
 
 /// How much dimmer than `fg` muted text stays (a contrast ratio).

@@ -60,6 +60,21 @@ First release under the name Skiff (formerly termax).
   icons, separators and danger items (shown in the `skiff-ui` demo). The
   keyboard focus ring is 2 px with a 2 px gap; Windows' "show animations"
   setting turns animations off.
+- **GUI refresh.** A command palette replaces the quick switcher
+  (`Ctrl+Shift+P` / `Cmd+Shift+P`, plus the old shortcuts): Recent and
+  Suggested on an empty query, `>` commands, `@` hosts, `:` port forwards
+  (start / stop), `#` snippets, with icons, kind badges, highlighted matches
+  and shortcuts. Notices are toasts (errors stay until closed) and the
+  status bar is slimmer: the active view's state, the hovered host and
+  what is running. The tab strip shows connection dots and icons, with
+  `+` and the gear as icon buttons. The sidebar has a search field with an
+  icon, caption group headers with counts, rows with a semibold name,
+  mono address and tag chips, a stronger selection and an empty state
+  (Add host / Import ~/.ssh/config). Context menus have icons, groups and
+  a red Delete and open beside the pointer. Delete, close-with-transfers
+  and multi-line paste confirmations are modal dialogs. Split panes get a
+  wider divider hit zone, dimmed inactive panes (`dim_inactive_panes`),
+  a grip shown on hover and dashed drop zones.
 - Split panes in both front-ends: drag panes and tabs to split, swap, join
   and pop out (GUI), divider snapping, keyboard move / resize / equalize.
 - Settings gear at the end of the GUI tab strip; Snippets page in Settings.
@@ -67,6 +82,10 @@ First release under the name Skiff (formerly termax).
   cancellable transfers in the TUI.
 
 ### Fixed
+
+- The paper theme's bright terminal colours were hard to read on its light
+  background; ANSI colours on light themes are now darkened to readable
+  contrast.
 
 - GUI pane shortcuts that have nothing to do pass their key to the shell.
 - The TUI split divider no longer stays stuck dragging after a lost mouse
