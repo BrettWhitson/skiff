@@ -4,7 +4,8 @@ use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+    Block, BorderType, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row,
+    Table, TableState, Wrap,
 };
 
 /// Marks the selected row in every list (not only by color).
@@ -15,16 +16,20 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 use crate::app::{App, Modal, TabKind};
 use crate::forms::{ForwardForm, FwdRow, Row as EdRow};
 use crate::input::TextInput;
-use termax_core::status::Status as HostStatus;
-use crate::sftp_tab::{human_size, Pane, SftpTab, Side, Status, TransferState};
+use crate::sftp_tab::{Pane, SftpTab, Side, Status, TransferState, human_size};
 use crate::tui_theme::Theme;
+use termax_core::status::Status as HostStatus;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.theme.plain = app.plain;
     let area = f.area();
     f.render_widget(Block::new().style(app.theme.base()), area);
-    let [tabs_area, body, status_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let [tabs_area, body, status_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
     draw_tab_bar(f, app, tabs_area);
     let active = app.active;
@@ -35,7 +40,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_status(f, app, status_area);
     let states: Vec<String> = match app.modal {
-        Some(Modal::Forwards { .. }) => (0..app.cfg.forwards.len()).map(|i| app.forward_state(i)).collect(),
+        Some(Modal::Forwards { .. }) => (0..app.cfg.forwards.len())
+            .map(|i| app.forward_state(i))
+            .collect(),
         _ => vec![],
     };
     draw_modal(f, app, area, &states);
@@ -45,19 +52,32 @@ fn block<'a>(t: &Theme, title: impl Into<Line<'a>>, focused: bool) -> Block<'a> 
     if t.plain {
         // The title stays as a text line; no box-drawing for readers to spell out.
         return Block::new()
-            .title(title.into().style(if focused { t.title() } else { t.muted() }))
+            .title(
+                title
+                    .into()
+                    .style(if focused { t.title() } else { t.muted() }),
+            )
             .style(t.base());
     }
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(t.border(focused))
-        .title(title.into().style(if focused { t.title() } else { t.muted() }))
+        .title(
+            title
+                .into()
+                .style(if focused { t.title() } else { t.muted() }),
+        )
         .style(t.base())
 }
 
-fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
+fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
-    let mut spans = vec![Span::styled(" termax ", t.title()), Span::styled("│", t.muted())];
+    let mut spans = vec![
+        Span::styled(" termax ", t.title()),
+        Span::styled("│", t.muted()),
+    ];
+    let mut x = area.x + unicode_width(" termax │");
+    let mut cols = vec![];
     for (i, tab) in app.tabs.iter().enumerate() {
         let marker = match &tab.kind {
             TabKind::Terminal(_) => "",
@@ -65,11 +85,19 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
             _ => "",
         };
         let label = format!(" {}:{}{marker} ", i + 1, tab.title);
-        let style = if i == app.active { t.selected() } else { t.muted() };
+        let w = unicode_width(&label);
+        cols.push((x, x + w));
+        x += w + 1;
+        let style = if i == app.active {
+            t.selected()
+        } else {
+            t.muted()
+        };
         spans.push(Span::styled(label, style));
         spans.push(Span::styled("│", t.muted()));
     }
     f.render_widget(Paragraph::new(Line::from(spans)).style(t.base()), area);
+    app.tab_cols = cols;
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -80,7 +108,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         let line = Line::from(vec![
             Span::styled(head, t.title()),
             Span::raw(query.value.clone()),
-            Span::styled(format!("  {count}  · Enter older · Shift+Enter newer · Esc close"), t.muted()),
+            Span::styled(
+                format!("  {count}  · Enter older · Shift+Enter newer · Esc close"),
+                t.muted(),
+            ),
         ]);
         f.render_widget(Paragraph::new(line).style(t.base()), area);
         set_cursor(f, area.x + head.len() as u16, area.y, query);
@@ -88,13 +119,24 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     }
     let line = if let Some((msg, is_err, _)) = &app.status {
         let kind = if *is_err { "Error" } else { "Info" };
-        Line::from(Span::styled(format!(" {kind}: {msg}"), Style::new().fg(if *is_err { t.error } else { t.success })))
+        Line::from(Span::styled(
+            format!(" {kind}: {msg}"),
+            Style::new().fg(if *is_err { t.error } else { t.success }),
+        ))
     } else {
         let hints = match &app.tabs[app.active].kind {
-            TabKind::Hosts if app.filtering => "type to filter · ↑↓ move · Enter connect · Esc clear",
-            TabKind::Hosts => "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · ? help",
-            TabKind::Terminal(_) => "Alt+1-9 tabs · Alt+←/→ cycle · Alt+W close · Alt+F find · Alt+S snippets · Shift+PgUp/PgDn scroll · Alt+H help",
-            TabKind::Sftp(_) => "Tab pane · Enter open · Bksp up · c copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh",
+            TabKind::Hosts if app.filtering => {
+                "type to filter · ↑↓ move · Enter connect · Esc clear"
+            }
+            TabKind::Hosts => {
+                "Enter ssh · s sftp · / filter · n new · e edit · d delete · p status · o sort · H hidden · f forward · ? help"
+            }
+            TabKind::Terminal(_) => {
+                "Alt+1-9 tabs · Alt+←/→ cycle · Alt+W close · Alt+F find · Alt+S snippets · Shift+PgUp/PgDn scroll · Alt+H help"
+            }
+            TabKind::Sftp(_) => {
+                "Tab pane · Enter open · Bksp up · c copy · m mkdir · R rename · d delete · g goto · . hidden · r refresh"
+            }
         };
         Line::from(Span::styled(format!(" {hints}"), t.muted()))
     };
@@ -105,16 +147,23 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme.clone();
-    let [left, right] = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
 
-    let mut title = format!(" Hosts ({}/{}) · sort: {} ", app.filtered.len(), app.hosts.len(), app.ui_state.sort.label());
+    let mut title = format!(
+        " Hosts ({}/{}) · sort: {} ",
+        app.filtered.len(),
+        app.hosts.len(),
+        app.ui_state.sort.label()
+    );
     if app.ui_state.show_hidden {
         title.push_str("· hidden shown ");
     }
     let outer = block(&t, title, true);
     let inner = outer.inner(left);
     f.render_widget(outer, left);
-    let [filter_area, list_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    let [filter_area, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
 
     let filter_style = if app.filtering { t.accent() } else { t.muted() };
     let filter_text = if app.filter.value.is_empty() && !app.filtering {
@@ -122,7 +171,13 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         app.filter.value.clone()
     };
-    f.render_widget(Paragraph::new(Line::from(vec![Span::styled(" ", filter_style), Span::styled(filter_text, filter_style)])), filter_area);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ", filter_style),
+            Span::styled(filter_text, filter_style),
+        ])),
+        filter_area,
+    );
     if app.filtering {
         set_cursor(f, filter_area.x + 1, filter_area.y, &app.filter);
     }
@@ -135,7 +190,13 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
             list_area,
         );
     } else {
-        let name_w = app.filtered.iter().map(|&i| app.hosts[i].name.chars().count()).max().unwrap_or(0).min(28);
+        let name_w = app
+            .filtered
+            .iter()
+            .map(|&i| app.hosts[i].name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(28);
         let items: Vec<ListItem> = app
             .filtered
             .iter()
@@ -153,8 +214,13 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
                 ListItem::new(Line::from(spans))
             })
             .collect();
-        let mut state = ListState::default().with_offset(app.host_offset).with_selected(Some(app.host_selected));
-        let list = List::new(items).highlight_style(t.selected()).highlight_symbol(MARK).highlight_spacing(HighlightSpacing::Always);
+        let mut state = ListState::default()
+            .with_offset(app.host_offset)
+            .with_selected(Some(app.host_selected));
+        let list = List::new(items)
+            .highlight_style(t.selected())
+            .highlight_symbol(MARK)
+            .highlight_spacing(HighlightSpacing::Always);
         f.render_stateful_widget(list, list_area, &mut state);
         app.host_offset = state.offset();
         // The terminal cursor on the selection lets screen readers follow it.
@@ -169,7 +235,10 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(details, right);
     let Some(h) = app.selected_host() else { return };
     let row = |k: &str, v: String| {
-        Line::from(vec![Span::styled(format!("{k:>13}  "), t.muted()), Span::raw(v)])
+        Line::from(vec![
+            Span::styled(format!("{k:>13}  "), t.muted()),
+            Span::raw(v),
+        ])
     };
     let dash = || "—".to_string();
     let mut cmd = vec![app.cfg.settings.ssh_binary.clone()];
@@ -179,18 +248,43 @@ fn draw_hosts(f: &mut Frame, app: &mut App, area: Rect) {
         Line::raw(""),
         row("Host", h.hostname.clone()),
         row("User", h.user.clone().unwrap_or_else(dash)),
-        row("Port", h.port.map(|p| p.to_string()).unwrap_or_else(|| "22".into())),
+        row(
+            "Port",
+            h.port.map(|p| p.to_string()).unwrap_or_else(|| "22".into()),
+        ),
         row("Identity", h.identity_file.clone().unwrap_or_else(dash)),
         row("ProxyJump", h.proxy_jump.clone().unwrap_or_else(dash)),
         row("Remote dir", h.remote_dir.clone().unwrap_or_else(dash)),
-        row("Tags", if h.tags.is_empty() { dash() } else { h.tags.join(", ") }),
+        row(
+            "Tags",
+            if h.tags.is_empty() {
+                dash()
+            } else {
+                h.tags.join(", ")
+            },
+        ),
         row("Source", h.source_label.clone()),
-        row("Status", app.statuses.get(&h.name).cloned().unwrap_or_default().label()),
-        row("Last used", app.history.ago(&h.name, termax_core::history::now()).unwrap_or_else(|| "never".into())),
+        row(
+            "Status",
+            app.statuses
+                .get(&h.name)
+                .cloned()
+                .unwrap_or_default()
+                .label(),
+        ),
+        row(
+            "Last used",
+            app.history
+                .ago(&h.name, termax_core::history::now())
+                .unwrap_or_else(|| "never".into()),
+        ),
         Line::raw(""),
         row("Command", shell_words::join(&cmd)),
         Line::raw(""),
-        Line::from(Span::styled("  Enter: terminal   s: file transfer   e: edit   f: forward a port", t.muted())),
+        Line::from(Span::styled(
+            "  Enter: terminal   s: file transfer   e: edit   f: forward a port",
+            t.muted(),
+        )),
     ];
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
@@ -201,15 +295,23 @@ fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme.clone();
     let active = app.active;
     let title_text = app.tabs[active].title.clone();
-    let TabKind::Terminal(s) = &mut app.tabs[active].kind else { return };
+    let TabKind::Terminal(s) = &mut app.tabs[active].kind else {
+        return;
+    };
     let alive = s.is_alive();
     let scroll = s.scroll_offset();
 
     let mut title = vec![Span::styled(format!(" {title_text} "), t.title())];
     if !alive {
-        title.push(Span::styled(" disconnected — Enter to reconnect, Alt+W to close ", Style::new().fg(t.error)));
+        title.push(Span::styled(
+            " disconnected — Enter to reconnect, Alt+W to close ",
+            Style::new().fg(t.error),
+        ));
     } else if scroll > 0 {
-        title.push(Span::styled(format!(" scrollback +{scroll} "), Style::new().fg(t.warning)));
+        title.push(Span::styled(
+            format!(" scrollback +{scroll} "),
+            Style::new().fg(t.warning),
+        ));
     }
     let b = block(&t, Line::from(title), true);
     let inner = b.inner(area);
@@ -217,14 +319,61 @@ fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
     app_term_area(inner, &mut app.term_area);
     app.term_origin = (inner.x, inner.y);
 
-    let TabKind::Terminal(s) = &app.tabs[active].kind else { return };
-    let parser = s.parser.lock().unwrap();
+    let TabKind::Terminal(s) = &app.tabs[active].kind else {
+        return;
+    };
+    // A poisoned lock (the output thread panicked) shows an empty frame
+    // instead of taking the whole app down.
+    let Ok(parser) = s.parser.lock() else {
+        f.render_widget(b, area);
+        return;
+    };
     let mut cursor = Cursor::default();
     if !alive || scroll > 0 || parser.screen().hide_cursor() {
         cursor.hide();
     }
     let widget = PseudoTerminal::new(parser.screen()).block(b).cursor(cursor);
     f.render_widget(widget, area);
+    let top = s
+        .scrolled()
+        .saturating_sub(parser.screen().scrollback() as u64);
+    drop(parser);
+    let buf = f.buffer_mut();
+    let mut paint = |row: u16, cols: std::ops::Range<u16>, style: Style| {
+        for c in cols.start..cols.end.min(inner.width) {
+            if row < inner.height {
+                buf[(inner.x + c, inner.y + row)].set_style(style);
+            }
+        }
+    };
+    // Mouse selection (`tui_mouse = "always"`).
+    if let Some(sel) = app
+        .selection
+        .filter(|s| s.tab == app.tabs[active].id && s.dragged)
+    {
+        let (a, b) = sel.span();
+        for row in 0..inner.height {
+            let line = top + row as u64;
+            if (a.0..=b.0).contains(&line) {
+                let from = if line == a.0 { a.1 } else { 0 };
+                let to = if line == b.0 { b.1 + 1 } else { inner.width };
+                paint(row, from..to, t.selected());
+            }
+        }
+    }
+    // Search matches; the current one stands out.
+    if let Some(Modal::Search { search, .. }) = &app.modal {
+        for (row, col, len, current) in search.marks(top, inner.height as usize) {
+            let style = if current {
+                Style::new()
+                    .fg(t.warning)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::new().add_modifier(Modifier::REVERSED)
+            };
+            paint(row as u16, col as u16..(col + len) as u16, style);
+        }
+    }
 }
 
 fn app_term_area(inner: Rect, slot: &mut (u16, u16)) {
@@ -236,11 +385,19 @@ fn app_term_area(inner: Rect, slot: &mut (u16, u16)) {
 fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme.clone();
     let active = app.active;
-    let TabKind::Sftp(s) = &mut app.tabs[active].kind else { return };
+    let TabKind::Sftp(s) = &mut app.tabs[active].kind else {
+        return;
+    };
 
-    let transfer_h = if s.transfers.is_empty() { 0 } else { (s.transfers.len() as u16).min(6) + 2 };
-    let [panes, transfers] = Layout::vertical([Constraint::Min(5), Constraint::Length(transfer_h)]).areas(area);
-    let [left, right] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(panes);
+    let transfer_h = if s.transfers.is_empty() {
+        0
+    } else {
+        (s.transfers.len() as u16).min(6) + 2
+    };
+    let [panes, transfers] =
+        Layout::vertical([Constraint::Min(5), Constraint::Length(transfer_h)]).areas(area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(panes);
 
     let focus = s.focus;
     let host = s.host_name.clone();
@@ -255,14 +412,20 @@ fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
         Status::Connecting => {
             let b = block(&t, format!(" {host} "), focus == Side::Remote);
             f.render_widget(
-                Paragraph::new(format!("\nConnecting to {host}…")).alignment(Alignment::Center).style(t.muted()).block(b),
+                Paragraph::new(format!("\nConnecting to {host}…"))
+                    .alignment(Alignment::Center)
+                    .style(t.muted())
+                    .block(b),
                 right,
             );
         }
         Status::Failed(err) => {
             let b = block(&t, format!(" {host} "), focus == Side::Remote);
             let text = vec![
-                Line::styled("Connection failed", Style::new().fg(t.error).add_modifier(Modifier::BOLD)),
+                Line::styled(
+                    "Connection failed",
+                    Style::new().fg(t.error).add_modifier(Modifier::BOLD),
+                ),
                 Line::raw(""),
                 Line::raw(err.clone()),
                 Line::raw(""),
@@ -272,7 +435,10 @@ fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
                     t.muted(),
                 ),
             ];
-            f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }).block(b), right);
+            f.render_widget(
+                Paragraph::new(text).wrap(Wrap { trim: false }).block(b),
+                right,
+            );
         }
     }
 
@@ -282,7 +448,11 @@ fn draw_sftp(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn s_path(p: &Pane) -> String {
-    if p.loading { format!("{} …", p.path) } else { p.path.clone() }
+    if p.loading {
+        format!("{} …", p.path)
+    } else {
+        p.path.clone()
+    }
 }
 
 fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: String, focused: bool) {
@@ -300,7 +470,11 @@ fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: Strin
         .entries
         .iter()
         .map(|e| {
-            let name_style = if e.is_dir { Style::new().fg(t.accent).add_modifier(Modifier::BOLD) } else { Style::new().fg(t.fg) };
+            let name_style = if e.is_dir {
+                Style::new().fg(t.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(t.fg)
+            };
             let mut name = e.name.clone();
             if e.is_dir && name != ".." {
                 name.push('/');
@@ -310,18 +484,38 @@ fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: Strin
             }
             Row::new(vec![
                 Cell::from(Span::styled(name, name_style)),
-                Cell::from(Line::from(if e.is_dir { String::new() } else { human_size(e.size) }).alignment(Alignment::Right))
-                    .style(t.muted()),
+                Cell::from(
+                    Line::from(if e.is_dir {
+                        String::new()
+                    } else {
+                        human_size(e.size)
+                    })
+                    .alignment(Alignment::Right),
+                )
+                .style(t.muted()),
                 Cell::from(e.modified.map(format_time).unwrap_or_default()).style(t.muted()),
             ])
         })
         .collect();
-    let table = Table::new(rows, [Constraint::Min(10), Constraint::Length(8), Constraint::Length(16)])
-        .column_spacing(1)
-        .row_highlight_style(if focused { t.selected() } else { Style::new().add_modifier(Modifier::REVERSED) })
-        .highlight_symbol(MARK)
-        .highlight_spacing(HighlightSpacing::Always);
-    let mut state = TableState::default().with_offset(pane.offset).with_selected(Some(pane.selected));
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(10),
+            Constraint::Length(8),
+            Constraint::Length(16),
+        ],
+    )
+    .column_spacing(1)
+    .row_highlight_style(if focused {
+        t.selected()
+    } else {
+        Style::new().add_modifier(Modifier::REVERSED)
+    })
+    .highlight_symbol(MARK)
+    .highlight_spacing(HighlightSpacing::Always);
+    let mut state = TableState::default()
+        .with_offset(pane.offset)
+        .with_selected(Some(pane.selected));
     f.render_stateful_widget(table, list_area, &mut state);
     pane.offset = state.offset();
     if focused {
@@ -329,7 +523,12 @@ fn draw_pane(f: &mut Frame, t: &Theme, pane: &mut Pane, area: Rect, title: Strin
     }
 
     if let (Some(err), Some(a)) = (&pane.error, err_area) {
-        f.render_widget(Paragraph::new(err.as_str()).style(Style::new().fg(t.error)).wrap(Wrap { trim: true }), a);
+        f.render_widget(
+            Paragraph::new(err.as_str())
+                .style(Style::new().fg(t.error))
+                .wrap(Wrap { trim: true }),
+            a,
+        );
     }
 }
 
@@ -345,7 +544,12 @@ fn draw_transfers(f: &mut Frame, t: &Theme, s: &SftpTab, area: Rect) {
         .map(|tr| {
             let progress = match tr.total {
                 Some(total) if total > 0 => {
-                    format!("{} / {} ({}%)", human_size(tr.done), human_size(total), tr.done * 100 / total)
+                    format!(
+                        "{} / {} ({}%)",
+                        human_size(tr.done),
+                        human_size(total),
+                        tr.done * 100 / total
+                    )
                 }
                 _ => human_size(tr.done),
             };
@@ -366,7 +570,9 @@ fn draw_transfers(f: &mut Frame, t: &Theme, s: &SftpTab, area: Rect) {
 
 /// Formats as `YYYY-MM-DD HH:MM` (UTC) without pulling in a date crate.
 fn format_time(t: SystemTime) -> String {
-    let Ok(d) = t.duration_since(UNIX_EPOCH) else { return String::new() };
+    let Ok(d) = t.duration_since(UNIX_EPOCH) else {
+        return String::new();
+    };
     let secs = d.as_secs() as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Howard Hinnant's civil_from_days.
@@ -379,7 +585,11 @@ fn format_time(t: SystemTime) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + (month <= 2) as i64;
-    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}", rem / 3600, (rem % 3600) / 60)
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
+        rem / 3600,
+        (rem % 3600) / 60
+    )
 }
 
 // ---------------------------------------------------------------- modals
@@ -387,13 +597,20 @@ fn format_time(t: SystemTime) -> String {
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width.saturating_sub(2));
     let h = h.min(area.height.saturating_sub(2));
-    Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h)
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
 }
 
 /// Puts the terminal cursor at the start of row `selected` of a list drawn
 /// in `area` and scrolled to `offset`.
 fn row_cursor(f: &mut Frame, area: Rect, selected: usize, offset: usize) {
-    let Some(row) = selected.checked_sub(offset) else { return };
+    let Some(row) = selected.checked_sub(offset) else {
+        return;
+    };
     if (row as u16) < area.height {
         f.set_cursor_position(Position::new(area.x, area.y + row as u16));
     }
@@ -417,7 +634,10 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             let r = centered(area, 72, 40);
             f.render_widget(Clear, r);
             let k = |key: &str, desc: &str| {
-                Line::from(vec![Span::styled(format!("  {key:<22}"), t.accent()), Span::raw(desc.to_string())])
+                Line::from(vec![
+                    Span::styled(format!("  {key:<22}"), t.accent()),
+                    Span::raw(desc.to_string()),
+                ])
             };
             let h = |s: &str| Line::styled(s.to_string(), t.title());
             let lines = vec![
@@ -457,7 +677,11 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 k("g", "go to path"),
                 k(". / r / x", "hidden files / refresh / clear transfers"),
             ];
-            let p = Paragraph::new(lines).block(block(t, format!(" Help — config: {} ", app.cfg_path.display()), true));
+            let p = Paragraph::new(lines).block(block(
+                t,
+                format!(" Help — config: {} ", app.cfg_path.display()),
+                true,
+            ));
             f.render_widget(p, r);
         }
         Modal::ThemePicker { selected, .. } => {
@@ -468,7 +692,10 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                 .iter()
                 .map(|d| {
                     let swatch = |c: &str| {
-                        Span::styled("■", Style::new().fg(std::str::FromStr::from_str(c).unwrap_or_default()))
+                        Span::styled(
+                            "■",
+                            Style::new().fg(std::str::FromStr::from_str(c).unwrap_or_default()),
+                        )
                     };
                     ListItem::new(Line::from(vec![
                         Span::raw(format!(" {:<18}", d.name)),
@@ -484,7 +711,10 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             let mut state = ListState::default().with_selected(Some(*selected));
             let b = block(t, " Theme (Enter save · Esc cancel) ", true);
             let inner = b.inner(r);
-            let list = List::new(items).highlight_style(t.selected()).highlight_symbol(MARK).block(b);
+            let list = List::new(items)
+                .highlight_style(t.selected())
+                .highlight_symbol(MARK)
+                .block(b);
             f.render_stateful_widget(list, r, &mut state);
             row_cursor(f, inner, *selected, state.offset());
         }
@@ -505,10 +735,27 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                             hint = fl.hint();
                         }
                         let input = ed.input(fl);
-                        (fl.label(), input.map(|i| i.value.clone()).unwrap_or_default(), input)
+                        (
+                            fl.label(),
+                            input.map(|i| i.value.clone()).unwrap_or_default(),
+                            input,
+                        )
                     }
-                    EdRow::Hidden => ("Hidden", if ed.form.hidden { "[x] left out of host lists" } else { "[ ]" }.to_string(), None),
-                    EdRow::Other(j) => (if j == 0 { "Other options" } else { "" }, ed.other[j].value.clone(), Some(&ed.other[j])),
+                    EdRow::Hidden => (
+                        "Hidden",
+                        if ed.form.hidden {
+                            "[x] left out of host lists"
+                        } else {
+                            "[ ]"
+                        }
+                        .to_string(),
+                        None,
+                    ),
+                    EdRow::Other(j) => (
+                        if j == 0 { "Other options" } else { "" },
+                        ed.other[j].value.clone(),
+                        Some(&ed.other[j]),
+                    ),
                 };
                 if matches!(row, EdRow::Other(_)) && focused {
                     hint = "one option per line, e.g. ForwardAgent yes · Enter adds a line";
@@ -518,11 +765,17 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             let footer = match &ed.error {
                 Some(e) => Line::styled(format!(" {e}"), Style::new().fg(t.error)),
                 None if !hint.is_empty() => Line::styled(format!(" {hint}"), t.muted()),
-                None => Line::styled(" Tab/↑↓ move · Space toggle · Ctrl+S save · Esc cancel", t.muted()),
+                None => Line::styled(
+                    " Tab/↑↓ move · Space toggle · Ctrl+S save · Esc cancel",
+                    t.muted(),
+                ),
             };
             let y = inner.y + rows.len() as u16 + 1;
             if y < inner.bottom() {
-                f.render_widget(Paragraph::new(footer).wrap(Wrap { trim: true }), Rect::new(inner.x, y, inner.width, inner.bottom() - y));
+                f.render_widget(
+                    Paragraph::new(footer).wrap(Wrap { trim: true }),
+                    Rect::new(inner.x, y, inner.width, inner.bottom() - y),
+                );
             }
         }
         Modal::Forward(form) => {
@@ -538,35 +791,66 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
                     FwdRow::Kind => format!("‹ {} ›", form.kind.label()),
                     _ => input.map(|i| i.value.clone()).unwrap_or_default(),
                 };
-                field_row(f, t, inner, i as u16, ForwardForm::label(*row), &value, input, i == form.focus);
+                field_row(
+                    f,
+                    t,
+                    inner,
+                    i as u16,
+                    ForwardForm::label(*row),
+                    &value,
+                    input,
+                    i == form.focus,
+                );
             }
             let y = inner.y + rows.len() as u16 + 1;
             let mut lines = vec![Line::styled(format!(" {}", form.kind.explain()), t.muted())];
             if let Some(e) = &form.error {
                 lines.insert(0, Line::styled(format!(" {e}"), Style::new().fg(t.error)));
             } else {
-                lines.push(Line::styled(" Bind address defaults to 127.0.0.1 · Ctrl+S save and start · Esc cancel", t.muted()));
+                lines.push(Line::styled(
+                    " Bind address defaults to 127.0.0.1 · Ctrl+S save and start · Esc cancel",
+                    t.muted(),
+                ));
             }
             if y < inner.bottom() {
-                f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), Rect::new(inner.x, y, inner.width, inner.bottom() - y));
+                f.render_widget(
+                    Paragraph::new(lines).wrap(Wrap { trim: true }),
+                    Rect::new(inner.x, y, inner.width, inner.bottom() - y),
+                );
             }
         }
         Modal::Forwards { selected } => {
             let list = &app.cfg.forwards;
             let r = centered(area, 76, list.len().max(1) as u16 + 4);
             f.render_widget(Clear, r);
-            let b = block(t, " Saved forwards (Enter start · s stop · e edit · d delete · Esc close) ", true);
+            let b = block(
+                t,
+                " Saved forwards (Enter start · s stop · e edit · d delete · Esc close) ",
+                true,
+            );
             if list.is_empty() {
                 f.render_widget(
-                    Paragraph::new("No saved forwards. Select a host and press f.").style(t.muted()).block(b),
+                    Paragraph::new("No saved forwards. Select a host and press f.")
+                        .style(t.muted())
+                        .block(b),
                     r,
                 );
             } else {
-                let items: Vec<ListItem> =
-                    list.iter().zip(states).map(|(fw, st)| ListItem::new(format!(" {}  —  {st}", fw.title()))).collect();
+                let items: Vec<ListItem> = list
+                    .iter()
+                    .zip(states)
+                    .map(|(fw, st)| ListItem::new(format!(" {}  —  {st}", fw.title())))
+                    .collect();
                 let mut state = ListState::default().with_selected(Some(*selected));
                 let inner = b.inner(r);
-                f.render_stateful_widget(List::new(items).highlight_style(t.selected()).highlight_symbol(MARK).block(b), r, &mut state);
+                f.render_stateful_widget(
+                    List::new(items)
+                        .highlight_style(t.selected())
+                        .highlight_symbol(MARK)
+                        .block(b),
+                    r,
+                    &mut state,
+                );
                 row_cursor(f, inner, *selected, state.offset());
             }
         }
@@ -585,12 +869,27 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             f.render_widget(Clear, r);
             let b = block(t, " Snippets (Enter send · Esc close) ", true);
             if list.is_empty() {
-                f.render_widget(Paragraph::new("No snippets. Add [[snippet]] entries to config.toml.").style(t.muted()).block(b), r);
+                f.render_widget(
+                    Paragraph::new("No snippets. Add [[snippet]] entries to config.toml.")
+                        .style(t.muted())
+                        .block(b),
+                    r,
+                );
             } else {
-                let items: Vec<ListItem> = list.iter().map(|s| ListItem::new(format!(" {}  —  {}", s.name, s.command))).collect();
+                let items: Vec<ListItem> = list
+                    .iter()
+                    .map(|s| ListItem::new(format!(" {}  —  {}", s.name, s.command)))
+                    .collect();
                 let mut state = ListState::default().with_selected(Some(*selected));
                 let inner = b.inner(r);
-                f.render_stateful_widget(List::new(items).highlight_style(t.selected()).highlight_symbol(MARK).block(b), r, &mut state);
+                f.render_stateful_widget(
+                    List::new(items)
+                        .highlight_style(t.selected())
+                        .highlight_symbol(MARK)
+                        .block(b),
+                    r,
+                    &mut state,
+                );
                 row_cursor(f, inner, *selected, state.offset());
             }
         }
@@ -598,9 +897,16 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect, states: &[String]) {
             let w = (unicode_width(text) + 6).clamp(30, 80);
             let r = centered(area, w, 5);
             f.render_widget(Clear, r);
-            let lines = vec![Line::raw(text.clone()), Line::raw(""), Line::styled("y: yes   n: no", t.muted())];
+            let lines = vec![
+                Line::raw(text.clone()),
+                Line::raw(""),
+                Line::styled("y: yes   n: no", t.muted()),
+            ];
             f.render_widget(
-                Paragraph::new(lines).alignment(Alignment::Center).wrap(Wrap { trim: true }).block(block(t, " Confirm ", true)),
+                Paragraph::new(lines)
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true })
+                    .block(block(t, " Confirm ", true)),
                 r,
             );
         }
@@ -632,7 +938,16 @@ fn status_symbol(t: &Theme, s: Option<&HostStatus>) -> (&'static str, Style) {
 
 /// One `label: value` line of a form; places the cursor in the focused input.
 #[allow(clippy::too_many_arguments)]
-fn field_row(f: &mut Frame, t: &Theme, inner: Rect, i: u16, label: &str, value: &str, input: Option<&TextInput>, focused: bool) {
+fn field_row(
+    f: &mut Frame,
+    t: &Theme,
+    inner: Rect,
+    i: u16,
+    label: &str,
+    value: &str,
+    input: Option<&TextInput>,
+    focused: bool,
+) {
     let y = inner.y + i;
     if y >= inner.bottom() {
         return;
@@ -640,9 +955,16 @@ fn field_row(f: &mut Frame, t: &Theme, inner: Rect, i: u16, label: &str, value: 
     let label_w = 17u16;
     let style = if focused { t.accent() } else { t.muted() };
     let mark = if label.is_empty() { "  " } else { ": " };
-    f.render_widget(Paragraph::new(Span::styled(format!("{label:>15}{mark}"), style)), Rect::new(inner.x, y, label_w, 1));
+    f.render_widget(
+        Paragraph::new(Span::styled(format!("{label:>15}{mark}"), style)),
+        Rect::new(inner.x, y, label_w, 1),
+    );
     let area = Rect::new(inner.x + label_w, y, inner.width.saturating_sub(label_w), 1);
-    let value_style = if focused { Style::new().fg(t.fg).add_modifier(Modifier::UNDERLINED) } else { Style::new().fg(t.fg) };
+    let value_style = if focused {
+        Style::new().fg(t.fg).add_modifier(Modifier::UNDERLINED)
+    } else {
+        Style::new().fg(t.fg)
+    };
     f.render_widget(Paragraph::new(value.to_string()).style(value_style), area);
     if let (true, Some(input)) = (focused, input) {
         set_cursor(f, area.x, y, input);
@@ -658,6 +980,9 @@ mod tests {
     fn formats_time() {
         assert_eq!(format_time(UNIX_EPOCH), "1970-01-01 00:00");
         // 2024-02-29 12:34 UTC
-        assert_eq!(format_time(UNIX_EPOCH + Duration::from_secs(1_709_210_040)), "2024-02-29 12:34");
+        assert_eq!(
+            format_time(UNIX_EPOCH + Duration::from_secs(1_709_210_040)),
+            "2024-02-29 12:34"
+        );
     }
 }

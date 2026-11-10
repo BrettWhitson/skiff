@@ -8,7 +8,9 @@ mod ui;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::execute;
 
 use crate::app::App;
@@ -62,12 +64,26 @@ fn main() -> Result<()> {
     };
     let open = match cmd {
         Cli::List { json, all } => {
-            print!("{}", if json { cli::list_json(&list, all) } else { cli::list_text(&list, all) });
+            print!(
+                "{}",
+                if json {
+                    cli::list_json(&list, all)
+                } else {
+                    cli::list_text(&list, all)
+                }
+            );
             return Ok(());
         }
         Cli::Info { host, json } => {
             let h = found(&host);
-            print!("{}", if json { cli::info_json(&h) } else { cli::info_text(&h) });
+            print!(
+                "{}",
+                if json {
+                    cli::info_json(&h)
+                } else {
+                    cli::info_text(&h)
+                }
+            );
             return Ok(());
         }
         Cli::Exec { host, cmd, tty } => {
@@ -95,7 +111,10 @@ fn main() -> Result<()> {
         _ => None,
     };
 
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()?;
     let mut app = App::new(cfg, cfg_path, rt.handle().clone());
     app.plain |= plain;
     if let Some((name, files)) = open {
@@ -108,7 +127,11 @@ fn main() -> Result<()> {
     // and paste modes back if termax panics.
     let restore = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+        let _ = execute!(
+            std::io::stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste
+        );
         restore(info);
     }));
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
@@ -126,12 +149,17 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     let mut mouse = false;
     let result = (|| loop {
         terminal.draw(|f| ui::draw(f, app))?;
-        // Capture the mouse only while a program in the active terminal asked
-        // for it, so the user's terminal keeps its own selection otherwise.
-        let want = app.wants_mouse();
+        // With `tui_mouse = "auto"`, capture the mouse only while a program in
+        // the active terminal asks for it, so the user's terminal keeps its
+        // own selection otherwise.
+        let want = app.capture_mouse();
         if want != mouse {
             mouse = want;
-            let _ = if want { execute!(std::io::stdout(), EnableMouseCapture) } else { execute!(std::io::stdout(), DisableMouseCapture) };
+            let _ = if want {
+                execute!(std::io::stdout(), EnableMouseCapture)
+            } else {
+                execute!(std::io::stdout(), DisableMouseCapture)
+            };
         }
         if app.should_quit {
             return Ok(());
@@ -143,6 +171,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
                 batch.push(event::read()?);
             }
             app.handle_batch(batch);
+            if let Some(text) = app.clipboard_out.take() {
+                // The user's terminal puts it on the clipboard (OSC 52).
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                let _ = out.write_all(termax_core::termx::osc52(&text).as_bytes());
+                let _ = out.flush();
+            }
         }
         app.drain_messages();
     })();

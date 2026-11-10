@@ -83,6 +83,7 @@ show_hidden_files = false
 # local_start_dir = "~/Downloads"
 status_checks = "manual"    # or "on_start": check which hosts are reachable at start
 confirm_multiline_paste = true  # ask before pasting several lines into a terminal
+tui_mouse = "auto"          # TUI: "always" takes the mouse for tab clicks, scrollback and selection
 
 [[connection]]
 name = "homelab"
@@ -209,13 +210,16 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 | | `.` / `r` / `x` | Toggle hidden files / refresh / clear finished transfers |
 
 All other keys in a terminal tab go straight to the remote shell. Only `Alt+`
-shortcuts are intercepted.
+shortcuts are intercepted, and only without `Shift`: `Alt+Shift+F` and the like
+reach the shell (a letter shortcut also works with Caps Lock on).
 
 ### Terminal tabs (both apps)
 
 - **Find** searches the scrollback and screen as you type. It ignores case
   unless the query has a capital letter. The newest match is shown first;
-  stepping goes to older ones, and closing returns to live output.
+  stepping goes to older ones, and closing returns to live output. Matches
+  are highlighted (the current one stands out) and stay on their text as new
+  output arrives, even once the scrollback is full and old lines drop off.
 - **Paste warning.** Pasting text with a line break into a shell that hasn't
   turned on bracketed paste would run each line, so termax asks first
   ("Paste 3 lines into homelab?"). Programs that use bracketed paste (most
@@ -226,8 +230,20 @@ shortcuts are intercepted.
   `confirm_multiline_paste = false`.
 - **Mouse reporting.** When a program asks for the mouse (vim, htop, tmux,
   less with `--mouse`), clicks, drags and the wheel go to it. Hold `Shift` to
-  select text instead. In the TUI the mouse is only captured while such a
-  program runs, so your terminal's own selection works the rest of the time.
+  select text instead. While you are scrolled back into history the mouse is
+  not reported (the program can't see that text): it selects and the wheel
+  scrolls, and scrolling back to live output hands it to the program again. A
+  drag the program saw start is reported until the button is released, even
+  outside the terminal.
+- **TUI mouse** (`tui_mouse` under `[settings]`). `"auto"` (the default)
+  captures the mouse only while such a program runs, so your terminal's own
+  selection works the rest of the time. `"always"` keeps it: click a tab to
+  switch to it, the wheel scrolls the scrollback (or sends arrow keys to
+  full-screen programs), and a drag selects text, highlighted, and copies it
+  to your clipboard when you let go (OSC 52; your terminal has to allow
+  it). `Shift`+drag selects even while a program has the mouse, if your
+  terminal passes it on; many terminals keep `Shift`+drag for their own
+  selection.
 - **Snippets** are saved commands (`[[snippet]]` in the config, see above).
   They are listed in the GUI quick switcher ("Snippet: …") and under `Alt+S`
   in the TUI. A snippet with `host` only appears in that host's terminals. A
@@ -357,7 +373,7 @@ anything a screen reader gets wrong.
 | `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
 | `Delete` | Delete the selected host (asks first) |
 | `Ctrl+Alt+=` / `-` / `0` | Larger / smaller / normal interface (`Cmd+Alt` on macOS) |
-| `Ctrl+Shift+F6` | Send F6 to the program in the terminal |
+| `Ctrl+Shift+F6` | Send F6 to the program in the terminal (`Ctrl+F6` goes to it as Ctrl+F6) |
 
 The focused control gets a 2 px ring in the accent color while you move with
 the keyboard (open menus and popups cover it), and the current row of a focused
@@ -397,7 +413,5 @@ password prompts, cancellable transfers, overwrite prompts and remappable keys.
   for a password. A future step is an `SSH_ASKPASS` helper that prompts inside termax.
 - Keybindings are fixed. A `[keys]` config section would make them remappable.
 - The status check never probes through jump hosts (those show "unknown").
-- The mouse goes only to programs that ask for it (no tab clicks or own selection).
 - Transfers can't be cancelled, and there's no overwrite confirmation.
-- The scrollback is view-only (search scrolls to matches but doesn't highlight them).
 - Split panes (two sessions side by side in one tab) aren't supported.

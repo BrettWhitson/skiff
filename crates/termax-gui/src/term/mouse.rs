@@ -12,6 +12,28 @@ pub struct MouseState {
     last: Option<(u16, u16)>,
 }
 
+impl MouseState {
+    /// Whether this frame's mouse goes to the program. A program that turned
+    /// mouse mode on gets it, except with Shift (to select, as in xterm),
+    /// while a selection is being made, and while the view is scrolled back
+    /// (the program can't see that text, so its cells would be wrong); a
+    /// button it was told about is followed until released. Turning mouse
+    /// mode off forgets the held button.
+    pub fn reporting(
+        &mut self,
+        mode: MouseProtocolMode,
+        shift: bool,
+        selecting: bool,
+        scrolled_back: bool,
+    ) -> bool {
+        if mode == MouseProtocolMode::None {
+            *self = MouseState::default();
+            return false;
+        }
+        self.held.is_some() || !(shift || selecting || scrolled_back)
+    }
+}
+
 fn button(b: &MouseButton) -> Option<u8> {
     match b {
         MouseButton::Left => Some(0),
@@ -91,14 +113,91 @@ mod tests {
         let cell = Size::new(8, 16);
         let mut st = MouseState::default();
         let ev = [
-            Event::MouseDown(MouseButton::Left, Point::new(10 + 8 * 4 + 1, 10 + 16 * 2 + 1)),
+            Event::MouseDown(
+                MouseButton::Left,
+                Point::new(10 + 8 * 4 + 1, 10 + 16 * 2 + 1),
+            ),
             Event::MouseMove(Point::new(10 + 8 * 5 + 1, 10 + 16 * 2 + 1)),
-            Event::MouseUp(MouseButton::Left, Point::new(10 + 8 * 5 + 1, 10 + 16 * 2 + 1)),
+            Event::MouseUp(
+                MouseButton::Left,
+                Point::new(10 + 8 * 5 + 1, 10 + 16 * 2 + 1),
+            ),
         ];
-        let out = reports(&ev, inner, cell, M::ButtonMotion, E::Sgr, Default::default(), true, &mut st);
-        assert_eq!(out, vec![b"\x1b[<0;5;3M".to_vec(), b"\x1b[<32;6;3M".to_vec(), b"\x1b[<0;6;3m".to_vec()]);
+        let out = reports(
+            &ev,
+            inner,
+            cell,
+            M::ButtonMotion,
+            E::Sgr,
+            Default::default(),
+            true,
+            &mut st,
+        );
+        assert_eq!(
+            out,
+            vec![
+                b"\x1b[<0;5;3M".to_vec(),
+                b"\x1b[<32;6;3M".to_vec(),
+                b"\x1b[<0;6;3m".to_vec()
+            ]
+        );
         let outside = [Event::MouseDown(MouseButton::Left, Point::new(0, 0))];
-        assert!(reports(&outside, inner, cell, M::ButtonMotion, E::Sgr, Default::default(), true, &mut st).is_empty());
+        assert!(
+            reports(
+                &outside,
+                inner,
+                cell,
+                M::ButtonMotion,
+                E::Sgr,
+                Default::default(),
+                true,
+                &mut st
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn reporting_follows_a_held_button_and_forgets_it_when_mode_ends() {
+        let inner = Rect::new(0, 0, 800, 400);
+        let cell = Size::new(8, 16);
+        let mut st = MouseState::default();
+        assert!(st.reporting(M::ButtonMotion, false, false, false));
+        assert!(
+            !st.reporting(M::ButtonMotion, false, false, true),
+            "scrolled back: the view isn't the program's screen"
+        );
+        let down = [Event::MouseDown(MouseButton::Left, Point::new(20, 20))];
+        reports(
+            &down,
+            inner,
+            cell,
+            M::ButtonMotion,
+            E::Sgr,
+            Default::default(),
+            true,
+            &mut st,
+        );
+        assert!(
+            st.reporting(M::ButtonMotion, true, false, true),
+            "a drag the program saw starting is followed to its release"
+        );
+        assert!(!st.reporting(M::None, false, false, false));
+        let up = [Event::MouseUp(MouseButton::Left, Point::new(20, 20))];
+        assert!(
+            reports(
+                &up,
+                inner,
+                cell,
+                M::ButtonMotion,
+                E::Sgr,
+                Default::default(),
+                true,
+                &mut st
+            )
+            .is_empty(),
+            "mode off mid-drag: no stale button"
+        );
     }
 
     #[test]
@@ -107,8 +206,23 @@ mod tests {
         let cell = Size::new(8, 16);
         let mut st = MouseState::default();
         let at = Point::new(20, 20);
-        let press = [Event::MouseDown(MouseButton::Left, at), Event::MouseUp(MouseButton::Left, at)];
+        let press = [
+            Event::MouseDown(MouseButton::Left, at),
+            Event::MouseUp(MouseButton::Left, at),
+        ];
         // `false`: something (the find bar, a popup) is on top of the terminal there.
-        assert!(reports(&press, inner, cell, M::PressRelease, E::Sgr, Default::default(), false, &mut st).is_empty());
+        assert!(
+            reports(
+                &press,
+                inner,
+                cell,
+                M::PressRelease,
+                E::Sgr,
+                Default::default(),
+                false,
+                &mut st
+            )
+            .is_empty()
+        );
     }
 }

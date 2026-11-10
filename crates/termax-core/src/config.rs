@@ -35,8 +35,18 @@ pub struct Connection {
 pub const CONNECTION_FIELDS: usize = 10;
 
 /// Field labels of the connection editor (TUI and GUI), in order.
-pub const CONNECTION_LABELS: [&str; CONNECTION_FIELDS] =
-    ["Name", "Host", "User", "Port", "Identity file", "ProxyJump", "ProxyCommand", "Extra ssh args", "Remote dir", "Tags"];
+pub const CONNECTION_LABELS: [&str; CONNECTION_FIELDS] = [
+    "Name",
+    "Host",
+    "User",
+    "Port",
+    "Identity file",
+    "ProxyJump",
+    "ProxyCommand",
+    "Extra ssh args",
+    "Remote dir",
+    "Tags",
+];
 
 impl Connection {
     /// The editor's text fields, in `CONNECTION_LABELS` order.
@@ -69,7 +79,12 @@ impl Connection {
         }
         let port = match opt(3) {
             None => None,
-            Some(p) => Some(p.parse::<u16>().ok().filter(|&n| n > 0).ok_or_else(|| format!("Invalid port: {p}"))?),
+            Some(p) => Some(
+                p.parse::<u16>()
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .ok_or_else(|| format!("Invalid port: {p}"))?,
+            ),
         };
         let extra_args = shell_words::split(&v(7)).map_err(|e| format!("Extra ssh args: {e}"))?;
         Ok(Connection {
@@ -83,7 +98,11 @@ impl Connection {
             extra_args,
             remote_dir: opt(8),
             hidden: false,
-            tags: v(9).split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
+            tags: v(9)
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect(),
         })
     }
 }
@@ -113,6 +132,20 @@ pub struct Settings {
     pub tui_plain: bool,
     /// Ask before pasting several lines into a program without bracketed paste.
     pub confirm_multiline_paste: bool,
+    /// When the TUI takes the mouse from the terminal it runs in.
+    pub tui_mouse: TuiMouse,
+}
+
+/// `tui_mouse`: `"auto"` captures the mouse only while a program in the
+/// active terminal asks for it (the terminal's own selection works the rest
+/// of the time); `"always"` captures it for tab clicks, wheel scrollback
+/// and termax's own selection (copied over OSC 52).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TuiMouse {
+    #[default]
+    Auto,
+    Always,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -137,6 +170,7 @@ impl Default for Settings {
             status_checks: StatusChecks::Manual,
             tui_plain: false,
             confirm_multiline_paste: true,
+            tui_mouse: TuiMouse::Auto,
         }
     }
 }
@@ -173,7 +207,9 @@ impl<'de> Deserialize<'de> for Announce {
             Repr::B(true) => Ok(Announce::All),
             Repr::B(false) => Ok(Announce::Off),
             Repr::S(s) if s.eq_ignore_ascii_case("focused") => Ok(Announce::Focused),
-            Repr::S(s) => Err(serde::de::Error::custom(format!("announce_output: expected true, false or \"focused\", got {s:?}"))),
+            Repr::S(s) => Err(serde::de::Error::custom(format!(
+                "announce_output: expected true, false or \"focused\", got {s:?}"
+            ))),
         }
     }
 }
@@ -287,11 +323,14 @@ impl Config {
     pub fn load_or_create(path: &Path) -> Result<Self> {
         if !path.exists() {
             if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("creating {}", dir.display()))?;
             }
-            std::fs::write(path, TEMPLATE).with_context(|| format!("writing {}", path.display()))?;
+            std::fs::write(path, TEMPLATE)
+                .with_context(|| format!("writing {}", path.display()))?;
         }
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Self::parse(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
@@ -309,7 +348,12 @@ impl Config {
         let old = toml::Value::try_from(baseline)?;
         let new = toml::Value::try_from(self)?;
         let new_doc: DocumentMut = toml::to_string(self)?.parse()?;
-        let section = |v: &toml::Value, k: &str| v.get(k).and_then(|t| t.as_table()).cloned().unwrap_or_default();
+        let section = |v: &toml::Value, k: &str| {
+            v.get(k)
+                .and_then(|t| t.as_table())
+                .cloned()
+                .unwrap_or_default()
+        };
 
         for name in ["settings", "gui", "keys"] {
             let (old_t, new_t) = (section(&old, name), section(&new, name));
@@ -319,7 +363,9 @@ impl Config {
             if !doc.contains_table(name) {
                 doc.insert(name, Item::Table(Table::new()));
             }
-            let table = doc[name].as_table_like_mut().context("config section is not a table")?;
+            let table = doc[name]
+                .as_table_like_mut()
+                .context("config section is not a table")?;
             let new_table = new_doc.get(name).and_then(|i| i.as_table_like());
             apply_key_changes(table, &old_t, &new_t, new_table);
         }
@@ -356,8 +402,13 @@ impl Config {
             if !doc.contains_array_of_tables(name) {
                 doc.insert(name, Item::ArrayOfTables(ArrayOfTables::new()));
             }
-            let aot = doc[name].as_array_of_tables_mut().context("config array is not an array of tables")?;
-            let find = |aot: &ArrayOfTables, n: &str| aot.iter().position(|t| t.get("name").and_then(|v| v.as_str()) == Some(n));
+            let aot = doc[name]
+                .as_array_of_tables_mut()
+                .context("config array is not an array of tables")?;
+            let find = |aot: &ArrayOfTables, n: &str| {
+                aot.iter()
+                    .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(n))
+            };
 
             // Removed here → remove from the file.
             for o in &old_l {
@@ -379,7 +430,12 @@ impl Config {
                     Some(pos) => {
                         let target = aot.get_mut(pos).expect("index from find");
                         let empty = toml::Table::new();
-                        apply_key_changes(target, before.unwrap_or(&empty), t, new_items.get(i).map(|t| t as &dyn TableLike));
+                        apply_key_changes(
+                            target,
+                            before.unwrap_or(&empty),
+                            t,
+                            new_items.get(i).map(|t| t as &dyn TableLike),
+                        );
                     }
                     None => aot.push(new_items[i].clone()),
                 }
@@ -402,7 +458,12 @@ impl Config {
 
 /// Sets or removes, in `target`, each key whose value differs between `old`
 /// and `new`. Values come from `new_items` (the serialized new config).
-fn apply_key_changes(target: &mut dyn TableLike, old: &toml::Table, new: &toml::Table, new_items: Option<&dyn TableLike>) {
+fn apply_key_changes(
+    target: &mut dyn TableLike,
+    old: &toml::Table,
+    new: &toml::Table,
+    new_items: Option<&dyn TableLike>,
+) {
     let keys: std::collections::BTreeSet<&String> = old.keys().chain(new.keys()).collect();
     for key in keys {
         if old.get(key) == new.get(key) {
@@ -434,7 +495,10 @@ pub struct FileWatcher {
 impl FileWatcher {
     pub fn new(path: &Path) -> Self {
         let last = Self::mtime(path);
-        Self { path: path.to_path_buf(), last }
+        Self {
+            path: path.to_path_buf(),
+            last,
+        }
     }
 
     fn mtime(path: &Path) -> Option<std::time::SystemTime> {
@@ -466,7 +530,8 @@ mod tests {
 
     #[test]
     fn save_preserves_comments_and_unknown_keys() {
-        let (_d, path) = write_tmp("# top\n[settings]\n# pick one\ntheme = \"nord\"\nfuture_key = 1\n");
+        let (_d, path) =
+            write_tmp("# top\n[settings]\n# pick one\ntheme = \"nord\"\nfuture_key = 1\n");
         let base = Config::load_or_create(&path).unwrap();
         let mut cfg = base.clone();
         cfg.settings.theme = "dracula".into();
@@ -491,6 +556,33 @@ mod tests {
     }
 
     #[test]
+    fn tui_mouse_setting() {
+        assert_eq!(
+            Config::parse("").unwrap().settings.tui_mouse,
+            TuiMouse::Auto
+        );
+        assert_eq!(
+            Config::parse(
+                "[settings]
+tui_mouse = \"always\"
+"
+            )
+            .unwrap()
+            .settings
+            .tui_mouse,
+            TuiMouse::Always
+        );
+        assert!(
+            Config::parse(
+                "[settings]
+tui_mouse = \"sometimes\"
+"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn save_unchanged_is_noop() {
         let (_d, path) = write_tmp(TEMPLATE);
         let before = std::fs::read(&path).unwrap();
@@ -504,8 +596,14 @@ mod tests {
         let (_d, path) = write_tmp(TEMPLATE);
         let base = Config::load_or_create(&path).unwrap();
         let mut cfg = base.clone();
-        cfg.connections.push(Connection { name: "a".into(), host: "h".into(), port: Some(2), ..Default::default() });
-        cfg.keys.insert("quick_switcher".into(), "Ctrl+Shift+K".into());
+        cfg.connections.push(Connection {
+            name: "a".into(),
+            host: "h".into(),
+            port: Some(2),
+            ..Default::default()
+        });
+        cfg.keys
+            .insert("quick_switcher".into(), "Ctrl+Shift+K".into());
         cfg.gui.font_size = 16.0;
         cfg.save(&base, &path).unwrap();
         assert_eq!(Config::load_or_create(&path).unwrap(), cfg);
@@ -523,7 +621,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&path, "[settings]\ntheme = \"nord\"\n").unwrap();
         let f = std::fs::File::options().write(true).open(&path).unwrap();
-        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
         assert!(w.poll());
         assert!(!w.poll());
     }
@@ -556,7 +655,10 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# note b"), "{text}");
         assert!(text.contains("future = 1"), "{text}");
-        assert_eq!(Config::load_or_create(&path).unwrap().connections[0].host, "ha2");
+        assert_eq!(
+            Config::load_or_create(&path).unwrap().connections[0].host,
+            "ha2"
+        );
     }
 
     #[test]
@@ -565,15 +667,26 @@ mod tests {
         let a = Config::load_or_create(&path).unwrap();
         let b = Config::load_or_create(&path).unwrap();
         let mut b2 = b.clone();
-        b2.connections.push(Connection { name: "c".into(), host: "hc".into(), ..Default::default() });
+        b2.connections.push(Connection {
+            name: "c".into(),
+            host: "hc".into(),
+            ..Default::default()
+        });
         b2.save(&b, &path).unwrap();
         let mut a2 = a.clone();
         a2.connections[1].host = "hb2".into();
         a2.connections.retain(|c| c.name != "a");
         a2.save(&a, &path).unwrap();
-        let names: Vec<(String, String)> =
-            Config::load_or_create(&path).unwrap().connections.into_iter().map(|c| (c.name, c.host)).collect();
-        assert_eq!(names, [("b".into(), "hb2".into()), ("c".into(), "hc".into())]);
+        let names: Vec<(String, String)> = Config::load_or_create(&path)
+            .unwrap()
+            .connections
+            .into_iter()
+            .map(|c| (c.name, c.host))
+            .collect();
+        assert_eq!(
+            names,
+            [("b".into(), "hb2".into()), ("c".into(), "hc".into())]
+        );
     }
 
     #[test]
