@@ -340,9 +340,10 @@ state. Hosts are read as "web, online 23 ms, ops@10.0.0.5". A terminal tab is a
 terminal whose text the screen reader can read, and new output is announced
 politely: at most once every half second, the last 20 lines (2,000 characters),
 without the echo of what you typed. `announce_output = "focused"` limits that to
-the focused tab and `false` turns it off. Activating a host (the screen
-reader's default action twice, or Enter) opens it. The tree is only built while
-a screen reader is connected. Tested with the offscreen tree here; please report
+the focused tab and `false` turns it off. A repeated message (the same
+warning twice, identical output) is read again. A host opens with the screen
+reader's default action (or Enter) on its row; a mouse click only selects it.
+The tree is only built while a screen reader is connected. Tested with the offscreen tree here; please report
 anything a screen reader gets wrong.
 
 **Keyboard.** Everything works without a mouse:
@@ -350,23 +351,33 @@ anything a screen reader gets wrong.
 | Key | Does |
 |---|---|
 | `F6` / `Shift+F6` | Next / previous area: hosts, tabs, content (also out of a terminal) |
-| `Tab` / `Shift+Tab` | Next / previous control |
+| `Tab` / `Shift+Tab` | Next / previous control within the area (wraps around) |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move in lists; `←` `→` switch tabs on the tab strip |
-| `Enter` | Open the selected row; `Enter` / `Space` press buttons and checkboxes |
+| `Enter` | Open the selected row; `Enter` / `Space` press buttons and checkboxes, and edit a file pane's path |
 | `Shift+F10` or the Menu key | Context menu of the selected host, file or tab |
 | `Delete` | Delete the selected host (asks first) |
 | `Ctrl+Alt+=` / `-` / `0` | Larger / smaller / normal interface (`Cmd+Alt` on macOS) |
 | `Ctrl+Shift+F6` | Send F6 to the program in the terminal |
 
 The focused control gets a 2 px ring in the accent color while you move with
-the keyboard.
+the keyboard (open menus and popups cover it), and the current row of a focused
+list has a 3 px accent bar on its left edge, so focus never shows by color alone.
 
 **Contrast.** `theme = "high-contrast"` (black) and `"high-contrast-light"`
 (white) reach at least 7:1 for text. Every built-in theme reaches 4.5:1 for
-text (WCAG AA); a test checks this. On Windows, `theme = "auto"` (or the
-default) switches to `high-contrast` while Windows high contrast is on.
-`cursor_blink = false` (or turning off Windows animation effects) stops the
-cursor blinking.
+text (WCAG AA), dimmed text included, on plain, hovered and selected rows and on
+buttons; outlines, the focus ring and the focus bar reach 3:1. A test checks
+every theme. Custom themes are adjusted the same way: dimmed and status colors
+move toward the text color, and the selection toward the background, until
+they read. On Windows, `theme = "auto"` (or the default) switches to
+`high-contrast` while Windows high contrast is on, also when it is turned on
+or off while termax runs. `cursor_blink = false` (or turning off Windows
+animation effects) stops the cursor blinking.
+
+**Text size.** `Ctrl+Alt+=` / `-` (or `ui_scale`) scales the whole interface,
+rows and spacing with the text; Windows' text size (Settings > Accessibility >
+Text size) is applied on top. Terminal text keeps `font_size` (zoom it with the
+terminal's own zoom keys).
 
 **TUI.** The TUI runs in your terminal, whose screen reader support applies.
 termax keeps the terminal cursor on the selected row of every list, so readers

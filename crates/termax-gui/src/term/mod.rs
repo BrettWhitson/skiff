@@ -379,7 +379,7 @@ pub fn view(
         }
         tab.last_screen.clone_from(&text);
         if let Some(s) = tab.announcer.take(Instant::now()) {
-            tab.live = s;
+            tab.live = termax_ui::a11y::fresh_announcement(&tab.live, s);
         }
         if tab.announcer.has_pending() {
             ui.request_repaint_in(announce::EVERY);

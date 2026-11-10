@@ -514,7 +514,13 @@ fn path_bar(ui: &mut Ui, id: Id, rect: Rect, pane: &mut Pane, side: usize, ctx: 
         pane.path_edit = Some(text);
         return;
     }
-    let r = ui.interact(pid, rect, Sense::click());
+    // Focusable: Enter or Space (or a screen reader's Click) edits the path.
+    let mut r = ui.interact(pid, rect, Sense::focusable());
+    if r.focused && ui.keys_for(pid) {
+        let enter = ui.input_mut().take_key(&Key::Enter, Modifiers::NONE);
+        r.clicked |= enter || ui.input_mut().take_key(&Key::Space, Modifiers::NONE);
+    }
+    ui.a11y_node(pid, termax_ui::a11y::Role::Button, &format!("Path {}, edit", pane.cwd));
     let radius = ui.px(4) as f32;
     ui.painter().rect(rect, if r.hovered { p.surface_alt } else { p.surface }, radius);
     let px = ui.font_px();
