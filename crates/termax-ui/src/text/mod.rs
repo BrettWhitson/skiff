@@ -5,8 +5,8 @@ pub mod font;
 pub mod layout;
 pub mod system;
 
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, bail};
 
@@ -105,6 +105,7 @@ impl FontStack {
     }
 }
 
+#[derive(Clone)]
 pub struct Fonts {
     pub ui: FontStack,
     pub mono: FontStack,
@@ -134,11 +135,18 @@ impl Fonts {
     }
 
     /// An explicit path wins; otherwise the first system candidate that
-    /// loads. Remaining candidates and symbol fonts become fallbacks.
+    /// loads. Remaining candidates and symbol fonts become fallbacks, read
+    /// only when a character first needs one (startup parses two fonts).
     pub fn load(ui_path: Option<&Path>, mono_path: Option<&Path>) -> Result<Fonts> {
-        let ui = load_stack(FontKind::Ui, ui_path)?;
-        let mono = load_stack(FontKind::Mono, mono_path)?;
-        Ok(Fonts::new(ui, mono))
+        // One shared lazy font per symbol file, for both stacks.
+        let symbols: Vec<Arc<dyn GlyphRasterizer>> =
+            system::fallbacks().into_iter().map(|p| Arc::new(LazyFont::file(p)) as Arc<dyn GlyphRasterizer>).collect();
+        let (ui, mono) = std::thread::scope(|s| {
+            let ui = s.spawn(|| load_stack(FontKind::Ui, ui_path, &symbols));
+            let mono = load_stack(FontKind::Mono, mono_path, &symbols);
+            (ui.join().expect("font loading panicked"), mono)
+        });
+        Ok(Fonts::new(ui?, mono?))
     }
 
     /// Monospace cell: the mono font's 'M' advance × its line height.
@@ -153,23 +161,74 @@ fn load_file(path: &Path) -> Result<Arc<dyn GlyphRasterizer>> {
     Ok(Arc::new(f))
 }
 
-fn load_stack(kind: FontKind, explicit: Option<&Path>) -> Result<FontStack> {
-    let mut fonts: Vec<Arc<dyn GlyphRasterizer>> = vec![];
-    if let Some(p) = explicit {
-        fonts.push(load_file(p)?);
-    }
-    for p in system::candidates(kind).into_iter().chain(system::fallbacks()) {
-        if p.is_file() {
-            if let Ok(f) = load_file(&p) {
-                fonts.push(f);
-            }
+fn load_stack(kind: FontKind, explicit: Option<&Path>, symbols: &[Arc<dyn GlyphRasterizer>]) -> Result<FontStack> {
+    let mut primary = match explicit {
+        Some(p) => Some(load_file(p)?),
+        None => None,
+    };
+    let mut fallbacks: Vec<Arc<dyn GlyphRasterizer>> = vec![];
+    for p in system::candidates(kind) {
+        if !p.is_file() {
+            continue;
+        }
+        if primary.is_none() {
+            primary = load_file(&p).ok();
+        } else {
+            fallbacks.push(Arc::new(LazyFont::file(p)));
         }
     }
-    if fonts.is_empty() {
+    let Some(primary) = primary else {
         bail!("no {kind:?} font found; set a font path in the config");
+    };
+    fallbacks.extend(symbols.iter().cloned());
+    Ok(FontStack { primary, fallbacks })
+}
+
+type FontLoader = Box<dyn Fn() -> Result<Arc<dyn GlyphRasterizer>> + Send + Sync>;
+
+/// A font read on first use (fallbacks: most text never needs them). A
+/// font that fails to load has no glyphs.
+pub struct LazyFont {
+    load: FontLoader,
+    font: OnceLock<Option<Arc<dyn GlyphRasterizer>>>,
+}
+
+impl LazyFont {
+    pub fn new(load: FontLoader) -> Self {
+        Self { load, font: OnceLock::new() }
     }
-    let primary = fonts.remove(0);
-    Ok(FontStack { primary, fallbacks: fonts })
+
+    pub fn file(path: PathBuf) -> Self {
+        Self::new(Box::new(move || load_file(&path)))
+    }
+
+    fn get(&self) -> Option<&Arc<dyn GlyphRasterizer>> {
+        self.font.get_or_init(|| (self.load)().ok()).as_ref()
+    }
+}
+
+impl GlyphRasterizer for LazyFont {
+    fn has_glyph(&self, c: char) -> bool {
+        self.get().is_some_and(|f| f.has_glyph(c))
+    }
+
+    fn advance(&self, c: char, px: f32) -> f32 {
+        self.get().map_or(0.0, |f| f.advance(c, px))
+    }
+
+    fn rasterize(&self, c: char, px: f32) -> GlyphBitmap {
+        match self.get() {
+            Some(f) => f.rasterize(c, px),
+            None => GlyphBitmap { width: 0, height: 0, xmin: 0, ymin: 0, advance: 0.0, coverage: vec![] },
+        }
+    }
+
+    fn line_metrics(&self, px: f32) -> LineMetrics {
+        match self.get() {
+            Some(f) => f.line_metrics(px),
+            None => LineMetrics { ascent: 0.0, descent: 0.0, line_gap: 0.0 },
+        }
+    }
 }
 
 /// A deterministic stand-in font (every glyph a 6×10 block, 8px advance;

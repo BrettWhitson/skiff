@@ -152,6 +152,19 @@ pub struct UiState {
     last_click: Option<(Id, Instant, Point)>,
     /// Widget that owns the keyboard (an open menu); carried to the next frame.
     capture: Option<Id>,
+    drag: Option<crate::dnd::DragState>,
+}
+
+impl UiState {
+    /// The focused widget.
+    pub fn focused(&self) -> Option<Id> {
+        self.focus
+    }
+
+    /// A drag-and-drop is in progress.
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
 }
 
 impl Default for UiState {
@@ -169,6 +182,7 @@ impl Default for UiState {
             drag_last: Point::default(),
             last_click: None,
             capture: None,
+            drag: None,
         }
     }
 }
@@ -258,6 +272,8 @@ pub struct Ui<'a> {
     next_capture: Option<Id>,
     repaint_in: Option<Duration>,
     cursor: CursorIcon,
+    /// The left button was released this frame (ends a drag).
+    drag_released: bool,
 }
 
 impl<'a> Ui<'a> {
@@ -353,13 +369,20 @@ impl<'a> Ui<'a> {
                         _ => {}
                     }
                 }
-                Event::KeyDown { mods, .. } | Event::KeyUp { mods, .. } => st.mods = *mods,
+                Event::KeyDown { key, mods, .. } => {
+                    st.mods = *mods;
+                    if *key == Key::Escape {
+                        st.drag = None;
+                    }
+                }
+                Event::KeyUp { mods, .. } | Event::Modifiers(mods) => st.mods = *mods,
                 Event::FocusLost => {
                     st.left = false;
                     st.right = false;
                     st.active = None;
                     st.right_active = None;
                     st.mods = Modifiers::NONE;
+                    st.drag = None;
                 }
                 _ => {}
             }
@@ -373,6 +396,7 @@ impl<'a> Ui<'a> {
         }
         frame.hovered = top_hit(&st.prev_hits, st.mouse).map(|h| h.id);
         let capture = st.capture;
+        let drag_released = events.iter().any(|e| matches!(e, Event::MouseUp(MouseButton::Left, _)));
         let input = Input { events, mouse: st.mouse, left_down: st.left, right_down: st.right, mods: st.mods };
         let window = Rect::new(0, 0, size.w, size.h);
         Ui {
@@ -397,6 +421,7 @@ impl<'a> Ui<'a> {
             next_capture: None,
             repaint_in: None,
             cursor: CursorIcon::Default,
+            drag_released,
         }
     }
 
@@ -430,6 +455,10 @@ impl<'a> Ui<'a> {
                 self.st.focus = None;
             }
         }
+        if self.drag_released {
+            self.st.drag = None; // released over no target
+        }
+        self.draw_drag_label();
         let overlay = std::mem::take(&mut self.overlay_list);
         self.list.prims.extend(overlay.prims);
         self.st.prev_hits = std::mem::take(&mut self.hits);
@@ -570,6 +599,50 @@ impl<'a> Ui<'a> {
         r
     }
 
+    /// Starts a drag-and-drop carrying `payload`; `label` follows the cursor.
+    pub fn start_drag(&mut self, payload: Box<dyn Any>, label: String) {
+        self.st.drag = Some(crate::dnd::DragState { payload, label });
+    }
+
+    pub fn dragging(&self) -> bool {
+        self.st.drag.is_some()
+    }
+
+    /// Declares `rect` a drop target for payloads of type `T`.
+    pub fn drop_target<T: 'static>(&mut self, rect: Rect) -> crate::dnd::DropResult<T> {
+        let mut out = crate::dnd::DropResult::default();
+        let Some(d) = &self.st.drag else { return out };
+        if !d.payload.is::<T>() {
+            return out;
+        }
+        let area = rect.intersect(self.clip).unwrap_or_default();
+        out.hovered = area.contains(self.st.mouse);
+        if out.hovered && self.drag_released {
+            let d = self.st.drag.take().expect("checked above");
+            out.dropped = d.payload.downcast::<T>().ok().map(|b| *b);
+        }
+        out
+    }
+
+    fn draw_drag_label(&mut self) {
+        let Some(d) = &self.st.drag else { return };
+        let label = d.label.clone();
+        let px = self.font_px();
+        let pad = self.px(6);
+        let w = self.measure(&label, FontKind::Ui, px).ceil() as i32 + 2 * pad;
+        let h = self.line_height(FontKind::Ui, px) + pad;
+        let m = self.st.mouse;
+        let r = Rect::new(m.x + self.px(14), m.y + self.px(10), w, h);
+        let p = self.style.palette;
+        let radius = self.px(4) as f32;
+        let origin = Point::new(r.x + pad, r.y + pad / 2);
+        let bounds = Rect::new(origin.x, origin.y, w, h);
+        self.overlay_list.push(Prim::Rect { rect: r, color: p.surface_alt, radius });
+        self.overlay_list.push(Prim::Border { rect: r, color: p.accent, width: self.px(1).max(1), radius });
+        self.overlay_list.push(Prim::Text { origin, text: label, font: FontKind::Ui, px, color: p.fg, bounds });
+        self.cursor = CursorIcon::Grabbing;
+    }
+
     pub fn memory<T: Default + 'static>(&mut self, id: Id) -> &mut T {
         let e = self.st.memory.entry(id).or_insert_with(|| Box::new(T::default()));
         if !(**e).is::<T>() {
@@ -693,10 +766,15 @@ pub mod testing {
                 quit: false,
                 background: Color::BLACK,
                 cursor: CursorIcon::Default,
+                replace_fonts: None,
             };
             Ui::run(&mut self.state, &mut ctx, &self.style, |ui| f(ui));
             self.repaint_in = ctx.request_redraw_in;
             self.cursor = ctx.cursor;
+            if let Some(fonts) = ctx.replace_fonts.take() {
+                self.fonts = fonts;
+                self.cache.clear();
+            }
         }
 
         pub fn list(&self) -> &DisplayList {

@@ -112,7 +112,98 @@ Built-in themes: `terminal` (uses your terminal's colors), `midnight`, `dracula`
 All other keys in a terminal tab go straight to the remote shell. Only `Alt+`
 shortcuts are intercepted.
 
+## GUI (`termax-gui`)
+
+A native window version of termax with the same config file. It draws
+everything itself (winit + softbuffer + fontdue, no web view).
+
+```bash
+cargo run -p termax-gui --release
+```
+
+- **Sidebar** lists hosts (filter box at the top; right-click a host to open a
+  terminal or file transfer, edit, duplicate or delete it).
+- **Tabs** hold terminals, file transfers and settings. Drag a tab to move it.
+- **File transfer** shows two panes; each can be Local or any host, so
+  remote↔remote copies work too. Drag files between panes (or from Explorer /
+  Finder onto a pane), or select and press `F5` / `Copy →`. Transfers list
+  progress, ask before overwriting, and can be cancelled or retried.
+- **Passwords** are asked for inline in the pane that needs them and are never
+  stored. This uses `SSH_ASKPASS_REQUIRE`, so it needs OpenSSH 8.4 or newer;
+  with an older `ssh`, use keys or an agent.
+- **Settings** (`Ctrl+Shift+,`) edits connections, theme, fonts, keybindings
+  and general options. Edits to `config.toml` made outside termax are picked
+  up within a second while the window has focus.
+
+| Action | Windows / Linux | macOS |
+|---|---|---|
+| Quick switcher (hosts, tabs, themes, commands) | `Ctrl+Shift+K`, `Ctrl+K`* | `Cmd+K` |
+| New tab | `Ctrl+Shift+T` | `Cmd+T` |
+| Close tab | `Ctrl+Shift+W` | `Cmd+W` |
+| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+PgDn` / `Ctrl+PgUp` | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Cmd+Shift+]` / `Cmd+Shift+[` |
+| Copy / paste in a terminal | `Ctrl+Shift+C` / `Ctrl+Shift+V` | `Cmd+C` / `Cmd+V` |
+| Zoom in / out / reset | `Ctrl+Shift+=` / `Ctrl+Shift+-` / `Ctrl+Shift+0` | `Cmd+=` / `Cmd+-` / `Cmd+0` |
+| Toggle sidebar | `Ctrl+Shift+B` | `Cmd+B` |
+| Settings | `Ctrl+Shift+,` | `Cmd+,` |
+
+\* Plain `Ctrl`+letter belongs to the shell inside a terminal tab, so `Ctrl+K`
+opens the switcher only outside terminals.
+
+GUI-only config:
+
+```toml
+[gui]
+font_path = "C:/Windows/Fonts/consola.ttf"   # terminal font file (optional)
+ui_font_path = "C:/Windows/Fonts/segoeui.ttf" # interface font file (optional)
+font_size = 14.0                              # terminal font size
+ui_scale = 1.0                                # interface scale (0.5 - 3)
+
+[keys]
+# action = "chord" or "chord1, chord2"; actions: quick_switcher, new_tab,
+# close_tab, next_tab, prev_tab, copy, paste, zoom_in, zoom_out, zoom_reset,
+# toggle_sidebar, settings
+close_tab = "ctrl+shift+q"
+```
+
+Window size and sidebar width are kept in `state.toml` next to `config.toml`.
+
+### Trying it without a real server
+
+`termax-testserver` runs a throwaway SSH server on 127.0.0.1 (for testing
+only). It prints the `ssh` options it needs:
+
+```bash
+cargo run -p termax-testserver -- --shell --password secret
+```
+
+Point termax at a scratch config so nothing touches your real hosts:
+
+```toml
+# scratch.toml (run with TERMAX_CONFIG=scratch.toml)
+[settings]
+load_ssh_config = false
+
+[[connection]]
+name = "testserver"
+host = "127.0.0.1"
+# everything the server printed between `ssh` and `127.0.0.1`, one item each:
+extra_args = ["-F", "C:/.../ssh_config", "-o", "UserKnownHostsFile=C:/.../known_hosts", "...", "-p", "PORT"]
+```
+
+`cargo run -p termax-gui --release --example flood -- 50` prints 50 MB of mixed
+output; run it in a terminal tab to check that typing stays responsive.
+
+Performance checks (release build):
+
+```bash
+cargo test -p termax-gui --release --test perf -- --ignored --nocapture
+```
+
 ## Known limitations / next steps
+
+These apply to the terminal UI (`termax`); the GUI has mouse support,
+password prompts, cancellable transfers, overwrite prompts and remappable keys.
+
 
 - **SFTP needs non-interactive auth.** The SFTP channel has no terminal, so with
   `sftp_batch_mode = true` it uses keys or an agent and fails instead of prompting

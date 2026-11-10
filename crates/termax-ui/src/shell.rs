@@ -41,10 +41,15 @@ pub struct FrameCtx<'a> {
     /// Background painted beneath the display list.
     pub background: Color,
     pub cursor: CursorIcon,
+    /// Set to swap fonts after this frame: the shell drops cached glyphs,
+    /// repaints everything and immediately runs another frame.
+    pub replace_fonts: Option<Fonts>,
 }
 
 pub trait App {
     fn frame(&mut self, ctx: &mut FrameCtx);
+    /// Called once when the event loop is shutting down (save state here).
+    fn exit(&mut self) {}
 }
 
 pub struct WindowOptions {
@@ -95,7 +100,7 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
         WindowEvent::ModifiersChanged(m) => {
             let s = m.state();
             st.mods = Modifiers { ctrl: s.control_key(), shift: s.shift_key(), alt: s.alt_key(), logo: s.super_key() };
-            vec![]
+            vec![Event::Modifiers(st.mods)]
         }
         WindowEvent::KeyboardInput { event, .. } => {
             let key = match &event.logical_key {
@@ -143,6 +148,7 @@ pub fn from_winit(ev: &WindowEvent, st: &mut ShellState, scale: f32) -> Vec<Even
             st.mods = Modifiers::NONE;
             vec![Event::FocusLost]
         }
+        WindowEvent::Focused(true) => vec![Event::FocusGained],
         WindowEvent::CursorLeft { .. } => {
             st.cursor = Point::new(-1, -1);
             vec![Event::MouseMove(st.cursor)]
@@ -178,12 +184,13 @@ fn frame_once(
         quit: false,
         background: Color::BLACK,
         cursor: CursorIcon::Default,
+        replace_fonts: None,
     };
     app.frame(&mut ctx);
-    let (redraw_in, title, quit, bg, cursor) =
-        (ctx.request_redraw_in, ctx.title.take(), ctx.quit, ctx.background, ctx.cursor);
+    let (redraw_in, title, quit, bg, cursor, replace_fonts) =
+        (ctx.request_redraw_in, ctx.title.take(), ctx.quit, ctx.background, ctx.cursor, ctx.replace_fonts.take());
     let damage = renderer.render(list, canvas, fonts, cache, bg);
-    FrameOut { damage, redraw_in, title, quit, cursor }
+    FrameOut { damage, redraw_in, title, quit, cursor, replace_fonts }
 }
 
 struct FrameOut {
@@ -192,6 +199,60 @@ struct FrameOut {
     title: Option<String>,
     quit: bool,
     cursor: CursorIcon,
+    replace_fonts: Option<Fonts>,
+}
+
+/// Installs fonts an app asked for: cached glyphs and tile hashes belong
+/// to the old fonts, so both are dropped and a new frame is due now.
+fn apply_font_swap(out: &mut FrameOut, fonts: &mut Fonts, cache: &mut GlyphCache, renderer: &mut TileRenderer) {
+    if let Some(f) = out.replace_fonts.take() {
+        *fonts = f;
+        cache.clear();
+        renderer.invalidate();
+        renderer.clear_glyphs();
+        out.redraw_in = Some(Duration::ZERO);
+    }
+}
+
+/// A headless shell: runs app frames into an in-memory canvas.
+pub(crate) struct Offscreen {
+    pub canvas: Canvas,
+    pub scale: f32,
+    pub fonts: Fonts,
+    pub cache: GlyphCache,
+    list: DisplayList,
+    renderer: TileRenderer,
+    clip: MemoryClipboard,
+}
+
+impl Offscreen {
+    pub fn new(size: Size, scale: f32, fonts: Fonts) -> Self {
+        Self {
+            canvas: Canvas::new(size.w, size.h),
+            scale,
+            fonts,
+            cache: GlyphCache::default(),
+            list: DisplayList::default(),
+            renderer: TileRenderer::default(),
+            clip: MemoryClipboard::default(),
+        }
+    }
+
+    fn frame(&mut self, app: &mut dyn App, events: Vec<Event>) -> FrameOut {
+        let mut out = frame_once(
+            app,
+            events,
+            &mut self.canvas,
+            self.scale,
+            &mut self.list,
+            &mut self.renderer,
+            &self.fonts,
+            &mut self.cache,
+            &mut self.clip,
+        );
+        apply_font_swap(&mut out, &mut self.fonts, &mut self.cache, &mut self.renderer);
+        out
+    }
 }
 
 fn winit_cursor(c: CursorIcon) -> winit::window::CursorIcon {
@@ -211,15 +272,11 @@ fn winit_cursor(c: CursorIcon) -> winit::window::CursorIcon {
 /// Runs `app` headlessly for one frame per entry in `frames` and returns
 /// the final canvas.
 pub fn render_offscreen(app: &mut impl App, size: Size, scale: f32, frames: Vec<Vec<Event>>, fonts: &Fonts) -> Canvas {
-    let mut canvas = Canvas::new(size.w, size.h);
-    let mut list = DisplayList::default();
-    let mut renderer = TileRenderer::default();
-    let mut cache = GlyphCache::default();
-    let mut clip = MemoryClipboard::default();
+    let mut off = Offscreen::new(size, scale, fonts.clone());
     for events in frames {
-        frame_once(app, events, &mut canvas, scale, &mut list, &mut renderer, fonts, &mut cache, &mut clip);
+        off.frame(app, events);
     }
-    canvas
+    off.canvas
 }
 
 struct Gfx {
@@ -277,7 +334,7 @@ impl<A: App> Shell<A> {
             self.canvas.resize(w, h);
         }
         let events = std::mem::take(&mut self.pending);
-        let FrameOut { damage, redraw_in, title, quit, cursor } = frame_once(
+        let mut out = frame_once(
             &mut self.app,
             events,
             &mut self.canvas,
@@ -288,6 +345,8 @@ impl<A: App> Shell<A> {
             &mut self.cache,
             &mut self.clipboard,
         );
+        apply_font_swap(&mut out, &mut self.fonts, &mut self.cache, &mut self.renderer);
+        let FrameOut { damage, redraw_in, title, quit, cursor, .. } = out;
         if let Some(t) = title {
             gfx.window.set_title(&t);
         }
@@ -340,6 +399,10 @@ impl<A: App> Shell<A> {
 }
 
 impl<A: App> ApplicationHandler<Wake> for Shell<A> {
+    fn exiting(&mut self, _el: &ActiveEventLoop) {
+        self.app.exit();
+    }
+
     fn new_events(&mut self, _el: &ActiveEventLoop, cause: StartCause) {
         if let StartCause::ResumeTimeReached { .. } = cause {
             self.redraw_at = None;
@@ -456,6 +519,40 @@ mod tests {
         let c = render_offscreen(&mut app, Size::new(100, 80), 1.0, vec![vec![], vec![Event::FocusLost]], &test_fonts());
         assert_eq!(app.frames, 2);
         assert_eq!(c.pixel(50, 40), 0xff0000);
+    }
+
+    struct Swapper {
+        n: usize,
+    }
+    impl App for Swapper {
+        fn frame(&mut self, ctx: &mut FrameCtx) {
+            self.n += 1;
+            ctx.list.push(Prim::Text {
+                origin: crate::geom::Point::new(0, 0),
+                text: "abc".into(),
+                font: crate::text::FontKind::Ui,
+                px: 14.0,
+                color: Color::WHITE,
+                bounds: Rect::new(0, 0, 30, 16),
+            });
+            if self.n == 2 {
+                ctx.replace_fonts = Some(test_fonts());
+            }
+        }
+    }
+
+    #[test]
+    fn replace_fonts_clears_cache_and_repaints() {
+        let mut app = Swapper { n: 0 };
+        let mut off = Offscreen::new(Size::new(100, 80), 1.0, test_fonts());
+        off.frame(&mut app, vec![]);
+        assert!(!off.cache.is_empty());
+        let out = off.frame(&mut app, vec![]);
+        assert!(off.cache.is_empty(), "glyph cache cleared after a font swap");
+        assert_eq!(out.redraw_in, Some(Duration::ZERO), "swap requests an immediate redraw");
+        let out = off.frame(&mut app, vec![]);
+        let area: i32 = out.damage.iter().map(|r| r.w * r.h).sum();
+        assert_eq!(area, 100 * 80, "whole window repainted with the new fonts");
     }
 
     #[test]
