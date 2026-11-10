@@ -4,7 +4,8 @@
 //! where it was when the dialog closes.
 //!
 //! The caller decides when a dialog is shown: call `dialog` every frame
-//! while it should be open, and stop once it returns a result.
+//! while it should be open, and stop once it returns a result. To drop
+//! one unanswered, call `dialog_dismiss` (it restores focus).
 
 use crate::a11y::Role;
 use crate::geom::Rect;
@@ -166,4 +167,20 @@ pub fn dialog(ui: &mut Ui, id: Id, d: &Dialog) -> Option<DialogResult> {
     }
     *ui.memory::<DialogState>(id) = st;
     result
+}
+
+/// Closes dialog `id` without an answer (the caller stopped showing it,
+/// e.g. what it asked about went away): releases its modal scope and
+/// gives focus back to where it was when it opened. Does nothing if it
+/// is not open.
+pub fn dialog_dismiss(ui: &mut Ui, id: Id) {
+    let st = *ui.memory::<DialogState>(id);
+    if st.last_frame == 0 {
+        return;
+    }
+    ui.release_modal(id);
+    if let Some(f) = st.return_to {
+        ui.request_focus(f);
+    }
+    *ui.memory::<DialogState>(id) = DialogState::default();
 }

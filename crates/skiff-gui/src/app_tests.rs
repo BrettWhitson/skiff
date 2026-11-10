@@ -330,6 +330,36 @@ fn close_with_running_transfer_asks_first() {
     assert_eq!(std::fs::read(b.path().join("x.txt")).unwrap(), b"old");
 }
 
+/// App shortcuts stand aside while a modal is open: Ctrl+Tab neither
+/// abandons the close dialog nor switches tabs, Ctrl+Shift+P opens no
+/// palette behind it; the palette is itself a modal dialog.
+#[test]
+fn shortcuts_stand_aside_while_a_modal_is_open() {
+    let mut f = Fixture::new();
+    let (id, _a, _b) = waiting_transfer(&mut f);
+    f.app.do_action(Action::Settings);
+    f.app.active = f.app.tabs.iter().position(|t| t.id == id).unwrap();
+    f.app.request_close_tab(id);
+    f.frame(vec![]);
+    let keep = Id::new("close-confirm").with(("button", 0usize));
+    assert_eq!(f.h.state.focused(), Some(keep));
+    let ctrl = Modifiers { ctrl: true, ..Modifiers::NONE };
+    let active = f.app.active;
+    f.frame(vec![Event::KeyDown { key: Key::Tab, mods: ctrl, text: None }]);
+    f.frame(vec![Event::KeyDown { key: Key::Char('p'), mods: Modifiers { shift: true, ..ctrl }, text: None }]);
+    f.frame(vec![]);
+    assert_eq!(f.app.active, active, "Ctrl+Tab did not switch tabs");
+    assert!(!f.app.palette_open, "no palette behind the dialog");
+    assert_eq!(f.h.state.focused(), Some(keep), "the dialog keeps focus");
+    f.click_text("Keep");
+    f.app.do_action(Action::QuickSwitcher);
+    f.frame(vec![]);
+    let node = f.h.tree().find("Command palette").expect("palette node");
+    assert!(node.modal, "{node:?}");
+    f.frame(vec![Event::KeyDown { key: Key::Tab, mods: ctrl, text: None }]);
+    assert_eq!(f.app.active, active, "shortcuts wait for the palette too");
+}
+
 /// Shutting a files tab down cancels its waiting transfer.
 #[test]
 fn shutdown_cancels_transfers() {

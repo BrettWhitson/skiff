@@ -1090,8 +1090,12 @@ impl GuiApp {
     }
 
     /// Runs the app shortcuts in this frame's input, taking out the keys of
-    /// those that applied.
+    /// those that applied. A modal dialog (or the palette) owns the
+    /// keyboard: shortcuts stand aside until it is answered.
     fn handle_shortcuts(&mut self, ui: &mut Ui) {
+        if ui.modal_open() {
+            return;
+        }
         let in_term = self.in_terminal();
         let hits: Vec<_> = ui
             .input()

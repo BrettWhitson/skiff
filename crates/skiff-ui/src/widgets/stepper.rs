@@ -1,7 +1,9 @@
 //! A number field with − / + buttons (a "spin button"): type a number,
 //! click the buttons, or use Up/Down (one step) and Page Up/Down (ten
-//! steps) while it has focus. The value is clamped to its range; text that
-//! does not parse is replaced by the value when focus leaves or on Enter.
+//! steps) while it has focus. Typed text is committed (clamped to the
+//! range) on Enter or when focus leaves, never per keystroke, so typing
+//! "150" does not apply 1 or 15 on the way; text that does not parse is
+//! replaced by the value. Steps commit at once.
 
 use crate::a11y::{A11yAction, Role};
 use crate::geom::Rect;
@@ -82,11 +84,8 @@ pub fn stepper(ui: &mut Ui, id: Id, rect: Rect, value: &mut i64, opts: StepperOp
     }
     let field_rect = Rect::new(rect.x, rect.y, rect.w, rect.h);
     let r = text_input(ui, field, field_rect, &mut st.text, TextInputOpts { label: opts.label, ..Default::default() });
-    if r.changed
-        && let Some(v) = parse_value(&st.text, opts.min, opts.max)
-    {
-        *value = v;
-    }
+    // Typed text commits on Enter or when focus leaves (below).
+    let typed = st.editing.then(|| parse_value(&st.text, opts.min, opts.max)).flatten();
     let mut step = |ui: &mut Ui, rid: Id, rr: Rect, icon: Icon, d: i64, name: &str| {
         let can = if d > 0 { *value < opts.max } else { *value > opts.min };
         let resp = ui.interact(rid, rr, if can { Sense::click() } else { Sense::hover() });
@@ -115,11 +114,22 @@ pub fn stepper(ui: &mut Ui, id: Id, rect: Rect, value: &mut i64, opts: StepperOp
     step(ui, id.with("minus"), minus, Icon::Minus, -1, "Decrease");
     step(ui, id.with("plus"), plus, Icon::Plus, 1, "Increase");
     if delta != 0 {
+        // A step while typing starts from the typed number.
+        if let Some(t) = typed {
+            *value = t;
+        }
         *value = step_value(*value, delta.saturating_mul(opts.step.max(1)), opts.min, opts.max);
         st.text = value.to_string();
     }
-    // Leaving the field (or Enter) shows the value the text settled on.
+    // Leaving the field (or Enter) commits the typed number, clamped, and
+    // shows the value the text settled on.
     let now_focused = ui.has_focus(field);
+    if delta == 0
+        && ((st.editing && !now_focused) || r.submitted)
+        && let Some(v) = parse_value(&st.text, opts.min, opts.max)
+    {
+        *value = v;
+    }
     if (st.editing && !now_focused) || r.submitted {
         st.text = value.to_string();
     }

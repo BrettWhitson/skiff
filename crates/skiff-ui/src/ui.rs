@@ -808,9 +808,16 @@ impl<'a> Ui<'a> {
 
     /// Runs `f` with the nodes it adds placed under a new `role` node.
     pub fn a11y_group<R>(&mut self, id: Id, role: Role, name: &str, f: impl FnOnce(&mut Ui) -> R) -> R {
-        if self.a11y_node(id, role, name).is_none() {
+        self.a11y_group_with(id, role, name, |_| {}, f)
+    }
+
+    /// `a11y_group`, with `edit` setting more of the group node's fields
+    /// first (e.g. `modal` for a dialog).
+    pub fn a11y_group_with<R>(&mut self, id: Id, role: Role, name: &str, edit: impl FnOnce(&mut Node), f: impl FnOnce(&mut Ui) -> R) -> R {
+        let Some(n) = self.a11y_node(id, role, name) else {
             return f(self);
-        }
+        };
+        edit(n);
         if let Some(b) = self.a11y.as_mut() {
             b.push(id);
         }

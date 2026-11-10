@@ -500,102 +500,119 @@ pub fn show(ui: &mut Ui, st: &mut PaletteState, entries: &[Entry]) -> Outcome {
     let pad = ui.px(tokens::SPACE_MD);
     let mouse_moved = ui.input().events.iter().any(|e| matches!(e, Event::MouseMove(_)));
     ui.overlay(|ui| {
-        ui.a11y_group(Id::new("palette-dialog"), Role::Dialog, "Command palette", |ui| {
-            // A click on the scrim (outside the panel) closes.
-            if ui.interact(Id::new("palette-backdrop"), win, Sense::click()).clicked {
-                out.close = true;
-            }
-            ui.painter().rect(win, p.scrim.with_alpha((p.scrim.a as u32 * 2 / 3) as u8), 0.0);
-            ui.elevate(panel, radius);
-            {
-                let mut painter = ui.painter();
-                painter.rect(panel, p.overlay, radius);
-                painter.border(panel, p.border, bw, radius);
-            }
-            // Claims the panel so clicks on it don't reach the backdrop.
-            ui.interact(Id::new("palette-panel"), panel, Sense::hover());
-            let input = Rect::new(panel.x + edge, panel.y, panel.w - 2 * edge, input_h);
-            let opts = TextInputOpts {
-                placeholder: "Search hosts, tabs and commands",
-                label: "Command palette search",
-                icon: Some(Icon::Search),
-                frameless: true,
-                ..Default::default()
-            };
-            if text_input(ui, input_id, input, &mut st.query, opts).changed {
-                st.sel = 0;
-                st.top = 0;
-            }
-            ui.capture_keyboard(input_id);
-            ui.painter().rect(Rect::new(panel.x, panel.y + input_h, panel.w, bw), p.border, 0.0);
-            let lh = ui.line_height(font, px);
-            let clh = ui.line_height(cfont, cpx);
-            let mut ry = panel.y + input_h + bw + edge;
-            if n == 0 {
-                let msg = match parse_query(&st.query).0 {
-                    Scope::Snippets => "No snippets for this tab",
-                    Scope::Forwards => "No saved port forwards",
-                    _ => "No matches",
-                };
-                ui.painter().text(Point::new(panel.x + pad, ry + (row_h - lh) / 2), msg, font, px, p.muted);
-            }
-            let mut last_section = None;
-            for (k, e) in shown.iter().enumerate() {
-                let i = st.top + k;
-                if let Some(sec) = e.section
-                    && e.section != last_section
-                {
-                    let t = sec.label().to_uppercase();
-                    let at = Point::new(panel.x + pad, ry + (head_h - clh) / 2 + ui.px(2));
-                    ui.painter().text(at, &t, FontKind::UiSemibold, cpx, p.muted);
-                    ry += head_h;
-                }
-                last_section = e.section;
-                let row = Rect::new(panel.x + edge, ry, panel.w - 2 * edge, row_h);
-                ry += row_h;
-                let rid = Id::new(("palette-row", i));
-                let rr = ui.interact(rid, row, Sense::click());
-                // Hover moves the highlight only on real mouse movement, so a
-                // still pointer doesn't fight the arrow keys.
-                if rr.hovered && mouse_moved {
-                    st.sel = i;
-                }
-                if rr.clicked || ui.a11y_clicked(rid) {
-                    out.chosen = Some(e.item.clone());
-                }
-                let sel = i == st.sel;
-                let bg = if sel { p.selection } else { p.overlay };
-                if sel {
-                    let r = tokens::RADIUS_MD * ui.scale();
-                    ui.painter().rect(row, p.selection, r);
-                }
-                let name = match &e.shortcut {
-                    Some(s) => format!("{}, {}, {s}", e.label, e.kind.label()),
-                    None => format!("{}, {}", e.label, e.kind.label()),
-                };
-                if let Some(nd) = ui.a11y_node(rid, Role::ListItem, &name) {
-                    nd.selected = Some(sel);
-                    nd.bounds = row;
-                }
-                draw_row(ui, row, e, bg, sel);
-            }
-            // Footer: what Enter does, and the prefixes.
-            let foot = Rect::new(panel.x, panel.bottom() - foot_h, panel.w, foot_h);
-            ui.painter().rect(Rect::new(panel.x, foot.y - bw, panel.w, bw), p.border, 0.0);
-            let hint = "\u{2191}\u{2193} move \u{00B7} Enter open \u{00B7} Esc close";
-            let prefixes = "> commands   @ hosts   : forwards   # snippets";
-            let ty = foot.y + (foot.h - clh) / 2;
-            ui.painter().text(Point::new(foot.x + pad, ty), hint, cfont, cpx, p.muted);
-            let pw = ui.measure(prefixes, cfont, cpx).ceil() as i32;
-            if foot.w - 2 * pad - pw > ui.measure(hint, cfont, cpx) as i32 + pad {
-                ui.painter().text(Point::new(foot.right() - pad - pw, ty), prefixes, cfont, cpx, p.muted);
-            }
+        // A modal scope: focus stays inside and app shortcuts stand aside.
+        ui.modal(dialog_id(), |ui| {
+            ui.a11y_group_with(
+                dialog_id(),
+                Role::Dialog,
+                "Command palette",
+                |n| n.modal = true,
+                |ui| {
+                    // A click on the scrim (outside the panel) closes.
+                    if ui.interact(Id::new("palette-backdrop"), win, Sense::click()).clicked {
+                        out.close = true;
+                    }
+                    ui.painter().rect(win, p.scrim.with_alpha((p.scrim.a as u32 * 2 / 3) as u8), 0.0);
+                    ui.elevate(panel, radius);
+                    {
+                        let mut painter = ui.painter();
+                        painter.rect(panel, p.overlay, radius);
+                        painter.border(panel, p.border, bw, radius);
+                    }
+                    // Claims the panel so clicks on it don't reach the backdrop.
+                    ui.interact(Id::new("palette-panel"), panel, Sense::hover());
+                    let input = Rect::new(panel.x + edge, panel.y, panel.w - 2 * edge, input_h);
+                    let opts = TextInputOpts {
+                        placeholder: "Search hosts, tabs and commands",
+                        label: "Command palette search",
+                        icon: Some(Icon::Search),
+                        frameless: true,
+                        ..Default::default()
+                    };
+                    if text_input(ui, input_id, input, &mut st.query, opts).changed {
+                        st.sel = 0;
+                        st.top = 0;
+                    }
+                    ui.capture_keyboard(input_id);
+                    ui.painter().rect(Rect::new(panel.x, panel.y + input_h, panel.w, bw), p.border, 0.0);
+                    let lh = ui.line_height(font, px);
+                    let clh = ui.line_height(cfont, cpx);
+                    let mut ry = panel.y + input_h + bw + edge;
+                    if n == 0 {
+                        let msg = match parse_query(&st.query).0 {
+                            Scope::Snippets => "No snippets for this tab",
+                            Scope::Forwards => "No saved port forwards",
+                            _ => "No matches",
+                        };
+                        ui.painter().text(Point::new(panel.x + pad, ry + (row_h - lh) / 2), msg, font, px, p.muted);
+                    }
+                    let mut last_section = None;
+                    for (k, e) in shown.iter().enumerate() {
+                        let i = st.top + k;
+                        if let Some(sec) = e.section
+                            && e.section != last_section
+                        {
+                            let t = sec.label().to_uppercase();
+                            let at = Point::new(panel.x + pad, ry + (head_h - clh) / 2 + ui.px(2));
+                            ui.painter().text(at, &t, FontKind::UiSemibold, cpx, p.muted);
+                            ry += head_h;
+                        }
+                        last_section = e.section;
+                        let row = Rect::new(panel.x + edge, ry, panel.w - 2 * edge, row_h);
+                        ry += row_h;
+                        let rid = Id::new(("palette-row", i));
+                        let rr = ui.interact(rid, row, Sense::click());
+                        // Hover moves the highlight only on real mouse movement, so a
+                        // still pointer doesn't fight the arrow keys.
+                        if rr.hovered && mouse_moved {
+                            st.sel = i;
+                        }
+                        if rr.clicked || ui.a11y_clicked(rid) {
+                            out.chosen = Some(e.item.clone());
+                        }
+                        let sel = i == st.sel;
+                        let bg = if sel { p.selection } else { p.overlay };
+                        if sel {
+                            let r = tokens::RADIUS_MD * ui.scale();
+                            ui.painter().rect(row, p.selection, r);
+                        }
+                        let name = match &e.shortcut {
+                            Some(s) => format!("{}, {}, {s}", e.label, e.kind.label()),
+                            None => format!("{}, {}", e.label, e.kind.label()),
+                        };
+                        if let Some(nd) = ui.a11y_node(rid, Role::ListItem, &name) {
+                            nd.selected = Some(sel);
+                            nd.bounds = row;
+                        }
+                        draw_row(ui, row, e, bg, sel);
+                    }
+                    // Footer: what Enter does, and the prefixes.
+                    let foot = Rect::new(panel.x, panel.bottom() - foot_h, panel.w, foot_h);
+                    ui.painter().rect(Rect::new(panel.x, foot.y - bw, panel.w, bw), p.border, 0.0);
+                    let hint = "\u{2191}\u{2193} move \u{00B7} Enter open \u{00B7} Esc close";
+                    let prefixes = "> commands   @ hosts   : forwards   # snippets";
+                    let ty = foot.y + (foot.h - clh) / 2;
+                    ui.painter().text(Point::new(foot.x + pad, ty), hint, cfont, cpx, p.muted);
+                    let pw = ui.measure(prefixes, cfont, cpx).ceil() as i32;
+                    if foot.w - 2 * pad - pw > ui.measure(hint, cfont, cpx) as i32 + pad {
+                        ui.painter().text(Point::new(foot.right() - pad - pw, ty), prefixes, cfont, cpx, p.muted);
+                    }
+                },
+            )
         })
     });
     if out.chosen.is_some() {
         out.close = true;
     }
+    if out.close {
+        ui.release_modal(dialog_id()); // focus may go back where it was
+    }
     out
+}
+
+/// The palette's modal scope and dialog node.
+fn dialog_id() -> Id {
+    Id::new("palette-dialog")
 }
 
 /// One row: icon, label (matched chars semibold, in the accent when it

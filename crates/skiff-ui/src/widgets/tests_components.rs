@@ -35,11 +35,13 @@ fn trap_focus_wraps_and_pulls_in() {
 
 /// A dialog focuses its initial button, keeps Tab inside itself (the
 /// button behind it is never reached), answers Escape with `Cancelled`
-/// and gives focus back to where it was.
+/// and gives focus back to where it was, also when it is dismissed
+/// unanswered (`dialog_dismiss`).
 #[test]
 fn dialog_traps_focus_and_restores_it() {
     let mut h = Harness::new(800, 600, 1.0);
     let open = Cell::new(false);
+    let dismiss = Cell::new(false);
     let result = Cell::new(None);
     let behind = Id::new("behind");
     let buttons =
@@ -52,6 +54,8 @@ fn dialog_traps_focus_and_restores_it() {
                 open.set(false);
                 result.set(Some(r));
             }
+        } else if dismiss.take() {
+            dialog_dismiss(ui, Id::new("dlg"));
         }
     };
     h.frame(key(Key::Tab), &mut f);
@@ -73,6 +77,15 @@ fn dialog_traps_focus_and_restores_it() {
     assert_eq!(result.get(), Some(DialogResult::Cancelled));
     h.frame(vec![], &mut f);
     assert_eq!(h.state.focused(), Some(behind), "focus returns after closing");
+    // Reopened, then no longer drawn without an answer: dismissing restores focus.
+    open.set(true);
+    h.frame(vec![], &mut f);
+    assert_eq!(h.state.focused(), Some(cancel));
+    open.set(false);
+    dismiss.set(true);
+    h.frame(vec![], &mut f);
+    h.frame(vec![], &mut f);
+    assert_eq!(h.state.focused(), Some(behind), "focus returns after a dismiss");
 }
 
 /// Up/Down and Page Up/Down step a focused stepper within its range, and
@@ -171,4 +184,36 @@ fn status_dot_respects_reduced_motion() {
     h.frame(vec![], &mut f);
     assert_eq!(h.repaint_in, None, "no animation under reduced motion");
     assert_eq!(h.tree().find("Connecting").map(|n| n.role), Some(Role::Image));
+}
+
+/// Typing into a stepper commits nothing until Enter (clamped then), so
+/// "150" never passes through a clamped "1" → 50; blur commits too.
+#[test]
+fn stepper_commits_typed_value_on_enter_or_blur() {
+    let mut h = Harness::new(400, 200, 1.0);
+    let seen = RefCell::new(vec![]);
+    let v = Cell::new(100i64);
+    let mut f = |ui: &mut Ui| {
+        let mut x = v.get();
+        if stepper(ui, Id::new("s"), Rect::new(10, 10, 140, 30), &mut x, StepperOpts { min: 50, max: 200, step: 1, label: "Zoom" }) {
+            seen.borrow_mut().push(x);
+        }
+        v.set(x);
+        button(ui, Id::new("next"), Rect::new(10, 60, 80, 30), "Next"); // a Tab stop to blur to
+    };
+    h.frame(key(Key::Tab), &mut f);
+    let ctrl = Modifiers { ctrl: true, ..Modifiers::NONE };
+    h.frame(vec![Event::KeyDown { key: Key::Char('a'), mods: ctrl, text: None }], &mut f);
+    for c in ["1", "5", "0"] {
+        h.frame(vec![Event::Text(c.into())], &mut f);
+    }
+    assert!(seen.borrow().is_empty(), "nothing applied while typing: {:?}", seen.borrow());
+    h.frame(key(Key::Enter), &mut f);
+    assert_eq!(*seen.borrow(), vec![150]);
+    // Out-of-range text clamps when focus leaves.
+    h.frame(vec![Event::KeyDown { key: Key::Char('a'), mods: ctrl, text: None }], &mut f);
+    h.frame(vec![Event::Text("999".into())], &mut f);
+    h.frame(key(Key::Tab), &mut f);
+    h.frame(vec![], &mut f);
+    assert_eq!(*seen.borrow(), vec![150, 200]);
 }

@@ -34,7 +34,7 @@ pub use button::{
     ButtonKind, ButtonOpts, button, button_backgrounds, button_colors, button_width, button_with, icon_button, icon_button_tip,
 };
 pub use checkbox::checkbox;
-pub use dialog::{Dialog, DialogButton, DialogResult, dialog};
+pub use dialog::{Dialog, DialogButton, DialogResult, dialog, dialog_dismiss};
 pub use dropdown::{dropdown, dropdown_labeled};
 pub use empty_state::{EmptyState, EmptyStateResponse, empty_state};
 pub use header::{Column, Sort, TableHeaderResponse, section_header, table_header};
