@@ -22,9 +22,9 @@ exactly as on the command line.
 
 | Crate | Path | Responsibility |
 |---|---|---|
-| `skiff-core` | `crates/skiff-core` | Everything that isn't drawing: `config.toml`, `state.toml`, `history.toml`, themes, the host list, reading and editing ssh config files, the CLI parser, terminal sessions (pty + `vt100`), terminal helpers (search, paste rules, mouse reporting), the SFTP engine and transfers, the askpass broker, port forwards and reachability probes. No UI code. |
+| `skiff-core` | `crates/skiff-core` | Everything that isn't drawing: `config.toml`, `state.toml`, `history.toml`, themes, the host list, reading and editing ssh config files, the CLI parser, terminal sessions (pty + `vt100`), terminal helpers (search, paste rules, mouse reporting), split-pane divider rules, the SFTP engine and transfers, the askpass broker, port forwards and reachability probes. No UI code. |
 | `skiff-ssh` | `crates/skiff-tui` | The `skiff` binary: CLI commands (`list`, `info`, `completion`, `skiff host cmd`), and the full-screen TUI built with `ratatui` + `crossterm`; terminals are drawn with `tui-term`. |
-| `skiff-gui` | `crates/skiff-gui` | The `skiff-gui` binary: sidebar, tabs (terminals with split panes, file transfer, forwards, settings), quick switcher. Draws a cell grid for terminals itself. |
+| `skiff-gui` | `crates/skiff-gui` | The `skiff-gui` binary: sidebar, tabs (terminals with nested, draggable split panes, file transfer, forwards, settings), a Settings gear on the tab strip, quick switcher. Draws a cell grid for terminals itself. |
 | `skiff-ui` | `crates/skiff-ui` | A from-scratch GUI toolkit: window shell (`winit` + `softbuffer`), CPU renderer with tile damage tracking, text (`fontdue` behind a trait), layout, focus, widgets and an accessibility tree bridged to AccessKit. Knows nothing about SSH. |
 | `skiff-testserver` | `crates/skiff-testserver` | A `russh` server bound to 127.0.0.1 with SFTP, an optional echo shell, exec and local forwards, plus a fixture that generates keys and an isolated ssh config. Used by tests only; never shipped. |
 
@@ -57,6 +57,45 @@ reporting to programs that enable it, snippets.
 The TUI draws the parser's screen with `tui-term`; the GUI converts it to
 toolkit cell rows (`skiff-gui/src/term/render.rs`) drawn by the display list.
 A split pane is simply another `TerminalSession` to the same host.
+
+### Split panes
+
+Every pane is its own `TerminalSession` to the same host; moving panes
+never restarts a session. The divider rules both front-ends share live in
+`skiff_core::panes`: the snap shares (25 / 33 / 50 / 67 / 75%), `snap` (the
+nearest share within a tolerance), `step_ratio` (keyboard: the next share in
+a direction, then `KEY_STEP` = 5% past the last one), `MIN_RATIO` (10%) and
+the smallest pane (`MIN_COLS` x `MIN_ROWS` = 10 x 3 cells). A ratio is
+always the first (left / top) side's share.
+
+- **TUI**: at most two panes per tab, a direction and one ratio. `ui.rs`
+  lays them out (keeping each above the minimum, border cells included) and
+  maps a mouse drag on the border to a ratio that snaps within one cell
+  unless `Alt` is held; `app.rs` handles swap, resize (`step_ratio`) and
+  equalize.
+- **GUI** (`skiff-gui/src/term/split.rs`): a terminal tab is a `TermSplit`
+  holding its panes, each with a stable `u64` key that is never reused in
+  the tab, and a `Layout` binary tree. Leaves are `Pane(key)`; inner nodes
+  are `Split { dir: Right | Down, ratio, a, b }`. Nodes are addressed by a
+  path of turns. Each frame `Layout::arrange` turns the tree into pane
+  rectangles (in reading order, which is also the "pane n of m" numbering)
+  plus one divider per split. The minimum pane size is enforced on a
+  per-frame copy of the tree, so stored ratios come back when the window
+  grows again.
+  - *Dividers* snap within 8 logical px of a share during a drag (`Alt`
+    drags freely, a double-click equalizes by pane count) and step with the
+    arrow keys or screen-reader increment / decrement. Each divider's
+    widget id is keyed by the first pane key of the split's second side,
+    which is unique and survives restructuring, so keyboard focus stays on
+    a divider while the tree changes around it.
+  - *Drag and drop*: a pane is dragged by its grip or with `Alt`+drag. Over
+    a target pane the middle third is the centre zone, elsewhere the nearest
+    edge wins; an edge is offered only if both halves would keep the minimum
+    size. Dropping on an edge removes the pane and re-inserts it beside the
+    target at 50/50; the centre swaps the two. Dropping on the tab strip
+    pops the pane out into its own tab. A whole terminal tab dragged onto a
+    pane's edge has its subtree grafted in beside that pane (keys shifted so
+    they stay unique); onto the centre it just switches to that tab.
 
 ### SFTP engine
 
@@ -196,11 +235,12 @@ contrast, and `os.rs` follows Windows high contrast, animation and text size.
 | ssh config read/edit/resolve | `skiff-core/src/sshconfig/{mod,doc,edit,resolve}.rs` |
 | CLI | `skiff-core/src/cli.rs`, `skiff-tui/src/main.rs` |
 | Terminal sessions | `skiff-core/src/{terminal,termx}.rs` |
+| Split-pane rules | `skiff-core/src/panes.rs`, `skiff-gui/src/term/split.rs`, `skiff-tui/src/ui.rs` (`split_areas`) |
 | SFTP and transfers | `skiff-core/src/fs/{connect,endpoint,path,transfer}.rs` |
 | Askpass | `skiff-core/src/{askpass,sshver}.rs`, `skiff-core/src/bin/askpass-shim.rs` (tests) |
 | Forwards, status | `skiff-core/src/{forward,status}.rs` |
 | TUI | `skiff-tui/src/{main,app,ui,keys,forms,input,sftp_tab}.rs` |
-| GUI app | `skiff-gui/src/{main,app,engine,sidebar,switcher,forwards,keys,os}.rs` |
+| GUI app | `skiff-gui/src/{main,app,engine,sidebar,switcher,forwards,keys,gear,os}.rs` |
 | GUI terminals | `skiff-gui/src/term/` (render, input, mouse, select, search, split, announce) |
 | GUI files, settings | `skiff-gui/src/files/`, `skiff-gui/src/settings/` |
 | Toolkit core | `skiff-ui/src/{ui,shell,display,canvas,layout,input}.rs` |
