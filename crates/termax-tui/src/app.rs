@@ -1,16 +1,21 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+use termax_core::askpass::{AskKind, AskRequest, Broker};
 use termax_core::fs::connect::RemoteConn;
+use termax_core::fs::transfer::{OverwriteDecision, TransferSummary};
 use termax_core::termx::{self, MouseEv, TermSearch};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
 
 use crate::forms::{Editor, ForwardForm, Outcome};
 use crate::input::TextInput;
+use crate::keys::{Action, Keymap};
 use crate::sftp_tab::{FileEntry, FileOp, SftpTab, Side, Status};
 use crate::tui_theme::Theme;
 use termax_core::config::{Config, StatusChecks, TuiMouse};
@@ -27,12 +32,68 @@ use termax_core::theme::{self, ThemeDef};
 
 /// Results from background tasks, delivered to the UI thread.
 pub enum Msg {
-    SftpConnected { tab: u64, result: Result<Arc<RemoteConn>, String> },
-    RemoteListing { tab: u64, result: Result<(String, Vec<FileEntry>, Option<String>), String> },
-    TransferProgress { tab: u64, id: u64, done: u64 },
-    TransferDone { tab: u64, id: u64, result: Result<(), String> },
-    RemoteOpDone { tab: u64, result: Result<(), String>, keep: Option<String> },
-    Status { host: String, status: HostStatus },
+    SftpConnected {
+        tab: u64,
+        result: Result<Arc<RemoteConn>, String>,
+    },
+    RemoteListing {
+        tab: u64,
+        seq: u64,
+        result: Result<(String, Vec<FileEntry>, Option<String>), String>,
+    },
+    TransferProgress {
+        tab: u64,
+        id: u64,
+        done: u64,
+    },
+    TransferDone {
+        tab: u64,
+        id: u64,
+        result: Result<TransferSummary, String>,
+    },
+    /// Transfer `id` found `path` already there: overwrite it?
+    TransferAsk {
+        tab: u64,
+        id: u64,
+        path: String,
+        reply: oneshot::Sender<OverwriteDecision>,
+    },
+    RemoteOpDone {
+        tab: u64,
+        result: Result<(), String>,
+        keep: Option<String>,
+    },
+    Status {
+        host: String,
+        status: HostStatus,
+    },
+    /// ssh (connecting an SFTP tab) asks for a password, code or host-key answer.
+    Ask(AskRequest),
+}
+
+/// A question from the background that waits for its turn on screen.
+pub enum Question {
+    Ask(AskRequest),
+    Overwrite { tab: u64, id: u64, path: String, reply: oneshot::Sender<OverwriteDecision> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitDir {
+    /// Side by side.
+    Right,
+    /// One above the other.
+    Down,
+}
+
+/// A terminal tab split in two. The focused pane's session is the tab's
+/// `TabKind::Terminal`, so everything that acts on "the terminal" (keys,
+/// paste, search, mouse) reaches the focused pane.
+pub struct Split {
+    /// The pane without focus.
+    pub other: Box<TerminalSession>,
+    pub dir: SplitDir,
+    /// The focused pane is the first one (left or top).
+    pub focus_first: bool,
 }
 
 pub enum TabKind {
@@ -51,6 +112,8 @@ pub struct Tab {
     pub forward: Option<String>,
     /// The host a terminal tab is connected to (for its snippets).
     pub host: Option<String>,
+    /// A second terminal pane in this tab.
+    pub split: Option<Split>,
 }
 
 pub enum PromptAction {
@@ -82,7 +145,10 @@ pub enum ConfirmAction {
 }
 
 pub enum Modal {
-    Help,
+    /// Keys; scrolled down `scroll` lines.
+    Help {
+        scroll: u16,
+    },
     ThemePicker {
         selected: usize,
         original: String,
@@ -105,6 +171,21 @@ pub enum Modal {
     /// Saved commands for the active terminal's host.
     Snippets {
         selected: usize,
+    },
+    /// ssh asks (password, one-time code, host key). The answer goes
+    /// straight back to ssh and is never kept.
+    Ask {
+        host: String,
+        input: TextInput,
+        req: AskRequest,
+    },
+    /// A file a transfer would replace already exists.
+    Overwrite {
+        tab: u64,
+        id: u64,
+        host: String,
+        path: String,
+        reply: oneshot::Sender<OverwriteDecision>,
     },
 }
 
@@ -148,6 +229,8 @@ pub struct App {
     pub term_area: (u16, u16),
     /// Screen position of the terminal content's top-left cell (mouse reports).
     pub term_origin: (u16, u16),
+    /// Where the unfocused pane of a split terminal is drawn (a click there focuses it).
+    pub other_pane: Option<Rect>,
     /// Screen columns of each tab's label in the tab bar (row 0).
     pub tab_cols: Vec<(u16, u16)>,
     /// The mouse button a program was told is down.
@@ -164,6 +247,16 @@ pub struct App {
     history_path: PathBuf,
     /// Sort order and hidden-host toggle (state.toml).
     pub ui_state: UiState,
+    /// Global shortcuts (`[tui_keys]` over the defaults).
+    pub keys: Keymap,
+    /// Problems in `[tui_keys]` (shown in the help).
+    pub key_errors: Vec<String>,
+    /// Answers ssh's questions for SFTP connections (see `enable_askpass`).
+    askpass: Option<Arc<Broker>>,
+    /// The ssh client's version once checked (`None` inside: unknown).
+    ssh_version: Option<Option<(u32, u32)>>,
+    /// Questions waiting for the screen (one modal at a time).
+    pub questions: VecDeque<Question>,
     next_id: u64,
     rt: Handle,
     tx: UnboundedSender<Msg>,
@@ -191,29 +284,82 @@ impl App {
             host_offset: 0,
             filter: TextInput::default(),
             filtering: false,
-            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts, record: None, forward: None, host: None }],
+            tabs: vec![Tab { id: 0, title: "Hosts".into(), kind: TabKind::Hosts, record: None, forward: None, host: None, split: None }],
             active: 0,
             modal: None,
             status: None,
             should_quit: false,
             term_area: (24, 80),
             term_origin: (1, 1),
+            other_pane: None,
             tab_cols: vec![],
             mouse_held: None,
             selection: None,
             clipboard_out: None,
             paste_bursts: cfg!(windows),
+            keys: Keymap::default(),
+            key_errors: vec![],
+            askpass: None,
+            ssh_version: None,
+            questions: VecDeque::new(),
             next_id: 1,
             rt,
             tx,
             rx,
         };
         app.apply_theme_name(&app.cfg.settings.theme.clone());
+        app.load_keys();
         app.reload_hosts();
         if app.cfg.settings.status_checks == StatusChecks::OnStart {
             app.check_status();
         }
         app
+    }
+
+    /// Starts the askpass broker so SFTP connections can ask for passwords,
+    /// one-time codes and host-key confirmation. `helper` is the program ssh
+    /// runs as `SSH_ASKPASS`: the `termax` executable itself.
+    pub fn enable_askpass(&mut self, helper: PathBuf) {
+        match Broker::start(&self.rt, helper) {
+            Ok((broker, mut rx)) => {
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    while let Some(req) = rx.recv().await {
+                        if tx.send(Msg::Ask(req)).is_err() {
+                            break;
+                        }
+                    }
+                });
+                self.askpass = Some(Arc::new(broker));
+            }
+            Err(e) => self.set_error(format!("password prompts unavailable: {e:#}")),
+        }
+    }
+
+    /// The broker, if SFTP connections can prompt (it runs and ssh is new
+    /// enough for `SSH_ASKPASS_REQUIRE`).
+    fn prompter(&mut self) -> Option<Arc<Broker>> {
+        let broker = self.askpass.clone()?;
+        let bin = self.cfg.settings.ssh_binary.clone();
+        let version = *self.ssh_version.get_or_insert_with(|| termax_core::sshver::client_version(&bin).ok());
+        match version {
+            Some(v) if !termax_core::sshver::supports_askpass_require(v) => {
+                self.set_error(format!("termax needs OpenSSH 8.4 or newer for password prompts (found {}.{})", v.0, v.1));
+                None
+            }
+            _ => Some(broker),
+        }
+    }
+
+    /// Builds the shortcuts from `[tui_keys]`; problems show as an error.
+    fn load_keys(&mut self) {
+        let (keys, errors) = Keymap::new(&self.cfg.tui_keys);
+        self.keys = keys;
+        if let Some(first) = errors.first() {
+            let more = if errors.len() > 1 { format!(" (+{} more, see help)", errors.len() - 1) } else { String::new() };
+            self.set_error(format!("{first}{more}"));
+        }
+        self.key_errors = errors;
     }
 
     // ----- themes -----
@@ -313,8 +459,17 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let title = self.unique_title(title);
-        self.tabs.push(Tab { id, title, kind, record: None, forward: None, host: None });
+        self.tabs.push(Tab { id, title, kind, record: None, forward: None, host: None, split: None });
         self.active = self.tabs.len() - 1;
+    }
+
+    /// Removes tab `i`; the active tab stays the same one when it remains.
+    fn remove_tab(&mut self, i: usize) {
+        self.tabs.remove(i);
+        if self.active > i {
+            self.active -= 1;
+        }
+        self.active = self.active.min(self.tabs.len() - 1);
     }
 
     /// Opens host `name` (hidden hosts too): a terminal, or a file transfer.
@@ -455,8 +610,7 @@ impl App {
                 self.active = i;
                 return;
             }
-            self.tabs.remove(i);
-            self.active = self.active.min(self.tabs.len() - 1);
+            self.remove_tab(i);
         }
         let (rows, cols) = self.term_area;
         match TerminalSession::spawn(&self.cfg.settings.ssh_binary, &f.ssh_args(&host), rows, cols, self.cfg.settings.scrollback) {
@@ -504,8 +658,7 @@ impl App {
             return;
         };
         if let Some(ti) = self.forward_tab(&title) {
-            self.tabs.remove(ti);
-            self.active = self.active.min(self.tabs.len() - 1);
+            self.remove_tab(ti);
         }
     }
 
@@ -545,16 +698,79 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("."));
         let id = self.next_id;
         let mut tab = SftpTab::new(id, host.name.clone(), local, self.cfg.settings.show_hidden_files, self.rt.clone(), self.tx.clone());
-        tab.connect(host.sftp_launch(&self.cfg.settings.ssh_binary, self.cfg.settings.sftp_batch_mode));
+        // With prompts available ssh may ask; otherwise `sftp_batch_mode`
+        // decides whether it fails at once instead of trying a terminal.
+        let prompter = self.prompter();
+        let batch = prompter.is_none() && self.cfg.settings.sftp_batch_mode;
+        tab.set_askpass(prompter);
+        tab.connect(host.sftp_launch(&self.cfg.settings.ssh_binary, batch));
         self.push_tab(format!("{} [sftp]", host.name), TabKind::Sftp(Box::new(tab)));
     }
 
+    /// Closes the active tab, or only its focused pane when it is split.
     fn close_active_tab(&mut self) {
         if self.active == 0 {
             return;
         }
-        self.tabs.remove(self.active);
-        self.active = self.active.min(self.tabs.len() - 1);
+        if self.tabs[self.active].split.is_some() {
+            self.close_pane();
+        } else {
+            self.remove_tab(self.active);
+        }
+    }
+
+    // ----- split panes -----
+
+    /// Splits the active terminal tab: a second pane runs the same ssh
+    /// command (a new connection to the same host) and takes the focus. An
+    /// already split tab changes direction.
+    pub fn split(&mut self, dir: SplitDir) {
+        let (rows, cols) = self.term_area;
+        let (rows, cols) = match dir {
+            SplitDir::Right => (rows, cols / 2),
+            SplitDir::Down => (rows / 2, cols),
+        };
+        let scrollback = self.cfg.settings.scrollback;
+        let tab = &mut self.tabs[self.active];
+        let TabKind::Terminal(s) = &tab.kind else { return };
+        if tab.forward.is_some() {
+            self.set_error("A port forward has no shell to split");
+            return;
+        }
+        if let Some(sp) = &mut tab.split {
+            sp.dir = dir;
+            return;
+        }
+        let (program, args) = s.command();
+        match TerminalSession::spawn(program, args, rows, cols, scrollback) {
+            Ok(other) => {
+                tab.split = Some(Split { other: Box::new(other), dir, focus_first: true });
+                self.focus_other_pane();
+            }
+            Err(e) => self.set_error(format!("{e:#}")),
+        }
+    }
+
+    /// Moves the focus to the other pane of a split tab.
+    pub fn focus_other_pane(&mut self) {
+        let tab = &mut self.tabs[self.active];
+        if let (TabKind::Terminal(s), Some(sp)) = (&mut tab.kind, &mut tab.split) {
+            std::mem::swap(s, &mut sp.other);
+            sp.focus_first = !sp.focus_first;
+            // These belong to the pane that had the focus.
+            self.selection = None;
+            self.mouse_held = None;
+        }
+    }
+
+    /// Closes the focused pane of a split tab (its session ends).
+    fn close_pane(&mut self) {
+        let tab = &mut self.tabs[self.active];
+        if let Some(sp) = tab.split.take() {
+            tab.kind = TabKind::Terminal(sp.other);
+            self.selection = None;
+            self.mouse_held = None;
+        }
     }
 
     fn request_quit(&mut self) {
@@ -580,17 +796,28 @@ impl App {
     pub fn drain_messages(&mut self) {
         let mut connected: Vec<String> = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
-            if let Msg::Status { host, status } = msg {
-                self.statuses.insert(host, status);
-                continue;
-            }
+            let msg = match msg {
+                Msg::Status { host, status } => {
+                    self.statuses.insert(host, status);
+                    continue;
+                }
+                Msg::Ask(req) => {
+                    self.questions.push_back(Question::Ask(req));
+                    continue;
+                }
+                Msg::TransferAsk { tab, id, path, reply } => {
+                    self.questions.push_back(Question::Overwrite { tab, id, path, reply });
+                    continue;
+                }
+                m => m,
+            };
             let tab_id = match &msg {
                 Msg::SftpConnected { tab, .. }
                 | Msg::RemoteListing { tab, .. }
                 | Msg::TransferProgress { tab, .. }
                 | Msg::TransferDone { tab, .. }
                 | Msg::RemoteOpDone { tab, .. } => *tab,
-                Msg::Status { .. } => unreachable!("handled above"),
+                Msg::Status { .. } | Msg::Ask(_) | Msg::TransferAsk { .. } => unreachable!("handled above"),
             };
             // Messages for tabs that have since been closed are dropped.
             let Some(TabKind::Sftp(s)) = self.tabs.iter_mut().find(|t| t.id == tab_id).map(|t| &mut t.kind) else {
@@ -600,9 +827,9 @@ impl App {
                 connected.push(s.host_name.clone());
             }
             match msg {
-                Msg::Status { .. } => {}
+                Msg::Status { .. } | Msg::Ask(_) | Msg::TransferAsk { .. } => {}
                 Msg::SftpConnected { result, .. } => s.on_connected(result),
-                Msg::RemoteListing { result, .. } => s.on_remote_listing(result),
+                Msg::RemoteListing { seq, result, .. } => s.on_remote_listing(seq, result),
                 Msg::TransferProgress { id, done, .. } => s.on_transfer_progress(id, done),
                 Msg::TransferDone { id, result, .. } => s.on_transfer_done(id, result),
                 Msg::RemoteOpDone { result, keep, .. } => s.on_remote_op(result, keep),
@@ -611,6 +838,7 @@ impl App {
         for name in connected {
             self.record(&name, ConnKind::Files);
         }
+        self.next_question();
         // An open search keeps up with new output.
         if let (Some(Modal::Search { search, .. }), TabKind::Terminal(s)) = (&mut self.modal, &self.tabs[self.active].kind) {
             search.sync(s);
@@ -642,6 +870,59 @@ impl App {
         {
             self.status = None;
         }
+    }
+
+    /// Puts away a question that no longer applies (ssh withdrew it, or its
+    /// transfer ended) and shows the next waiting one when nothing else is open.
+    fn next_question(&mut self) {
+        let stale = match &self.modal {
+            Some(Modal::Ask { req, .. }) => req.cancelled.is_cancelled() || req.reply.is_closed(),
+            Some(Modal::Overwrite { reply, .. }) => reply.is_closed(),
+            _ => false,
+        };
+        if stale {
+            self.modal = None;
+        }
+        while self.modal.is_none()
+            && let Some(q) = self.questions.pop_front()
+        {
+            match q {
+                Question::Ask(req) => {
+                    // Only the current attempt of a tab still connecting may ask.
+                    let host = self.tabs.iter().find_map(|t| match &t.kind {
+                        TabKind::Sftp(s) if s.ask_tag() == req.tag && matches!(s.status, Status::Connecting) => Some(s.host_name.clone()),
+                        _ => None,
+                    });
+                    match host {
+                        Some(host) if !req.cancelled.is_cancelled() => {
+                            self.modal = Some(Modal::Ask { host, input: TextInput::default(), req })
+                        }
+                        _ => {
+                            let _ = req.reply.send(None);
+                        }
+                    }
+                }
+                Question::Overwrite { tab, id, path, reply } => {
+                    let host = self.tabs.iter().find_map(|t| match &t.kind {
+                        TabKind::Sftp(s) if t.id == tab => Some(s.host_name.clone()),
+                        _ => None,
+                    });
+                    // A closed tab's transfer was cancelled; dropping `reply` is enough.
+                    if let Some(host) = host
+                        && !reply.is_closed()
+                    {
+                        self.modal = Some(Modal::Overwrite { tab, id, host, path, reply });
+                    }
+                }
+            }
+        }
+    }
+
+    fn sftp_tab_mut(&mut self, id: u64) -> Option<&mut SftpTab> {
+        self.tabs.iter_mut().find_map(|t| match &mut t.kind {
+            TabKind::Sftp(s) if t.id == id => Some(s.as_mut()),
+            _ => None,
+        })
     }
 
     // ----- input -----
@@ -703,6 +984,15 @@ impl App {
             && let Some(i) = self.tab_cols.iter().position(|&(a, b)| (a..b).contains(&m.column))
         {
             self.active = i;
+            return;
+        }
+        // A click in the other pane of a split focuses it.
+        if matches!(m.kind, MouseEventKind::Down(_))
+            && self.mouse_held.is_none()
+            && self.tabs[self.active].split.is_some()
+            && self.other_pane.is_some_and(|r| r.contains(ratatui::layout::Position::new(m.column, m.row)))
+        {
+            self.focus_other_pane();
             return;
         }
         let shift = m.modifiers.contains(KeyModifiers::SHIFT);
@@ -865,6 +1155,12 @@ impl App {
                 p.input.insert_str(line);
                 return;
             }
+            Some(Modal::Ask { input, req, .. }) => {
+                if req.kind == AskKind::Secret {
+                    input.insert_str(line);
+                }
+                return;
+            }
             Some(Modal::Search { .. }) => {
                 let Some(Modal::Search { mut query, mut search }) = self.modal.take() else {
                     return;
@@ -902,37 +1198,35 @@ impl App {
         }
     }
 
-    /// Alt-based shortcuts work everywhere, including inside terminal tabs.
-    /// Letters match in either case (Caps Lock), but Alt+Shift chords are
-    /// left for the shell (readline and editors use them).
+    /// Shortcuts from the keymap work everywhere, including inside terminal
+    /// tabs (the defaults are Alt chords; letters match in either case for
+    /// Caps Lock, and Alt+Shift chords are left for the shell). Terminal-only
+    /// actions elsewhere let the key through.
     fn handle_global_key(&mut self, key: KeyEvent) -> bool {
-        let m = key.modifiers;
-        if !m.contains(KeyModifiers::ALT) || m.intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT) {
+        let Some(action) = self.keys.match_key(&key) else {
             return false;
-        }
-        let code = match key.code {
-            KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
-            c => c,
         };
-        match code {
-            KeyCode::Char(c @ '1'..='9') => {
-                let i = (c as u8 - b'1') as usize;
+        let terminal = matches!(self.tabs[self.active].kind, TabKind::Terminal(_));
+        match action {
+            Action::Tab(n) => {
+                let i = n as usize - 1;
                 if i < self.tabs.len() {
                     self.active = i;
                 }
             }
-            KeyCode::Right | KeyCode::Char(']') => self.active = (self.active + 1) % self.tabs.len(),
-            KeyCode::Left | KeyCode::Char('[') => self.active = (self.active + self.tabs.len() - 1) % self.tabs.len(),
-            KeyCode::Char('w') => self.close_active_tab(),
-            KeyCode::Char('t') => self.open_theme_picker(),
-            KeyCode::Char('h') => self.modal = Some(Modal::Help),
-            KeyCode::Char('q') => self.request_quit(),
-            KeyCode::Char('f') if matches!(self.tabs[self.active].kind, TabKind::Terminal(_)) => {
+            Action::NextTab => self.active = (self.active + 1) % self.tabs.len(),
+            Action::PrevTab => self.active = (self.active + self.tabs.len() - 1) % self.tabs.len(),
+            Action::CloseTab => self.close_active_tab(),
+            Action::Theme => self.open_theme_picker(),
+            Action::Help => self.modal = Some(Modal::Help { scroll: 0 }),
+            Action::Quit => self.request_quit(),
+            Action::Find if terminal => {
                 self.modal = Some(Modal::Search { query: TextInput::default(), search: TermSearch::default() });
             }
-            KeyCode::Char('s') if matches!(self.tabs[self.active].kind, TabKind::Terminal(_)) => {
-                self.modal = Some(Modal::Snippets { selected: 0 });
-            }
+            Action::Snippets if terminal => self.modal = Some(Modal::Snippets { selected: 0 }),
+            Action::SplitRight if terminal => self.split(SplitDir::Right),
+            Action::SplitDown if terminal => self.split(SplitDir::Down),
+            Action::FocusNextPane if terminal => self.focus_other_pane(),
             _ => return false,
         }
         true
@@ -984,7 +1278,7 @@ impl App {
                 self.reload_config();
             }
             KeyCode::Char('t') => self.open_theme_picker(),
-            KeyCode::Char('?') => self.modal = Some(Modal::Help),
+            KeyCode::Char('?') => self.modal = Some(Modal::Help { scroll: 0 }),
             KeyCode::Char('p') => self.check_status(),
             KeyCode::Char('o') => self.cycle_sort(),
             KeyCode::Char('H') => self.toggle_hidden(),
@@ -1012,6 +1306,7 @@ impl App {
                 self.apply_theme_name(&self.cfg.settings.theme.clone());
                 self.reload_hosts();
                 self.set_info(format!("Reloaded {} hosts", self.hosts.len()));
+                self.load_keys();
             }
             Err(e) => self.set_error(format!("{e:#}")),
         }
@@ -1095,6 +1390,7 @@ impl App {
         let side = s.focus;
         let mut modal = None;
         let mut err = None;
+        let mut info = None;
         match key.code {
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => s.focus = side.other(),
             KeyCode::Down | KeyCode::Char('j') => s.pane_mut(side).move_by(1),
@@ -1142,7 +1438,14 @@ impl App {
             KeyCode::Char('r') => s.refresh(side),
             KeyCode::Char('.') => s.toggle_hidden(),
             KeyCode::Char('x') => s.clear_finished_transfers(),
+            KeyCode::Char('X') => match s.cancel_newest_transfer() {
+                Some(label) => info = Some(format!("Cancelling {label}")),
+                None => err = Some("No transfer is running".to_string()),
+            },
             _ => {}
+        }
+        if let Some(i) = info {
+            self.set_info(i);
         }
         if let Some(e) = err {
             self.set_error(e);
@@ -1157,8 +1460,16 @@ impl App {
             return;
         };
         self.modal = match modal {
-            Modal::Help => match key.code {
+            Modal::Help { scroll } => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => None,
+                _ if self.keys.match_key(&key) == Some(Action::Help) => None,
+                KeyCode::Down | KeyCode::Char('j') => Some(Modal::Help { scroll: scroll.saturating_add(1) }),
+                KeyCode::Up | KeyCode::Char('k') => Some(Modal::Help { scroll: scroll.saturating_sub(1) }),
+                KeyCode::PageDown | KeyCode::Char(' ') => Some(Modal::Help { scroll: scroll.saturating_add(10) }),
+                KeyCode::PageUp => Some(Modal::Help { scroll: scroll.saturating_sub(10) }),
+                KeyCode::Home | KeyCode::Char('g') => Some(Modal::Help { scroll: 0 }),
+                // Drawing stops at the last page.
+                KeyCode::End | KeyCode::Char('G') => Some(Modal::Help { scroll: u16::MAX }),
                 _ => Some(modal),
             },
             Modal::ThemePicker { mut selected, original } => {
@@ -1238,6 +1549,52 @@ impl App {
                     _ => Some(Modal::Snippets { selected }),
                 }
             }
+            Modal::Ask { host, mut input, req } => match (req.kind, key.code) {
+                (_, KeyCode::Esc) => {
+                    let _ = req.reply.send(None);
+                    None
+                }
+                (AskKind::Secret, KeyCode::Enter) => {
+                    let _ = req.reply.send(Some(std::mem::take(&mut input.value)));
+                    None
+                }
+                (AskKind::Confirm, KeyCode::Char('y' | 'Y')) => {
+                    let _ = req.reply.send(Some("yes".into()));
+                    None
+                }
+                (AskKind::Confirm, KeyCode::Char('n' | 'N')) => {
+                    let _ = req.reply.send(Some("no".into()));
+                    None
+                }
+                (AskKind::Secret, _) => {
+                    input.handle_key(key);
+                    Some(Modal::Ask { host, input, req })
+                }
+                (AskKind::Confirm, _) => Some(Modal::Ask { host, input, req }),
+            },
+            Modal::Overwrite { tab, id, host, path, reply } => {
+                let decision = match key.code {
+                    KeyCode::Char('o' | 'y') => Some(OverwriteDecision::Overwrite),
+                    KeyCode::Char('s' | 'n') => Some(OverwriteDecision::Skip),
+                    KeyCode::Char('a') => Some(OverwriteDecision::OverwriteAll),
+                    KeyCode::Char('S') => Some(OverwriteDecision::SkipAll),
+                    KeyCode::Char('c') | KeyCode::Esc => {
+                        // Cancel first: the transfer then stops instead of moving on.
+                        if let Some(s) = self.sftp_tab_mut(tab) {
+                            s.cancel_transfer(id);
+                        }
+                        Some(OverwriteDecision::Skip)
+                    }
+                    _ => None,
+                };
+                match decision {
+                    Some(d) => {
+                        let _ = reply.send(d);
+                        None
+                    }
+                    None => Some(Modal::Overwrite { tab, id, host, path, reply }),
+                }
+            }
             Modal::Prompt(mut p) => match key.code {
                 KeyCode::Esc => None,
                 KeyCode::Enter => {
@@ -1286,6 +1643,8 @@ impl App {
                 }
             }
         };
+        // An answered question may make way for the next one.
+        self.next_question();
     }
 
     /// Returns the modal to keep showing (with an error) or `None` on success.

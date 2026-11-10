@@ -209,6 +209,11 @@ impl TerminalSession {
         self.parser.lock().map(|p| p.screen().scrollback()).unwrap_or(0)
     }
 
+    /// The program and arguments this session runs (what `respawn` starts).
+    pub fn command(&self) -> (&str, &[String]) {
+        (&self.program, &self.args)
+    }
+
     pub fn rows(&self) -> u16 {
         self.size.0
     }

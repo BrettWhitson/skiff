@@ -4461,6 +4461,7 @@ dependencies = [
  "termax-core",
  "termax-testserver",
  "tokio",
+ "tokio-util",
  "tui-term",
  "vt100",
 ]

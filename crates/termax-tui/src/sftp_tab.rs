@@ -8,9 +8,10 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::app::Msg;
+use termax_core::askpass::Broker;
 use termax_core::fs::connect::{RemoteConn, SshLaunch, connect_sftp};
 use termax_core::fs::endpoint::Endpoint;
-use termax_core::fs::transfer::{self, OverwritePolicy, TransferEvent, TransferRequest};
+use termax_core::fs::transfer::{self, OverwritePolicy, TransferEvent, TransferHandle, TransferRequest, TransferSummary};
 pub use termax_core::fs::{self, FileEntry, human_size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,16 +72,19 @@ impl Pane {
 pub enum TransferState {
     Running,
     Done,
+    Cancelled,
     Failed(String),
 }
 
-#[derive(Debug, Clone)]
 pub struct Transfer {
     pub id: u64,
     pub label: String,
     pub done: u64,
     pub total: Option<u64>,
+    /// Files left alone because they existed (or weren't safe to copy).
+    pub skipped: u64,
     pub state: TransferState,
+    handle: TransferHandle,
 }
 
 pub enum Status {
@@ -100,6 +104,12 @@ pub struct SftpTab {
     pub transfers: Vec<Transfer>,
     pub show_hidden: bool,
     launch: Option<SshLaunch>,
+    /// Relays ssh's password and host-key questions (when termax can prompt).
+    askpass: Option<Arc<Broker>>,
+    /// Connection attempts so far; each gets its own askpass tag.
+    attempt: u64,
+    /// The newest remote listing request.
+    listing: u64,
     next_transfer: u64,
     rt: Handle,
     tx: UnboundedSender<Msg>,
@@ -118,6 +128,9 @@ impl SftpTab {
             transfers: vec![],
             show_hidden,
             launch: None,
+            askpass: None,
+            attempt: 0,
+            listing: 0,
             next_transfer: 1,
             rt,
             tx,
@@ -126,12 +139,35 @@ impl SftpTab {
         tab
     }
 
+    /// ssh's questions while connecting go to `broker` (as `Msg::Ask`).
+    pub fn set_askpass(&mut self, broker: Option<Arc<Broker>>) {
+        self.askpass = broker;
+    }
+
+    /// The askpass tag of the current connection attempt.
+    pub fn ask_tag(&self) -> String {
+        format!("sftp:{}:{}", self.tab_id, self.attempt)
+    }
+
+    /// Withdraws ssh's open questions for the current attempt.
+    fn retire_questions(&self) {
+        if let Some(b) = &self.askpass {
+            b.retire(&self.ask_tag());
+        }
+    }
+
     /// Connects in the background; the result arrives as `Msg::SftpConnected`.
     pub fn connect(&mut self, launch: SshLaunch) {
         self.launch = Some(launch.clone());
         self.status = Status::Connecting;
         self.conn = None;
         self.remote = Pane { loading: true, ..Default::default() };
+        self.retire_questions();
+        self.attempt += 1;
+        let mut launch = launch;
+        if let Some(b) = &self.askpass {
+            launch.env.extend(b.env(&self.ask_tag()));
+        }
         let (tx, id) = (self.tx.clone(), self.tab_id);
         self.rt.spawn(async move {
             let result = connect_sftp(launch).await.map(Arc::new);
@@ -154,6 +190,8 @@ impl SftpTab {
                 self.list_remote(home, None);
             }
             Err(e) => {
+                // ssh gave up: a question still on screen is moot.
+                self.retire_questions();
                 self.remote.loading = false;
                 self.status = Status::Failed(e);
             }
@@ -191,17 +229,28 @@ impl SftpTab {
         }
     }
 
+    /// Numbers a remote listing request; only the newest one's answer is shown.
+    fn next_listing(&mut self) -> u64 {
+        self.listing += 1;
+        self.listing
+    }
+
     pub fn list_remote(&mut self, path: String, keep: Option<String>) {
         let Some(ep) = self.endpoint(Side::Remote) else { return };
         self.remote.loading = true;
-        let (tx, id) = (self.tx.clone(), self.tab_id);
+        let (tx, id, seq) = (self.tx.clone(), self.tab_id, self.next_listing());
         self.rt.spawn(async move {
             let result = ep.list(&path).await.map(|e| (path, e, keep)).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Msg::RemoteListing { tab: id, result });
+            let _ = tx.send(Msg::RemoteListing { tab: id, seq, result });
         });
     }
 
-    pub fn on_remote_listing(&mut self, result: Result<(String, Vec<FileEntry>, Option<String>), String>) {
+    /// `seq` is the request's number: an answer to an older request (the
+    /// user moved on meanwhile) is dropped.
+    pub fn on_remote_listing(&mut self, seq: u64, result: Result<(String, Vec<FileEntry>, Option<String>), String>) {
+        if seq != self.listing {
+            return;
+        }
         match result {
             Ok((path, entries, keep)) => self.remote.set_entries(path, entries, self.show_hidden, keep.as_deref()),
             Err(e) => {
@@ -253,7 +302,8 @@ impl SftpTab {
     }
 
     /// Copies the selected entry into the directory shown in the other pane.
-    /// Existing files are overwritten (the TUI's behavior).
+    /// For each file that already exists there the user is asked
+    /// (`Msg::TransferAsk`).
     pub fn copy_selected(&mut self) -> Result<(), String> {
         let (Some(src), Some(dst)) = (self.endpoint(self.focus), self.endpoint(self.focus.other())) else {
             return Err("not connected".into());
@@ -262,16 +312,18 @@ impl SftpTab {
         let id = self.next_transfer;
         self.next_transfer += 1;
         let upload = self.focus == Side::Local;
+        let req = TransferRequest { id, src, src_path, dst, dst_dir: self.pane(self.focus.other()).path.clone() };
+        let (events_tx, mut events) = unbounded_channel();
+        let handle = transfer::start(&self.rt, req, OverwritePolicy::Ask, events_tx);
         self.transfers.push(Transfer {
             id,
             label: format!("{} {}", if upload { "↑" } else { "↓" }, entry.name),
             done: 0,
             total: (!entry.is_dir).then_some(entry.size),
+            skipped: 0,
             state: TransferState::Running,
+            handle,
         });
-        let req = TransferRequest { id, src, src_path, dst, dst_dir: self.pane(self.focus.other()).path.clone() };
-        let (events_tx, mut events) = unbounded_channel();
-        transfer::start(&self.rt, req, OverwritePolicy::Overwrite, events_tx);
         let (tx, tab) = (self.tx.clone(), self.tab_id);
         self.rt.spawn(async move {
             while let Some(ev) = events.recv().await {
@@ -280,11 +332,12 @@ impl SftpTab {
                         let _ = tx.send(Msg::TransferProgress { tab, id, done });
                     }
                     TransferEvent::Done { id, result } => {
-                        let _ = tx.send(Msg::TransferDone { tab, id, result: result.map(|_| ()) });
+                        let _ = tx.send(Msg::TransferDone { tab, id, result });
                         break;
                     }
-                    // Never sent with OverwritePolicy::Overwrite.
-                    TransferEvent::NeedsDecision { .. } => {}
+                    TransferEvent::NeedsDecision { id, path, reply } => {
+                        let _ = tx.send(Msg::TransferAsk { tab, id, path, reply });
+                    }
                 }
             }
         });
@@ -297,11 +350,14 @@ impl SftpTab {
         }
     }
 
-    pub fn on_transfer_done(&mut self, id: u64, result: Result<(), String>) {
+    pub fn on_transfer_done(&mut self, id: u64, result: Result<TransferSummary, String>) {
         let mut target = None;
         if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
             t.state = match result {
-                Ok(()) => TransferState::Done,
+                Ok(s) => {
+                    t.skipped = s.skipped;
+                    if s.cancelled { TransferState::Cancelled } else { TransferState::Done }
+                }
                 Err(e) => TransferState::Failed(e),
             };
             target = Some(if t.label.starts_with('↑') { Side::Remote } else { Side::Local });
@@ -309,6 +365,20 @@ impl SftpTab {
         if let Some(side) = target {
             self.refresh(side);
         }
+    }
+
+    /// Cancels transfer `id` if it is still running.
+    pub fn cancel_transfer(&mut self, id: u64) {
+        if let Some(t) = self.transfers.iter().find(|t| t.id == id && t.state == TransferState::Running) {
+            t.handle.cancel();
+        }
+    }
+
+    /// Cancels the newest running transfer (the top of the list); returns its label.
+    pub fn cancel_newest_transfer(&mut self) -> Option<String> {
+        let t = self.transfers.iter().rev().find(|t| t.state == TransferState::Running)?;
+        t.handle.cancel();
+        Some(t.label.clone())
     }
 
     pub fn clear_finished_transfers(&mut self) {
@@ -364,6 +434,16 @@ impl SftpTab {
     }
 }
 
+impl Drop for SftpTab {
+    /// Closing the tab stops its transfers and withdraws ssh's questions.
+    fn drop(&mut self) {
+        for t in self.transfers.iter().filter(|t| t.state == TransferState::Running) {
+            t.handle.cancel();
+        }
+        self.retire_questions();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum FileOp {
     Mkdir(String),
@@ -406,5 +486,17 @@ mod tests {
         p.set_entries("/x".into(), vec![f("b", false), f(".hid", false), f("A", true), f("a", false)], false, None);
         let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["..", "A", "a", "b"]);
+    }
+
+    #[test]
+    fn late_listing_of_an_earlier_request_is_ignored() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (tx, _rx) = unbounded_channel();
+        let mut tab = SftpTab::new(1, "h".into(), std::env::temp_dir(), false, rt.handle().clone(), tx);
+        let first = tab.next_listing();
+        let second = tab.next_listing();
+        tab.on_remote_listing(second, Ok(("/b".into(), vec![], None)));
+        tab.on_remote_listing(first, Ok(("/a".into(), vec![], None)));
+        assert_eq!(tab.remote.path, "/b");
     }
 }
