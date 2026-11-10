@@ -137,11 +137,17 @@ fn status_dot(ui: &mut Ui, r: Rect, s: Option<&Status>) {
         Some(Status::NotSsh) => Some(p.warning),
         _ => None,
     };
+    // Only the jump host was checked: a ring in its color, not a solid dot.
+    let ring = match s {
+        Some(Status::Via(_, inner)) if matches!(**inner, Status::Online { .. }) => p.success,
+        Some(Status::Via(..)) => p.warning,
+        _ => p.muted,
+    };
     match fill {
         Some(c) => ui.painter().rect(dot, c, radius),
         None => {
-            let bw = ui.px(1).max(1);
-            ui.painter().border(dot, p.muted, bw, radius)
+            let bw = ui.px(if ring == p.muted { 1 } else { 2 }).max(1);
+            ui.painter().border(dot, ring, bw, radius)
         }
     }
 }
