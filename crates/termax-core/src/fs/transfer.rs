@@ -2,16 +2,19 @@
 //! from source to destination in chunks; a remote→remote copy is relayed
 //! through this machine without touching the local disk.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use russh_sftp::client::error::Error as SftpError;
+use russh_sftp::protocol::StatusCode;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::endpoint::Endpoint;
+use super::endpoint::{Endpoint, WriteMeta};
 use super::path::is_safe_name;
 
 /// True if `dst` is `src` itself or a path inside it.
@@ -32,12 +35,31 @@ fn is_same_or_inside(ep: &Endpoint, dst: &str, src: &str) -> bool {
     canon(dst).starts_with(canon(src))
 }
 
-/// The temporary sibling a file is written to before it replaces `d`.
-fn part_path(ep: &Endpoint, d: &str) -> String {
-    match super::path::parent(ep.is_remote(), d) {
-        Some((dir, name)) => ep.join(&dir, &format!(".{name}.termax-part")),
-        None => format!(".{d}.termax-part"),
+/// Suffix of the temporary files transfers write; such files are never copied.
+const PART_SUFFIX: &str = ".termax-part";
+
+/// The temporary sibling a file is written to before it replaces `d`:
+/// `.<name>.<pid>-<job>-<n>.termax-part`, unique per copy so concurrent
+/// transfers to one file never share it, with `<name>` shortened so the whole
+/// name stays within the usual 255-byte limit.
+fn part_path(ep: &Endpoint, d: &str, job: u64) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tag = format!(".{}-{job}-{}{PART_SUFFIX}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+    let (dir, name) = super::path::parent(ep.is_remote(), d).unwrap_or_default();
+    let mut end = name.len().min(255 - 1 - tag.len());
+    while !name.is_char_boundary(end) {
+        end -= 1;
     }
+    let file = format!(".{}{tag}", &name[..end]);
+    if dir.is_empty() { file } else { ep.join(&dir, &file) }
+}
+
+/// True if `e` (anywhere in its chain) is a local or SFTP permission error.
+fn is_permission_denied(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+            || matches!(c.downcast_ref::<SftpError>(), Some(SftpError::Status(s)) if s.status_code == StatusCode::PermissionDenied)
+    })
 }
 
 const CHUNK: usize = 256 * 1024;
@@ -180,12 +202,16 @@ impl Job {
                         self.summary.skipped += 1;
                         continue;
                     }
+                    // Leftovers of interrupted transfers are not real content.
+                    if !c.is_dir && c.name.ends_with(PART_SUFFIX) {
+                        continue;
+                    }
                     let child_dst = dst.join(&d, &c.name);
                     stack.push((src.join(&s, &c.name), c.is_dir, child_dst));
                 }
                 continue;
             }
-            if let Some(e) = existing {
+            if let Some(e) = &existing {
                 if e.is_dir {
                     bail!("{d} is a directory");
                 }
@@ -199,7 +225,8 @@ impl Job {
                     continue;
                 }
             }
-            match self.copy_file(src, &s, dst, &d).await? {
+            let exists = existing.is_some();
+            match self.copy_file(src, &s, dst, &d, exists).await? {
                 Copied::Done => self.summary.files += 1,
                 Copied::Cancelled => {
                     self.summary.cancelled = true;
@@ -237,13 +264,37 @@ impl Job {
         })
     }
 
-    /// Writes into a hidden sibling (`.<name>.termax-part`) and moves it over
-    /// `d` only once complete, so a cancelled or failed copy never touches an
-    /// existing destination file; only the partial temp file is removed.
-    async fn copy_file(&mut self, src: &Endpoint, s: &str, dst: &Endpoint, d: &str) -> Result<Copied> {
+    /// Normally writes into a hidden sibling (see [`part_path`]) and moves it
+    /// over `d` only once complete, so a cancelled or failed copy never touches
+    /// an existing destination file; only the partial temp file is removed. An
+    /// existing destination's permission bits are copied onto the temp first.
+    ///
+    /// An existing `d` is instead rewritten in place (truncated, then written)
+    /// when replacing it would lose something: it is a symlink, it belongs to
+    /// another user, its permissions can't be copied, or the directory doesn't
+    /// allow new files. In that mode a cancelled or failed copy leaves the
+    /// partially written `d` behind.
+    async fn copy_file(&mut self, src: &Endpoint, s: &str, dst: &Endpoint, d: &str, exists: bool) -> Result<Copied> {
         self.current = d.to_string();
-        let tmp = part_path(dst, d);
-        let result = self.stream(src, s, dst, &tmp).await;
+        let reader = src.open_read(s).await?;
+        let dest = if exists { Some(dst.write_meta(d).await?) } else { None };
+        if dest.is_some_and(|m| m.is_symlink) {
+            return self.stream(reader, dst.create(d).await?).await;
+        }
+        let tmp = part_path(dst, d, self.id);
+        let writer = match dst.create(&tmp).await {
+            Ok(w) => w,
+            Err(e) if exists && is_permission_denied(&e) => return self.stream(reader, dst.create(d).await?).await,
+            Err(e) => return Err(e),
+        };
+        if let Some(dest) = dest
+            && !self.adopt_meta(dst, &tmp, dest).await
+        {
+            drop(writer);
+            let _ = dst.remove(&tmp, false).await;
+            return self.stream(reader, dst.create(d).await?).await;
+        }
+        let result = self.stream(reader, writer).await;
         match result {
             Ok(Copied::Done) => {
                 if let Err(e) = dst.replace(&tmp, d).await {
@@ -263,9 +314,24 @@ impl Job {
         }
     }
 
-    async fn stream(&mut self, src: &Endpoint, s: &str, dst: &Endpoint, tmp: &str) -> Result<Copied> {
-        let mut reader = src.open_read(s).await?;
-        let mut writer = dst.create(tmp).await?;
+    /// Gives the fresh temp file `tmp` the destination's permission bits. False
+    /// if the replacement would not keep the destination's owner or mode.
+    async fn adopt_meta(&self, dst: &Endpoint, tmp: &str, dest: WriteMeta) -> bool {
+        let Ok(mine) = dst.write_meta(tmp).await else { return false };
+        if matches!((dest.uid, mine.uid), (Some(a), Some(b)) if a != b) {
+            return false;
+        }
+        match dest.mode {
+            Some(mode) if mine.mode != Some(mode) => dst.set_mode(tmp, mode).await.is_ok(),
+            _ => true,
+        }
+    }
+
+    async fn stream(
+        &mut self,
+        mut reader: Box<dyn AsyncRead + Send + Unpin>,
+        mut writer: Box<dyn AsyncWrite + Send + Unpin>,
+    ) -> Result<Copied> {
         let mut buf = vec![0u8; CHUNK];
         loop {
             let n = tokio::select! {
@@ -291,5 +357,21 @@ impl Job {
         self.last_emit = Instant::now();
         let _ =
             self.events.send(TransferEvent::Progress { id: self.id, done: self.done, total: self.total, current: self.current.clone() });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn part_paths_are_unique_hidden_and_bounded() {
+        let ep = Endpoint::Local;
+        let d = std::env::temp_dir().join("x.txt").display().to_string();
+        let (a, b) = (part_path(&ep, &d, 7), part_path(&ep, &d, 7));
+        assert_ne!(a, b, "concurrent copies to one file must not share a temp");
+        let long = std::env::temp_dir().join("é".repeat(127)).display().to_string();
+        let name = super::super::path::parent(false, &part_path(&ep, &long, u64::MAX)).unwrap().1;
+        assert!(name.len() <= 255 && name.starts_with('.') && name.ends_with(".termax-part"), "{name}");
     }
 }

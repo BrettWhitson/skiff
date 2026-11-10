@@ -156,7 +156,9 @@ async fn cancelled_overwrite_keeps_original_and_completed_one_replaces() {
         run_transfer(req(&r, "/small.txt", &Endpoint::Local, &p(local.path())), OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
     assert_eq!(res.unwrap().files, 1);
     assert_eq!(std::fs::read_to_string(local.path().join("small.txt")).unwrap(), "new");
-    assert!(!local.path().join(".small.txt.termax-part").exists());
+    let parts =
+        std::fs::read_dir(local.path()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".termax-part"));
+    assert_eq!(parts.count(), 0, "temp file left behind");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -392,4 +394,95 @@ async fn copy_directory_onto_file_errors() {
             .await;
     assert!(res.is_err());
     assert_eq!(std::fs::read_to_string(fx.root().join("same")).unwrap(), "file");
+}
+
+fn sftp(ep: &Endpoint) -> &russh_sftp::client::SftpSession {
+    match ep {
+        Endpoint::Remote(c) => &c.sftp,
+        Endpoint::Local => unreachable!(),
+    }
+}
+
+/// Creates a file symlink, or returns false where the OS doesn't allow it.
+fn symlink_file(target: &Path, link: &Path) -> bool {
+    #[cfg(windows)]
+    let r = std::os::windows::fs::symlink_file(target, link);
+    #[cfg(unix)]
+    let r = std::os::unix::fs::symlink(target, link);
+    r.map_err(|e| eprintln!("skipping symlink part: cannot create symlinks here ({e})")).is_ok()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn overwrite_keeps_dest_mode_owner_and_symlink() {
+    use russh_sftp::client::fs::Metadata;
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    let local = tempfile::tempdir().unwrap();
+    for name in ["secret", "owned", "link"] {
+        std::fs::write(fx.root().join(name), "old").unwrap();
+        std::fs::write(local.path().join(name), "new").unwrap();
+    }
+    std::fs::remove_file(fx.root().join("link")).unwrap();
+    std::fs::write(fx.root().join("target"), "old").unwrap();
+    let remote_link = symlink_file(&fx.root().join("target"), &fx.root().join("link"));
+    let s = sftp(&r);
+    s.set_metadata("/secret", Metadata { permissions: Some(0o600), ..Default::default() }).await.unwrap();
+    s.set_metadata("/owned", Metadata { uid: Some(4242), gid: Some(4242), ..Default::default() }).await.unwrap();
+
+    for name in ["secret", "owned", "link"] {
+        if name == "link" && !remote_link {
+            continue;
+        }
+        let up = req(&Endpoint::Local, &p(&local.path().join(name)), &r, "/");
+        let (res, _) = run_transfer(up, OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+        assert_eq!(res.unwrap().files, 1, "{name}");
+    }
+    assert_eq!(std::fs::read_to_string(fx.root().join("secret")).unwrap(), "new");
+    assert_eq!(s.metadata("/secret").await.unwrap().permissions.unwrap() & 0o7777, 0o600, "mode dropped");
+    assert_eq!(std::fs::read_to_string(fx.root().join("owned")).unwrap(), "new");
+    assert_eq!(s.metadata("/owned").await.unwrap().uid, Some(4242), "owner dropped");
+    if remote_link {
+        assert!(std::fs::symlink_metadata(fx.root().join("link")).unwrap().file_type().is_symlink(), "link replaced");
+        assert_eq!(std::fs::read_to_string(fx.root().join("target")).unwrap(), "new");
+    }
+
+    // A local symlinked destination is written through as well.
+    std::fs::write(local.path().join("ltarget"), "old").unwrap();
+    std::fs::write(fx.root().join("lnk"), "new").unwrap();
+    if symlink_file(&local.path().join("ltarget"), &local.path().join("lnk")) {
+        let down = req(&r, "/lnk", &Endpoint::Local, &p(local.path()));
+        assert_eq!(run_transfer(down, OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await.0.unwrap().files, 1);
+        assert!(std::fs::symlink_metadata(local.path().join("lnk")).unwrap().file_type().is_symlink(), "local link replaced");
+        assert_eq!(std::fs::read_to_string(local.path().join("ltarget")).unwrap(), "new");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn overwrite_in_unwritable_dir_writes_in_place() {
+    use russh_sftp::client::fs::Metadata;
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    std::fs::create_dir(fx.root().join("ro")).unwrap();
+    std::fs::write(fx.root().join("ro").join("f"), "old").unwrap();
+    let r = remote(&fx).await;
+    sftp(&r).set_metadata("/ro", Metadata { permissions: Some(0o555), ..Default::default() }).await.unwrap();
+    let local = tempfile::tempdir().unwrap();
+    std::fs::write(local.path().join("f"), "new").unwrap();
+    let up = req(&Endpoint::Local, &p(&local.path().join("f")), &r, "/ro");
+    let (res, _) = run_transfer(up, OverwritePolicy::Overwrite, |_| panic!(), |_| {}).await;
+    assert_eq!(res.unwrap().files, 1);
+    assert_eq!(std::fs::read_to_string(fx.root().join("ro").join("f")).unwrap(), "new");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn directory_copy_skips_part_files() {
+    let fx = TestFixture::new(FixtureAuth::Key).unwrap();
+    let r = remote(&fx).await;
+    let local = tempfile::tempdir().unwrap();
+    let d = local.path().join("d");
+    std::fs::create_dir(&d).unwrap();
+    std::fs::write(d.join("a.txt"), "a").unwrap();
+    std::fs::write(d.join(".a.txt.1-1.termax-part"), "partial").unwrap();
+    let (res, _) = run_transfer(req(&Endpoint::Local, &p(&d), &r, "/"), OverwritePolicy::Ask, |_| panic!(), |_| {}).await;
+    assert_eq!(res.unwrap().files, 1);
+    assert!(!fx.root().join("d").join(".a.txt.1-1.termax-part").exists());
 }

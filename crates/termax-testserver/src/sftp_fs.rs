@@ -1,5 +1,11 @@
 //! SFTP handler serving a local directory as `/`. Paths that would leave the
 //! root are refused.
+//!
+//! Like a POSIX server, every file reports an owner (1000 unless set) and
+//! SETSTAT of permissions/owner is honoured, but only emulated: the values
+//! are kept in memory per path (moved by rename, dropped by remove), never
+//! applied to the real file. A directory whose emulated mode lacks the owner
+//! write bit refuses new files.
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, SeekFrom};
@@ -17,7 +23,14 @@ pub struct SftpFs {
     root: PathBuf,
     handles: HashMap<String, Open>,
     next: u64,
+    /// Emulated SETSTAT values by virtual path: (permission bits, uid, gid).
+    emulated: HashMap<String, Emulated>,
 }
+
+/// Emulated permission bits, uid and gid of one path.
+type Emulated = (Option<u32>, Option<u32>, Option<u32>);
+
+const DEFAULT_OWNER: u32 = 1000;
 
 fn status(id: u32) -> Status {
     Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() }
@@ -44,7 +57,7 @@ fn io_err(e: std::io::Error) -> StatusCode {
 
 impl SftpFs {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, handles: HashMap::new(), next: 1 }
+        Self { root, handles: HashMap::new(), next: 1, emulated: HashMap::new() }
     }
 
     /// Normalizes a client path to `/a/b` form; `..` above `/` is refused.
@@ -69,6 +82,24 @@ impl SftpFs {
             p.push(seg);
         }
         Ok(p)
+    }
+
+    /// Applies the emulated owner/permissions of `path` to `a`.
+    fn patch(&self, path: &str, mut a: FileAttributes) -> FileAttributes {
+        let (mode, uid, gid) = Self::virt(path).ok().and_then(|v| self.emulated.get(&v).copied()).unwrap_or_default();
+        if let Some(mode) = mode {
+            a.permissions = Some((a.permissions.unwrap_or(0) & !0o7777) | (mode & 0o7777));
+        }
+        a.uid = uid.or(a.uid).or(Some(DEFAULT_OWNER));
+        a.gid = gid.or(a.gid).or(Some(DEFAULT_OWNER));
+        a
+    }
+
+    /// True if `path`'s parent has an emulated mode without the write bit.
+    fn parent_read_only(&self, path: &str) -> bool {
+        let Ok(v) = Self::virt(path) else { return false };
+        let parent = v.rsplit_once('/').map(|(p, _)| if p.is_empty() { "/" } else { p }).unwrap_or("/");
+        matches!(self.emulated.get(parent), Some((Some(mode), _, _)) if mode & 0o200 == 0)
     }
 
     fn add(&mut self, h: Open) -> String {
@@ -99,6 +130,9 @@ impl russh_sftp::server::Handler for SftpFs {
 
     async fn open(&mut self, id: u32, filename: String, pflags: OpenFlags, _attrs: FileAttributes) -> Result<Handle, Self::Error> {
         let path = self.real(&filename)?;
+        if pflags.contains(OpenFlags::CREATE) && !path.exists() && self.parent_read_only(&filename) {
+            return Err(StatusCode::PermissionDenied);
+        }
         let mut o = tokio::fs::OpenOptions::new();
         o.read(pflags.contains(OpenFlags::READ))
             .write(pflags.contains(OpenFlags::WRITE) || pflags.contains(OpenFlags::APPEND))
@@ -138,12 +172,12 @@ impl russh_sftp::server::Handler for SftpFs {
 
     async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         let m = tokio::fs::symlink_metadata(self.real(&path)?).await.map_err(io_err)?;
-        Ok(Attrs { id, attrs: attrs_of(&m) })
+        Ok(Attrs { id, attrs: self.patch(&path, attrs_of(&m)) })
     }
 
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         let m = tokio::fs::metadata(self.real(&path)?).await.map_err(io_err)?;
-        Ok(Attrs { id, attrs: attrs_of(&m) })
+        Ok(Attrs { id, attrs: self.patch(&path, attrs_of(&m)) })
     }
 
     async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
@@ -151,7 +185,15 @@ impl russh_sftp::server::Handler for SftpFs {
         Ok(Attrs { id, attrs: attrs_of(&m) })
     }
 
-    async fn setstat(&mut self, id: u32, _path: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
+    async fn setstat(&mut self, id: u32, path: String, attrs: FileAttributes) -> Result<Status, Self::Error> {
+        tokio::fs::symlink_metadata(self.real(&path)?).await.map_err(io_err)?;
+        let e = self.emulated.entry(Self::virt(&path)?).or_default();
+        if let Some(mode) = attrs.permissions {
+            e.0 = Some(mode & 0o7777);
+        }
+        if attrs.uid.is_some() {
+            (e.1, e.2) = (attrs.uid, attrs.gid);
+        }
         Ok(status(id))
     }
 
@@ -189,6 +231,7 @@ impl russh_sftp::server::Handler for SftpFs {
             }
             tokio::fs::remove_dir(&path).await.map_err(io_err)?;
         }
+        self.emulated.remove(&Self::virt(&filename)?);
         Ok(status(id))
     }
 
@@ -208,6 +251,9 @@ impl russh_sftp::server::Handler for SftpFs {
             return Err(StatusCode::Failure);
         }
         tokio::fs::rename(from, to).await.map_err(io_err)?;
+        if let Some(e) = self.emulated.remove(&Self::virt(&oldpath)?) {
+            self.emulated.insert(Self::virt(&newpath)?, e);
+        }
         Ok(status(id))
     }
 

@@ -8,6 +8,17 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use super::connect::RemoteConn;
 use super::path::{self, FileEntry};
 
+/// What a transfer needs to know about an existing destination file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WriteMeta {
+    /// The path itself is a symbolic link.
+    pub is_symlink: bool,
+    /// Owner user id, where the file system reports one (Unix, SFTP).
+    pub uid: Option<u32>,
+    /// Permission bits (`0o7777`), where the file system has them.
+    pub mode: Option<u32>,
+}
+
 #[derive(Clone)]
 pub enum Endpoint {
     Local,
@@ -99,9 +110,10 @@ impl Endpoint {
 
     /// Moves file `from` over `to`, replacing it if it exists. Local renames
     /// replace atomically. SFTP v3 servers (OpenSSH) refuse to rename onto an
-    /// existing file and russh-sftp has no `posix-rename`, so a remote replace
-    /// falls back to remove-then-rename: if the connection drops in between,
-    /// `to` is gone but the complete new copy remains at `from`.
+    /// existing file, and russh-sftp 3.0 keeps its raw session (the only way to
+    /// send `posix-rename@openssh.com`) private, so a remote replace falls back
+    /// to remove-then-rename: if the connection drops in between, `to` is gone
+    /// but the complete new copy remains at `from`.
     pub async fn replace(&self, from: &str, to: &str) -> Result<()> {
         match self {
             Endpoint::Local => self.rename(from, to).await,
@@ -165,6 +177,50 @@ impl Endpoint {
             }
         }
         Ok(())
+    }
+
+    /// Owner, permissions and link status of `p` itself (links not followed).
+    pub async fn write_meta(&self, p: &str) -> Result<WriteMeta> {
+        match self {
+            Endpoint::Local => {
+                let m = tokio::fs::symlink_metadata(p).await.with_context(|| format!("stat {p}"))?;
+                #[cfg(unix)]
+                let (uid, mode) = {
+                    use std::os::unix::fs::MetadataExt;
+                    (Some(m.uid()), Some(m.mode() & 0o7777))
+                };
+                #[cfg(not(unix))]
+                let (uid, mode) = (None, None);
+                Ok(WriteMeta { is_symlink: m.file_type().is_symlink(), uid, mode })
+            }
+            Endpoint::Remote(c) => {
+                let m = c.sftp.symlink_metadata(p).await.with_context(|| format!("stat {p}"))?;
+                Ok(WriteMeta { is_symlink: m.file_type().is_symlink(), uid: m.uid, mode: m.permissions.map(|m| m & 0o7777) })
+            }
+        }
+    }
+
+    /// Sets the permission bits of `p`. A no-op on Windows, where new files
+    /// already get the directory's inherited ACL.
+    pub async fn set_mode(&self, p: &str, mode: u32) -> Result<()> {
+        match self {
+            Endpoint::Local => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    tokio::fs::set_permissions(p, std::fs::Permissions::from_mode(mode & 0o7777))
+                        .await
+                        .with_context(|| format!("chmod {p}"))?;
+                }
+                #[cfg(not(unix))]
+                let _ = (p, mode);
+                Ok(())
+            }
+            Endpoint::Remote(c) => {
+                let attrs = russh_sftp::client::fs::Metadata { permissions: Some(mode & 0o7777), ..Default::default() };
+                c.sftp.set_metadata(p, attrs).await.with_context(|| format!("chmod {p}"))
+            }
+        }
     }
 
     pub async fn open_read(&self, p: &str) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
