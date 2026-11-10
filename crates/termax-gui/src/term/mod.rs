@@ -7,9 +7,9 @@ use termax_core::terminal::TerminalSession;
 use termax_ui::a11y::Role;
 use termax_ui::geom::{Point, Rect, Size};
 use termax_ui::input::{CursorIcon, Event, Key, Modifiers};
+use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Sense, Ui};
-use termax_ui::layout::Size as L;
 use termax_ui::widgets::{MenuItem, button, context_menu, label, open_context_menu};
 
 use crate::engine::WakeFn;
@@ -21,8 +21,8 @@ use self::select::{SelectState, handle_mouse, selection_text};
 
 pub mod announce;
 pub mod input;
-pub mod render;
 pub mod mouse;
+pub mod render;
 pub mod search;
 pub mod select;
 
@@ -78,7 +78,10 @@ pub struct TermTab {
 pub fn grid_for(rect: Rect, cell: Size) -> (u16, u16) {
     let rows = if cell.h > 0 { rect.h / cell.h } else { 0 };
     let cols = if cell.w > 0 { rect.w / cell.w } else { 0 };
-    (rows.clamp(2, u16::MAX as i32) as u16, cols.clamp(10, u16::MAX as i32) as u16)
+    (
+        rows.clamp(2, u16::MAX as i32) as u16,
+        cols.clamp(10, u16::MAX as i32) as u16,
+    )
 }
 
 impl TermTab {
@@ -88,7 +91,12 @@ impl TermTab {
     }
 
     /// A tab that runs `program args` (tests point this at the local fixture).
-    pub fn with_command(host: HostEntry, program: String, args: Vec<String>, scrollback: usize) -> Self {
+    pub fn with_command(
+        host: HostEntry,
+        program: String,
+        args: Vec<String>,
+        scrollback: usize,
+    ) -> Self {
         TermTab {
             host,
             program,
@@ -122,11 +130,17 @@ impl TermTab {
     /// a one-line one is typed, with its Enter if it has one.
     pub fn send_snippet(&mut self, snippet: &termax_core::termx::Snippet) {
         use termax_core::termx::SnippetSend;
-        let Some(s) = self.session.as_mut() else { return };
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
         match snippet.send() {
             SnippetSend::Type(text) => s.write(text.as_bytes()),
             SnippetSend::Paste { body, enter } => {
-                let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
+                let bracketed = s
+                    .parser
+                    .lock()
+                    .map(|p| p.screen().bracketed_paste())
+                    .unwrap_or(false);
                 match termax_core::termx::paste_lines(&body, bracketed, self.confirm_paste) {
                     Some(n) => self.pending_paste = Some((body, n, enter)),
                     None => paste_then_enter(s, &body, enter),
@@ -199,7 +213,11 @@ impl TermTab {
     }
 
     fn zoom(&mut self, a: Action, default_px: f32) {
-        let cur = if self.font_px > 0.0 { self.font_px } else { default_px };
+        let cur = if self.font_px > 0.0 {
+            self.font_px
+        } else {
+            default_px
+        };
         self.font_px = match a {
             Action::ZoomIn => (cur + 1.0).min(MAX_FONT),
             Action::ZoomOut => (cur - 1.0).max(MIN_FONT),
@@ -222,7 +240,15 @@ pub fn view(
     wake: Option<WakeFn>,
     actions: &mut Vec<Action>,
 ) {
-    let r = ui.interact(id, rect, Sense { click: true, drag: true, focus: true });
+    let r = ui.interact(
+        id,
+        rect,
+        Sense {
+            click: true,
+            drag: true,
+            focus: true,
+        },
+    );
     if r.hovered {
         ui.set_cursor_icon(CursorIcon::Text);
     }
@@ -241,7 +267,11 @@ pub fn view(
             }
             Action::Paste => {
                 if let (Some(t), Some(s)) = (ui.clipboard().get(), tab.session.as_mut()) {
-                    let bracketed = s.parser.lock().map(|p| p.screen().bracketed_paste()).unwrap_or(false);
+                    let bracketed = s
+                        .parser
+                        .lock()
+                        .map(|p| p.screen().bracketed_paste())
+                        .unwrap_or(false);
                     match termax_core::termx::paste_lines(&t, bracketed, tab.confirm_paste) {
                         Some(n) => tab.pending_paste = Some((t, n, false)),
                         None => s.paste(&t),
@@ -262,32 +292,52 @@ pub fn view(
         // F6 / Shift+F6 still leave the terminal (no keyboard trap);
         // Ctrl+Shift+F6 sends F6 to the shell instead.
         let f6 = ui.input().events.iter().find_map(|e| match e {
-            Event::KeyDown { key: Key::F(6), mods, .. } if !mods.ctrl && !mods.alt && !mods.logo => Some(!mods.shift),
+            Event::KeyDown {
+                key: Key::F(6),
+                mods,
+                ..
+            } if !mods.ctrl && !mods.alt && !mods.logo => Some(!mods.shift),
             _ => None,
         });
         if let Some(forward) = f6 {
             ui.cycle_region(forward);
         }
     }
-    let px = if tab.font_px > 0.0 { tab.font_px * scale } else { ui.mono_px() };
+    let px = if tab.font_px > 0.0 {
+        tab.font_px * scale
+    } else {
+        ui.mono_px()
+    };
     let (cw, ch) = ui.fonts().cell_size(px);
     let cell = Size::new((cw.round() as i32).max(1), (ch.ceil() as i32).max(1));
     tab.cell = cell;
     let pad = ui.px(6);
-    let inner = Rect::new(rect.x + pad, rect.y + pad, (rect.w - 2 * pad).max(0), (rect.h - 2 * pad).max(0));
+    let inner = Rect::new(
+        rect.x + pad,
+        rect.y + pad,
+        (rect.w - 2 * pad).max(0),
+        (rect.h - 2 * pad).max(0),
+    );
     let grid = grid_for(inner, cell);
 
     tab.ensure_session(grid, wake.as_ref());
     if let Some(e) = tab.error.clone() {
         ui.painter().rect(rect, theme.term_bg, 0.0);
-        label(ui, Rect::new(inner.x, inner.y, inner.w, cell.h + ui.px(4)), &e, Some(theme.palette.danger));
+        label(
+            ui,
+            Rect::new(inner.x, inner.y, inner.w, cell.h + ui.px(4)),
+            &e,
+            Some(theme.palette.danger),
+        );
         let name = format!("Terminal: {}", tab.host.name);
         if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
             n.value = Some(e);
         }
         return;
     }
-    let Some(session) = tab.session.as_mut() else { return };
+    let Some(session) = tab.session.as_mut() else {
+        return;
+    };
     // Too small for even the minimum grid (minimized, collapsed): keep the
     // pty's size, since shrinking it would cut the screen's text.
     let hidden = inner.w < cell.w * 10 || inner.h < cell.h * 2;
@@ -297,11 +347,24 @@ pub fn view(
         tab.resizes += 1;
     }
 
-    // A program that turned mouse mode on gets the mouse; Shift keeps it
-    // for selecting (as in xterm), and a selection already started finishes.
-    let (mouse_mode, mouse_enc) =
-        session.parser.lock().map(|p| (p.screen().mouse_protocol_mode(), p.screen().mouse_protocol_encoding())).unwrap_or_default();
-    let report_mouse = mouse_mode != vt100::MouseProtocolMode::None && !ui.input().mods.shift && !tab.select.dragging;
+    // Who gets the mouse: see `MouseState::reporting`.
+    let (mouse_mode, mouse_enc, scrolled_back) = session
+        .parser
+        .lock()
+        .map(|p| {
+            (
+                p.screen().mouse_protocol_mode(),
+                p.screen().mouse_protocol_encoding(),
+                p.screen().scrollback() > 0,
+            )
+        })
+        .unwrap_or_default();
+    let report_mouse = tab.mouse.reporting(
+        mouse_mode,
+        ui.input().mods.shift,
+        tab.select.dragging,
+        scrolled_back,
+    );
 
     // Wheel: scrollback (or arrow keys in full-screen apps like less/vim).
     let (_, dy) = ui.input().wheel();
@@ -310,12 +373,22 @@ pub fn view(
         let lines = tab.wheel_rest.trunc() as i32;
         tab.wheel_rest -= lines as f32;
         if lines != 0 {
-            let alt = session.parser.lock().map(|p| p.screen().alternate_screen()).unwrap_or(false);
+            let alt = session
+                .parser
+                .lock()
+                .map(|p| p.screen().alternate_screen())
+                .unwrap_or(false);
             if report_mouse {
-                let ev = if lines > 0 { termax_core::termx::MouseEv::WheelUp } else { termax_core::termx::MouseEv::WheelDown };
+                let ev = if lines > 0 {
+                    termax_core::termx::MouseEv::WheelUp
+                } else {
+                    termax_core::termx::MouseEv::WheelDown
+                };
                 let (c, r) = mouse::cell_of(ui.input().mouse, inner, cell);
                 let m = ui.input().mods;
-                if let Some(b) = termax_core::termx::encode_mouse(mouse_mode, mouse_enc, ev, c, r, m.shift, m.alt, m.ctrl) {
+                if let Some(b) = termax_core::termx::encode_mouse(
+                    mouse_mode, mouse_enc, ev, c, r, m.shift, m.alt, m.ctrl,
+                ) {
                     for _ in 0..lines.unsigned_abs() {
                         session.write(&b);
                     }
@@ -332,7 +405,9 @@ pub fn view(
     }
 
     let alive = session.is_alive();
-    if let Some(s) = tab.search.as_mut() {
+    if let Some(s) = tab.search.as_mut()
+        && (focused || ui.has_focus(id.with("find").with("input")))
+    {
         search::step_keys(ui, s);
     }
     if focused && ui.keys_for(id) {
@@ -367,7 +442,10 @@ pub fn view(
     if !ui.a11y_on() {
         tab.resync = true;
     } else {
-        let text = parser.lock().map(|p| p.screen().contents()).unwrap_or_default();
+        let text = parser
+            .lock()
+            .map(|p| p.screen().contents())
+            .unwrap_or_default();
         let speak = match tab.announce {
             termax_core::config::Announce::All => true,
             termax_core::config::Announce::Focused => focused,
@@ -375,7 +453,8 @@ pub fn view(
         };
         let quiet = std::mem::take(&mut tab.resync);
         if speak && !quiet && text != tab.last_screen {
-            tab.announcer.push_output(&announce::new_output(&tab.last_screen, &text));
+            tab.announcer
+                .push_output(&announce::new_output(&tab.last_screen, &text));
         }
         tab.last_screen.clone_from(&text);
         if let Some(s) = tab.announcer.take(Instant::now()) {
@@ -391,16 +470,32 @@ pub fn view(
             n.live = true;
         }
     }
+    // Search catches up with new output before the matches are drawn.
+    if let Some(s) = tab.search.as_mut()
+        && s.update(session)
+    {
+        ui.request_repaint_in(Duration::ZERO);
+    }
     let offset = parser.lock().map(|p| p.screen().scrollback()).unwrap_or(0);
     if report_mouse {
         let events = ui.input().events.clone();
         let mods = ui.input().mods;
-        for b in mouse::reports(&events, inner, cell, mouse_mode, mouse_enc, mods, r.hovered, &mut tab.mouse) {
+        for b in mouse::reports(
+            &events,
+            inner,
+            cell,
+            mouse_mode,
+            mouse_enc,
+            mods,
+            r.hovered,
+            &mut tab.mouse,
+        ) {
             if let Some(s) = tab.session.as_mut() {
                 s.write(&b);
             }
         }
-    } else if (r.hovered || tab.select.dragging) && handle_mouse(ui, id, inner, cell, &mut tab.select, offset)
+    } else if (r.hovered || tab.select.dragging)
+        && handle_mouse(ui, id, inner, cell, &mut tab.select, offset)
         && let Ok(p) = parser.lock()
     {
         tab.select.resolve(p.screen(), offset);
@@ -413,8 +508,16 @@ pub fn view(
     }
     let has_sel = tab.select.sel.is_some();
     let items = [
-        MenuItem { label: "Copy", shortcut: None, enabled: has_sel },
-        MenuItem { label: "Paste", shortcut: None, enabled: true },
+        MenuItem {
+            label: "Copy",
+            shortcut: None,
+            enabled: has_sel,
+        },
+        MenuItem {
+            label: "Paste",
+            shortcut: None,
+            enabled: true,
+        },
     ];
     match context_menu(ui, menu, &items) {
         Some(0) => actions.push(Action::Copy),
@@ -435,8 +538,24 @@ pub fn view(
     ui.painter().rect(rect, theme.term_bg, 0.0);
     if let Ok(mut p) = parser.lock() {
         let rows = p.screen().size().0 as usize;
-        let marks = tab.search.as_ref().map(|s| s.marks(offset, rows)).unwrap_or_default();
-        draw_screen(ui, inner, p.screen(), theme, cell, px, cursor, tab.select.sel.as_ref(), &marks);
+        let scrolled = tab.session.as_ref().map_or(0, |s| s.scrolled());
+        let top = scrolled.saturating_sub(p.screen().scrollback() as u64);
+        let marks = tab
+            .search
+            .as_ref()
+            .map(|s| s.found.marks(top, rows))
+            .unwrap_or_default();
+        draw_screen(
+            ui,
+            inner,
+            p.screen(),
+            theme,
+            cell,
+            px,
+            cursor,
+            tab.select.sel.as_ref(),
+            &marks,
+        );
         if offset > 0 {
             draw_scrollbar(ui, rect, &mut p, offset, theme);
         }
@@ -449,7 +568,8 @@ pub fn view(
         let bar = Rect::new(inner.x, y - ui.px(4), w.min(inner.w), lh + ui.px(8));
         let (radius, at) = (ui.px(4) as f32, Point::new(bar.x + ui.px(8), y));
         ui.painter().rect(bar, theme.palette.surface_alt, radius);
-        ui.painter().text(at, msg, FontKind::Mono, px, theme.palette.warning);
+        ui.painter()
+            .text(at, msg, FontKind::Mono, px, theme.palette.warning);
     }
     find_bar(ui, id, inner, tab, &parser);
     paste_bar(ui, id, inner, tab);
@@ -469,7 +589,11 @@ fn paste_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab) {
         tab.paste_shown = false;
         return;
     };
-    let what = if *n == 1 { "1 line".to_string() } else { format!("{n} lines") };
+    let what = if *n == 1 {
+        "1 line".to_string()
+    } else {
+        format!("{n} lines")
+    };
     let msg = format!("Paste {what} into {}?", tab.host.name);
     let (yes, no) = (id.with("paste-yes"), id.with("paste-no"));
     // Focus starts on Cancel, so a reflexive Enter doesn't paste.
@@ -494,7 +618,9 @@ fn paste_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab) {
             answer = Some(false);
         }
     });
-    if (ui.has_focus(yes) || ui.has_focus(no)) && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE) {
+    if (ui.has_focus(yes) || ui.has_focus(no))
+        && ui.input_mut().take_key(&Key::Escape, Modifiers::NONE)
+    {
         answer = Some(false);
     }
     if let Some(yes) = answer {
@@ -504,31 +630,39 @@ fn paste_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab) {
 }
 
 /// The find bar over the top-right of the terminal, while search is open:
-/// re-runs the search as the query or output changes and scrolls to the
-/// current match.
-fn find_bar(ui: &mut Ui, id: Id, inner: Rect, tab: &mut TermTab, parser: &std::sync::Arc<std::sync::Mutex<vt100::Parser>>) {
-    let Some(s) = tab.search.as_mut() else { return };
+/// runs the search as the query changes and scrolls to the current match.
+fn find_bar(
+    ui: &mut Ui,
+    id: Id,
+    inner: Rect,
+    tab: &mut TermTab,
+    parser: &std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
+) {
+    let (Some(s), Some(session)) = (tab.search.as_mut(), tab.session.as_ref()) else {
+        return;
+    };
     let w = ui.px(360).min(inner.w);
     let h = ui.px(32);
     let rect = Rect::new(inner.right() - w, inner.y, w, h);
     let (changed, out) = search::bar(ui, id.with("find"), rect, s);
-    let generation = tab.session.as_ref().map_or(0, |s| s.generation());
-    let Ok(mut p) = parser.lock() else { return };
     if out.close {
         tab.search = None;
-        p.screen_mut().set_scrollback(0);
+        if let Ok(mut p) = parser.lock() {
+            p.screen_mut().set_scrollback(0);
+        }
         ui.request_focus(id);
         return;
     }
-    if s.update(&mut p, generation, changed) {
+    if changed && s.update(session) {
         // The marks for the new matches are drawn next frame.
         ui.request_repaint_in(Duration::ZERO);
     }
     if std::mem::take(&mut s.scroll_due) {
-        if let Some(off) = s.offset() {
-            // Keep the match a few rows below the top when there is room.
+        if let Ok(mut p) = parser.lock() {
             let rows = p.screen().size().0 as usize;
-            p.screen_mut().set_scrollback(off.saturating_sub(rows / 3));
+            if let Some(off) = s.found.offset(session.scrolled(), rows) {
+                p.screen_mut().set_scrollback(off);
+            }
         }
         ui.request_repaint_in(Duration::ZERO);
     }
@@ -543,12 +677,23 @@ fn draw_scrollbar(ui: &mut Ui, rect: Rect, p: &mut vt100::Parser, offset: usize,
     let rows = p.screen().size().0 as usize;
     let total = (history + rows).max(1);
     let w = ui.px(4).max(2);
-    let track = Rect::new(rect.right() - w - ui.px(2), rect.y + ui.px(2), w, rect.h - ui.px(4));
-    let h = ((track.h as usize * rows / total) as i32).max(ui.px(20)).min(track.h);
+    let track = Rect::new(
+        rect.right() - w - ui.px(2),
+        rect.y + ui.px(2),
+        w,
+        rect.h - ui.px(4),
+    );
+    let h = ((track.h as usize * rows / total) as i32)
+        .max(ui.px(20))
+        .min(track.h);
     let top_line = history - offset; // first visible line, counted from the oldest
     let y = track.y + ((track.h - h) as usize * top_line / history.max(1)) as i32;
     let radius = w as f32 / 2.0;
-    ui.painter().rect(Rect::new(track.x, y, w, h), theme.palette.muted.with_alpha(160), radius);
+    ui.painter().rect(
+        Rect::new(track.x, y, w, h),
+        theme.palette.muted.with_alpha(160),
+        radius,
+    );
 }
 
 #[cfg(test)]
