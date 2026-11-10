@@ -167,6 +167,7 @@ pub fn index(app: &GuiApp) -> Vec<Entry> {
         e(Section::General, "ssh config file", "SSH", "path ~/.ssh/config include", f(general::ID_CFGPATH)),
         e(Section::General, "Load ~/.ssh/config", "SSH", "ssh config hosts import", f(general::ID_LOAD)),
         e(Section::General, "Scrollback lines", "Terminal", "history buffer lines terminal", fs(general::ID_SCROLL)),
+        e(Section::General, "Dim inactive panes", "Terminal", "split focus fade", f(general::ID_DIM)),
         e(Section::General, "Local start folder", "Files", "directory home file transfer", f(general::ID_START)),
         e(Section::General, "Show hidden files", "Files", "dot files dotfiles", f(general::ID_HIDDEN)),
         e(Section::General, "Check host status", "Hosts", "online offline ping reachability", f(general::ID_STATUS)),

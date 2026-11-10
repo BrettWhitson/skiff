@@ -227,6 +227,7 @@ fn search_filters_and_opens_settings() {
     let mut f = settings("Connections");
     let all = super::index(&f.app);
     assert_eq!(super::search(&all, "scroll").first().map(|e| e.title.as_str()), Some("Scrollback lines"));
+    assert_eq!(super::search(&all, "dim").first().map(|e| e.title.as_str()), Some("Dim inactive panes"));
     assert!(super::search(&all, "beta").iter().any(|e| e.section == super::Section::Connections), "hosts by name");
     assert!(super::search(&all, "zzz-nothing").is_empty());
     f.click_text("Search settings");

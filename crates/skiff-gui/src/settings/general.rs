@@ -17,6 +17,7 @@ pub const ID_SSH: &str = "settings-gen-ssh";
 pub const ID_CFGPATH: &str = "settings-gen-cfgpath";
 pub const ID_LOAD: &str = "settings-gen-load";
 pub const ID_SCROLL: &str = "settings-gen-scroll";
+pub const ID_DIM: &str = "settings-gen-dim";
 pub const ID_START: &str = "settings-gen-start";
 pub const ID_HIDDEN: &str = "settings-gen-hidden";
 pub const ID_STATUS: &str = "settings-gen-status";
@@ -112,9 +113,12 @@ pub fn view(ui: &mut Ui, rect: Rect, st: &mut GeneralState, app: &mut GuiApp) ->
         app.cfg.settings.scrollback = lines as usize;
         app.save_config();
     }
-    // TODO(ui/shell merge): add a checkbox here, id "settings-gen-dim", label
-    // "Dim inactive panes", bound to `app.cfg.gui.dim_inactive_panes` (that
-    // field lives on the ui/shell branch, not yet on this one).
+    let (_, c) = split_row(ui, rows.next(ui));
+    let mut dim = app.cfg.gui.dim_inactive_panes;
+    if checkbox(ui, Id::new(ID_DIM), c, &mut dim, "Dim inactive panes").clicked {
+        app.cfg.gui.dim_inactive_panes = dim;
+        app.save_config();
+    }
 
     rows.section(ui, "Files");
     text_row(ui, &mut rows, st, app, Text::Start, "Local start folder", &home);
