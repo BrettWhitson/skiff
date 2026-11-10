@@ -29,6 +29,9 @@ pub struct Style {
     pub radius: f32,
     pub spacing: i32,
     pub padding: i32,
+    /// Interface zoom: multiplies the display scale for layout and text
+    /// alike, so rows grow with their text.
+    pub zoom: f32,
 }
 
 impl Style {
@@ -54,6 +57,7 @@ impl Style {
             radius: 6.0,
             spacing: 8,
             padding: 8,
+            zoom: 1.0,
         }
     }
 }

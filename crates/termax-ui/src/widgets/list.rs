@@ -34,8 +34,8 @@ pub fn list(
 }
 
 /// `list` with a name for the list and for each row, as screen readers
-/// announce them. A screen-reader Click selects a row; a Click on the
-/// selected row activates it (as Enter does).
+/// announce them. A screen-reader Click (the default action) selects a row
+/// and activates it, as Enter does; a mouse click only selects.
 #[allow(clippy::too_many_arguments)]
 pub fn list_named(
     ui: &mut Ui,
@@ -107,7 +107,9 @@ pub fn list_named(
             let row = Rect::new(vis.x, vis.y + i as i32 * rh - off, vis.w, rh);
             let rid = id.with(i);
             let rr = ui.interact(rid, row, Sense::click());
-            if ui.a11y_clicked(rid) && *selected == Some(i) {
+            if ui.a11y_clicked(rid) {
+                *selected = Some(i);
+                ui.request_focus(id);
                 out.activated = Some(i);
             }
             if rr.pressed || rr.clicked {
@@ -141,7 +143,18 @@ pub fn list_named(
                 ui.painter().rect(row, p.surface_alt, 0.0);
             }
             f(ui, row, i, is_sel);
+            if is_sel && ui.has_focus(id) {
+                focus_bar(ui, row);
+            }
         }
     }));
     out
+}
+
+/// The keyboard row of a focused list: a 3px accent bar down its left edge,
+/// so it stands out by shape as well as by the selection color.
+pub(super) fn focus_bar(ui: &mut Ui, row: Rect) {
+    let w = ui.px(3).max(2);
+    let c = ui.style().palette.accent;
+    ui.painter().rect(Rect::new(row.x, row.y, w, row.h), c, 0.0);
 }

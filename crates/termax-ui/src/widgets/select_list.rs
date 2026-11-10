@@ -238,6 +238,9 @@ pub fn select_list_named(
                 ui.painter().rect(row, p.surface_alt, 0.0);
             }
             f(ui, row, i, is_sel);
+            if sel.cursor == Some(i) && ui.has_focus(id) {
+                super::list::focus_bar(ui, row);
+            }
         }
     }));
 

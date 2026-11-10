@@ -292,7 +292,7 @@ impl<'a> Ui<'a> {
     /// Runs one UI frame inside an app's `frame` callback.
     pub fn run(state: &mut UiState, ctx: &mut FrameCtx, style: &Style, f: impl FnOnce(&mut Ui)) {
         let events = std::mem::take(&mut ctx.events);
-        let (size, scale) = (ctx.size, ctx.scale);
+        let (size, scale) = (ctx.size, ctx.scale * style.zoom.clamp(0.25, 4.0));
         let a11y = ctx.a11y_active;
         let (repaint, cursor, tree) = {
             let mut ui = Ui::begin(
@@ -498,7 +498,7 @@ impl<'a> Ui<'a> {
                 mv = None;
             }
         }
-        let order = &self.focusables;
+        let order = self.tab_order();
         if let Some(forward) = mv {
             if !order.is_empty() {
                 let cur = self.st.focus.and_then(|f| order.iter().position(|&o| o == f));
@@ -530,6 +530,19 @@ impl<'a> Ui<'a> {
         (self.repaint_in, self.cursor, tree)
     }
 
+    /// The controls Tab cycles through: those of the focused widget's
+    /// region (F6 moves between regions), else those outside every region,
+    /// else (nothing focused) all of them.
+    fn tab_order(&self) -> Vec<Id> {
+        let Some(f) = self.st.focus else { return self.focusables.clone() };
+        if let Some((_, ids)) = self.regions.iter().find(|(_, ids)| ids.contains(&f)) {
+            return ids.clone();
+        }
+        let in_region: HashSet<Id> = self.regions.iter().flat_map(|(_, ids)| ids.iter().copied()).collect();
+        let rest: Vec<Id> = self.focusables.iter().copied().filter(|id| !in_region.contains(id)).collect();
+        if rest.contains(&f) { rest } else { self.focusables.clone() }
+    }
+
     /// A focus region (sidebar, tab strip, content): F6 / Shift+F6 move
     /// focus to the next / previous one, back to where it last was.
     pub fn region<R>(&mut self, id: Id, name: &str, f: impl FnOnce(&mut Ui) -> R) -> R {
@@ -547,17 +560,19 @@ impl<'a> Ui<'a> {
     }
 
     /// A 2px accent ring just outside the focused widget, while focus is
-    /// being moved by keyboard.
+    /// being moved by keyboard. It is drawn on the widget's own layer, so an
+    /// open menu or popup covers the ring of a widget below it.
     fn draw_focus_ring(&mut self) {
         let Some(f) = self.st.focus.filter(|_| self.st.focus_visible) else { return };
-        let Some(h) = self.hits.iter().rev().find(|h| h.id == f) else { return };
+        let Some(h) = self.hits.iter().rev().find(|h| h.id == f).copied() else { return };
         let w = self.px(2).max(2);
         let gap = self.px(1).max(1);
         let r = h.rect;
         let ring = Rect::new(r.x - gap - w, r.y - gap - w, r.w + 2 * (gap + w), r.h + 2 * (gap + w));
         let radius = self.style.radius * self.scale + (gap + w) as f32;
         let color = self.style.palette.accent;
-        self.overlay_list.push(Prim::Border { rect: ring, color, width: w, radius });
+        let list = if h.layer > 0 { &mut self.overlay_list } else { &mut *self.list };
+        list.push(Prim::Border { rect: ring, color, width: w, radius });
     }
 
     /// The accessibility tree is being built this frame.
