@@ -600,6 +600,10 @@ fn askpass_modal_masks_answers_and_cancels() {
     t.app.drain_messages();
     assert!(t.app.modal.is_none());
     assert!(find_text(&draw(&mut t), prompt).is_some());
+    t.app.set_error("boom");
+    let term = draw(&mut t);
+    assert!(find_text(&term, "Error: boom").is_some() && find_text(&term, prompt).is_some(), "an error doesn't hide the notice");
+    t.app.status = None;
     cancelled.cancel();
     t.app.drain_messages();
     assert!(find_text(&draw(&mut t), prompt).is_none());
@@ -798,4 +802,18 @@ fn split_panes_size_and_route_input() {
     assert_eq!(t.app.tabs.len(), tabs, "Alt+W closed only the focused pane");
     let TabKind::Terminal(s) = &t.app.tabs[t.app.active].kind else { panic!() };
     assert!(pane_text(s).contains("left-pane-mark"), "the other pane stays");
+}
+
+#[test]
+fn waiting_tab_past_nine_has_no_shortcut_hint() {
+    let mut t = T::new("");
+    for i in 0..8 {
+        t.app.push_tab(format!("t{i}"), TabKind::Hosts);
+    }
+    let tag = connecting_sftp_tab(&mut t);
+    t.app.active = 0;
+    let _q = ask(&mut t, &tag, "password: ");
+    let term = draw(&mut t);
+    assert!(find_text(&term, "switch to tab 10").is_some());
+    assert!(find_text(&term, "(Alt+9)").is_none(), "Alt+9 opens tab 9, not this one");
 }

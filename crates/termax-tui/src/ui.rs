@@ -100,18 +100,23 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let waiting = app.waiting_tabs();
-    let line = if let Some((host, req)) = app.notices.first() {
-        Line::from(Span::styled(format!(" {host}: {}", req.prompt.trim()), Style::new().fg(t.warning)))
+    let notice = app.notices.first().map(|(host, req)| Span::styled(format!(" {host}: {}", req.prompt.trim()), Style::new().fg(t.warning)));
+    let line = if let Some((msg, true, _)) = &app.status {
+        // An error first, with a pending security-key notice after it.
+        let mut spans = vec![Span::styled(format!(" Error: {msg}"), Style::new().fg(t.error))];
+        if let Some(n) = notice {
+            spans.extend([Span::styled(" ·", t.muted()), n]);
+        }
+        Line::from(spans)
+    } else if let Some(n) = notice {
+        Line::from(n)
     } else if let Some((msg, is_err, _)) = &app.status {
         let kind = if *is_err { "Error" } else { "Info" };
         Line::from(Span::styled(format!(" {kind}: {msg}"), Style::new().fg(if *is_err { t.error } else { t.success })))
     } else if let Some(&i) = waiting.iter().find(|&&i| i != app.active) {
-        let text = format!(
-            " {} is waiting for an answer: switch to tab {} ({})",
-            app.tabs[i].title,
-            i + 1,
-            app.keys.show(Action::Tab((i + 1).min(9) as u8))
-        );
+        // Only tabs 1-9 have a shortcut.
+        let key = if i < 9 { format!(" ({})", app.keys.show(Action::Tab(i as u8 + 1))) } else { String::new() };
+        let text = format!(" {} is waiting for an answer: switch to tab {}{key}", app.tabs[i].title, i + 1);
         Line::from(Span::styled(text, Style::new().fg(t.warning)))
     } else {
         let hints = match &app.tabs[app.active].kind {

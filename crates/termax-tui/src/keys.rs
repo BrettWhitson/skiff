@@ -191,7 +191,13 @@ impl Chord {
     /// What the shell uses this chord for, if it is one of the control keys
     /// a terminal can't do without (interrupt, EOF, suspend, quit, Esc).
     fn shell_key(&self) -> Option<&'static str> {
-        if self.mods - KeyModifiers::SHIFT != KeyModifiers::CONTROL {
+        // Shift only counts for letters (Ctrl+Shift+C is a distinct chord);
+        // a symbol chord matches with or without it.
+        let mods = match self.code {
+            KeyCode::Char(c) if !c.is_alphabetic() => self.mods - KeyModifiers::SHIFT,
+            _ => self.mods,
+        };
+        if mods != KeyModifiers::CONTROL {
             return None;
         }
         match self.code {
@@ -371,8 +377,14 @@ mod tests {
 
     #[test]
     fn symbol_chords_ignore_shift_and_shell_keys_are_refused() {
-        let (k, errors) =
-            Keymap::new(&map(&[("help", "alt+?"), ("theme", "alt++"), ("quit", "ctrl+c"), ("find", "ctrl+["), ("snippets", "ctrl+alt+c")]));
+        let (k, errors) = Keymap::new(&map(&[
+            ("help", "alt+?"),
+            ("theme", "alt++"),
+            ("quit", "ctrl+c"),
+            ("find", "ctrl+["),
+            ("snippets", "ctrl+alt+c"),
+            ("close_tab", "ctrl+shift+c"),
+        ]));
         assert_eq!(
             errors,
             [
@@ -386,6 +398,7 @@ mod tests {
         assert_eq!(k.match_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)), None);
         assert_eq!(k.show(Action::Quit), "Alt+Q");
         assert_eq!(k.show(Action::Snippets), "Ctrl+Alt+C");
+        assert_eq!(k.show(Action::CloseTab), "Ctrl+Shift+C", "Shift tells letters apart");
     }
 
     #[test]
