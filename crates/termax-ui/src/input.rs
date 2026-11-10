@@ -28,6 +28,8 @@ pub enum Key {
     Tab,
     Escape,
     Space,
+    /// The Menu / Application key.
+    ContextMenu,
     Other(String),
 }
 
@@ -110,6 +112,7 @@ pub fn map_named_key(k: &NamedKey) -> Option<Key> {
         N::Tab => Key::Tab,
         N::Escape => Key::Escape,
         N::Space => Key::Space,
+        N::ContextMenu => Key::ContextMenu,
         N::F1 => Key::F(1),
         N::F2 => Key::F(2),
         N::F3 => Key::F(3),

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use termax_ui::display::Prim;
 use termax_ui::geom::Point;
-use termax_ui::input::{Event, MouseButton};
+use termax_ui::input::{Event, Key, Modifiers, MouseButton};
 use termax_ui::ui::testing::Harness;
 
 use super::*;
@@ -303,4 +303,29 @@ fn show_hidden_setting_seeds_file_panes() {
     let id = f.app.open_files(Location::Local, Location::Local);
     let TabKind::Files(ft) = &f.app.tabs.iter().find(|t| t.id == id).unwrap().kind else { panic!() };
     assert!(ft.panes.iter().all(|p| p.show_hidden));
+}
+
+#[test]
+fn f6_cycles_regions_from_terminal() {
+    let mut f = Fixture::new();
+    f.double_click_text("alpha");
+    f.frame(vec![]);
+    let term = Id::new(("term", f.app.tabs[0].id));
+    assert_eq!(f.h.state.focused(), Some(term));
+    let f6 = |shift| Event::KeyDown { key: Key::F(6), mods: Modifiers { shift, ..Modifiers::NONE }, text: None };
+    f.frame(vec![f6(false)]);
+    f.frame(vec![]);
+    assert!(f.h.state.focused().is_some_and(|id| id != term), "F6 leaves the terminal");
+    f.frame(vec![f6(true)]);
+    f.frame(vec![]);
+    assert_eq!(f.h.state.focused(), Some(term), "Shift+F6 comes back");
+}
+
+#[test]
+fn shift_f10_opens_host_menu() {
+    let mut f = Fixture::new();
+    f.click_text("alpha");
+    f.frame(vec![Event::KeyDown { key: Key::F(10), mods: Modifiers { shift: true, ..Modifiers::NONE }, text: None }]);
+    f.frame(vec![]);
+    assert!(f.try_find("Open terminal").is_some(), "{:?}", f.texts());
 }

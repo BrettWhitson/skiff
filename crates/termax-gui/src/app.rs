@@ -871,7 +871,8 @@ impl GuiApp {
                 self.geometry_changed();
             }
             let mut sb = std::mem::take(&mut self.sidebar);
-            let a = sidebar(ui, side, &mut sb, &self.sidebar_ctx());
+            let ctx = self.sidebar_ctx();
+            let a = ui.region(Id::new("region-hosts"), "Hosts", |ui| sidebar(ui, side, &mut sb, &ctx));
             self.sidebar = sb;
             if let Some(a) = a {
                 self.on_sidebar(a);
@@ -917,7 +918,8 @@ impl GuiApp {
         let (strip, content) = (parts[0], parts[1]);
         let titles: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
         let tt: Vec<TabTitle> = titles.iter().map(|t| TabTitle { text: t, closable: true }).collect();
-        let r = tabs(ui, Id::new("tabs"), strip, &tt, &mut self.active);
+        let active = &mut self.active;
+        let r = ui.region(Id::new("region-tabs"), "Tabs", |ui| tabs(ui, Id::new("tabs"), strip, &tt, active));
         if let Some((from, to)) = r.moved
             && from < self.tabs.len()
             && to < self.tabs.len()
@@ -937,7 +939,11 @@ impl GuiApp {
             self.switcher_open = true;
         }
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        ui.region(Id::new("region-content"), "Content", |ui| self.tab_content(ui, content));
+    }
 
+    /// The active tab's view.
+    fn tab_content(&mut self, ui: &mut Ui, content: Rect) {
         let p = self.theme.palette;
         ui.painter().rect(content, p.bg, 0.0);
         let Some(tab) = self.tabs.get_mut(self.active) else {

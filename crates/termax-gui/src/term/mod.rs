@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use termax_core::hosts::HostEntry;
 use termax_core::terminal::TerminalSession;
 use termax_ui::geom::{Point, Rect, Size};
-use termax_ui::input::{CursorIcon, Key, Modifiers};
+use termax_ui::input::{CursorIcon, Event, Key, Modifiers};
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Sense, Ui};
 use termax_ui::widgets::{MenuItem, context_menu, label, open_context_menu};
@@ -161,6 +161,15 @@ pub fn view(
     let focused = ui.has_focus(id);
     if focused {
         ui.capture_keyboard(id); // Tab and Esc belong to the shell
+        // F6 / Shift+F6 still leave the terminal (no keyboard trap);
+        // Ctrl+Shift+F6 sends F6 to the shell instead.
+        let f6 = ui.input().events.iter().find_map(|e| match e {
+            Event::KeyDown { key: Key::F(6), mods, .. } if !mods.ctrl && !mods.alt && !mods.logo => Some(!mods.shift),
+            _ => None,
+        });
+        if let Some(forward) = f6 {
+            ui.cycle_region(forward);
+        }
     }
     let scale = ui.scale();
     let default_px = ui.mono_px() / scale;

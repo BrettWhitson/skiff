@@ -26,7 +26,7 @@ pub fn to_key_event(key: &Key, mods: Modifiers) -> Option<KeyEvent> {
         Key::Tab if mods.shift => KeyCode::BackTab,
         Key::Tab => KeyCode::Tab,
         Key::Escape => KeyCode::Esc,
-        Key::Other(_) => return None,
+        Key::Other(_) | Key::ContextMenu => return None,
     };
     let mut m = KeyModifiers::empty();
     if mods.ctrl {
@@ -49,6 +49,12 @@ pub fn route(events: &[Event], keymap: &Keymap, app_cursor: bool) -> Vec<u8> {
     let mut skip_text = false;
     for e in events {
         match e {
+            Event::KeyDown { key: Key::F(6), mods, .. } if !mods.alt && !mods.logo => {
+                // Plain / Shift+F6 move between regions; Ctrl+Shift+F6 is F6.
+                if mods.ctrl && mods.shift {
+                    out.extend(encode_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE), app_cursor));
+                }
+            }
             Event::KeyDown { key, mods, text } => {
                 if keymap.match_key(key, *mods, true).is_some() {
                     skip_text = text.is_some();

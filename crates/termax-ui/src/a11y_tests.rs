@@ -75,3 +75,81 @@ fn list_items_named_and_selected() {
     assert_eq!((beta.role, beta.selected), (Role::ListItem, Some(true)));
     assert_eq!(t.find("alpha").and_then(|n| n.selected), Some(false));
 }
+
+fn shift(k: Key) -> Event {
+    Event::KeyDown { key: k, mods: Modifiers { shift: true, ..Modifiers::NONE }, text: None }
+}
+
+#[test]
+fn f6_moves_between_regions_and_back() {
+    let mut h = Harness::new(400, 300, 1.0);
+    let mut f = |ui: &mut crate::ui::Ui| {
+        ui.region(Id::new("left"), "Left", |ui| {
+            button(ui, Id::new("a1"), Rect::new(0, 0, 80, 24), "A1");
+            button(ui, Id::new("a2"), Rect::new(0, 30, 80, 24), "A2");
+        });
+        ui.region(Id::new("right"), "Right", |ui| {
+            button(ui, Id::new("b1"), Rect::new(100, 0, 80, 24), "B1");
+        });
+    };
+    h.frame(vec![], &mut f);
+    h.frame(vec![key(Key::Tab)], &mut f);
+    h.frame(vec![key(Key::Tab)], &mut f);
+    assert_eq!(h.state.focused(), Some(Id::new("a2")));
+    h.frame(vec![key(Key::F(6))], &mut f);
+    assert_eq!(h.state.focused(), Some(Id::new("b1")));
+    h.frame(vec![shift(Key::F(6))], &mut f);
+    assert_eq!(h.state.focused(), Some(Id::new("a2")), "a region remembers its last focus");
+    assert_eq!(h.tree().find("Left").map(|n| n.role), Some(Role::Region));
+}
+
+#[test]
+fn focus_ring_drawn_for_focused_button() {
+    use crate::display::Prim;
+    let mut h = Harness::new(400, 300, 1.0);
+    let r = Rect::new(20, 20, 80, 24);
+    let mut f = |ui: &mut crate::ui::Ui| {
+        button(ui, Id::new("b"), r, "B");
+    };
+    h.frame(vec![key(Key::Tab)], &mut f);
+    h.frame(vec![], &mut f);
+    let accent = h.style.palette.accent;
+    let ring = h.list().prims.iter().any(|p| {
+        matches!(p, Prim::Border { rect, color, width, .. } if *color == accent && *width >= 2 && rect.x < r.x && rect.right() > r.right())
+    });
+    assert!(ring, "a 2px accent ring outside the button");
+}
+
+#[test]
+fn shift_f10_reports_context_row() {
+    use crate::widgets::{ListResponse, list};
+    let mut h = Harness::new(400, 300, 1.0);
+    let mut sel = Some(1);
+    let mut run = |h: &mut Harness, ev: Vec<Event>| {
+        let mut out = ListResponse::default();
+        h.frame(ev, &mut |ui| out = list(ui, Id::new("l"), Rect::new(0, 0, 200, 200), 3, 20, &mut sel, |_, _, _, _| {}));
+        out.context
+    };
+    run(&mut h, vec![key(Key::Tab)]);
+    let (row, at) = run(&mut h, vec![shift(Key::F(10))]).expect("Shift+F10 opens the row's menu");
+    assert_eq!(row, 1);
+    assert!(at.y >= 20 && at.y <= 40, "{at:?}");
+    assert_eq!(run(&mut h, vec![key(Key::ContextMenu)]).map(|c| c.0), Some(1));
+}
+
+#[test]
+fn tab_strip_takes_focus_and_arrows() {
+    use crate::widgets::{TabTitle, tabs};
+    let mut h = Harness::new(600, 100, 1.0);
+    let t = [TabTitle { text: "one", closable: true }, TabTitle { text: "two", closable: true }];
+    let mut active = 0;
+    let mut run = |h: &mut Harness, ev: Vec<Event>| {
+        h.frame(ev, &mut |ui| {
+            tabs(ui, Id::new("tabs"), Rect::new(0, 0, 600, 30), &t, &mut active);
+        });
+        active
+    };
+    run(&mut h, vec![key(Key::Tab)]);
+    assert_eq!(run(&mut h, vec![key(Key::Right)]), 1);
+    assert_eq!(run(&mut h, vec![key(Key::Left)]), 0);
+}

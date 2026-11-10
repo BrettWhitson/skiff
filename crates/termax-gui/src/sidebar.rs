@@ -11,6 +11,7 @@ use termax_core::sshconfig::edit::display_path;
 use termax_core::state::SortMode;
 use termax_core::status::Status;
 use termax_ui::geom::{Point, Rect};
+use termax_ui::input::{Event, Key, Modifiers};
 use termax_ui::layout::Size as L;
 use termax_ui::text::FontKind;
 use termax_ui::ui::{Id, Ui};
@@ -236,14 +237,29 @@ pub fn sidebar(ui: &mut Ui, rect: Rect, sb: &mut Sidebar, ctx: &SidebarCtx) -> O
     });
     sb.hovered = hovered;
 
-    // A header row toggles its group instead of staying selected.
+    // A clicked header toggles its group instead of staying selected; with
+    // the keyboard a header can be selected and Enter toggles it.
+    let clicked = ui.input().events.iter().any(|e| matches!(e, Event::MouseDown(..)));
     if sb.selected != before
+        && clicked
         && let Some(Row::Header(g)) = sb.selected.and_then(|i| rows.get(i))
     {
         if !sb.collapsed.remove(g) {
             sb.collapsed.insert(g.clone());
         }
         sb.selected = before.filter(|&b| b < rows.len() && matches!(rows[b], Row::Host(_)));
+    }
+    if let Some(i) = lr.activated
+        && let Some(Row::Header(g)) = rows.get(i)
+        && !sb.collapsed.remove(g)
+    {
+        sb.collapsed.insert(g.clone());
+    }
+    if lr.response.focused
+        && let Some(Row::Host(h)) = sb.selected.and_then(|i| rows.get(i))
+        && ui.input_mut().take_key(&Key::Delete, Modifiers::NONE)
+    {
+        sb.confirm_delete = Some(*h);
     }
     if let Some(i) = lr.activated
         && let Some(Row::Host(h)) = rows.get(i)

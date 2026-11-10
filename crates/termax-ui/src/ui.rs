@@ -154,6 +154,10 @@ pub struct UiState {
     /// Widget that owns the keyboard (an open menu); carried to the next frame.
     capture: Option<Id>,
     drag: Option<crate::dnd::DragState>,
+    /// The last focused widget in each region (F6 returns there).
+    region_focus: HashMap<Id, Id>,
+    /// Focus moved by keyboard: the focus ring shows until the next click.
+    focus_visible: bool,
 }
 
 impl UiState {
@@ -184,6 +188,8 @@ impl Default for UiState {
             last_click: None,
             capture: None,
             drag: None,
+            region_focus: HashMap::new(),
+            focus_visible: false,
         }
     }
 }
@@ -276,6 +282,10 @@ pub struct Ui<'a> {
     /// The left button was released this frame (ends a drag).
     drag_released: bool,
     a11y: Option<Builder>,
+    /// Focus regions this frame, each with its focusable widgets in order.
+    regions: Vec<(Id, Vec<Id>)>,
+    region_stack: Vec<usize>,
+    region_move: Option<bool>,
 }
 
 impl<'a> Ui<'a> {
@@ -332,6 +342,7 @@ impl<'a> Ui<'a> {
                     match b {
                         MouseButton::Left => {
                             st.left = true;
+                            st.focus_visible = false;
                             st.active = top.map(|h| h.id);
                             st.drag_last = *p;
                             st.focus = top.filter(|h| h.sense.focus).map(|h| h.id);
@@ -379,6 +390,9 @@ impl<'a> Ui<'a> {
                     st.mods = *mods;
                     if *key == Key::Escape {
                         st.drag = None;
+                    }
+                    if matches!(key, Key::Tab | Key::F(6) | Key::Up | Key::Down | Key::Left | Key::Right) {
+                        st.focus_visible = true;
                     }
                 }
                 Event::KeyUp { mods, .. } | Event::Modifiers(mods) => st.mods = *mods,
@@ -433,6 +447,9 @@ impl<'a> Ui<'a> {
             cursor: CursorIcon::Default,
             drag_released,
             a11y: a11y.then(|| Builder::new("", window)),
+            regions: vec![],
+            region_stack: vec![],
+            region_move: None,
         }
     }
 
@@ -440,11 +457,39 @@ impl<'a> Ui<'a> {
         // Tab / Shift+Tab nobody took moves focus.
         let mut mv = self.focus_move;
         let captured = self.capture.is_some();
+        let mut region_mv = self.region_move;
         for e in &self.input.events {
-            if let Event::KeyDown { key: Key::Tab, mods, .. } = e {
+            if let Event::KeyDown { key, mods, .. } = e {
                 if !captured && !mods.ctrl && !mods.alt && !mods.logo {
-                    mv = Some(!mods.shift);
+                    match key {
+                        Key::Tab => mv = Some(!mods.shift),
+                        Key::F(6) => region_mv = Some(!mods.shift),
+                        _ => {}
+                    }
                 }
+            }
+        }
+        if let Some(f) = self.st.focus {
+            if let Some((rid, _)) = self.regions.iter().find(|(_, ids)| ids.contains(&f)) {
+                self.st.region_focus.insert(*rid, f);
+            }
+        }
+        if let Some(forward) = region_mv {
+            let regions: Vec<&(Id, Vec<Id>)> = self.regions.iter().filter(|(_, ids)| !ids.is_empty()).collect();
+            if !regions.is_empty() {
+                let n = regions.len();
+                let cur = self.st.focus.and_then(|f| regions.iter().position(|(_, ids)| ids.contains(&f)));
+                let next = match (cur, forward) {
+                    (None, true) => 0,
+                    (None, false) => n - 1,
+                    (Some(i), true) => (i + 1) % n,
+                    (Some(i), false) => (i + n - 1) % n,
+                };
+                let (rid, ids) = regions[next];
+                let target = self.st.region_focus.get(rid).copied().filter(|t| ids.contains(t)).unwrap_or(ids[0]);
+                self.st.focus = Some(target);
+                self.st.focus_visible = true;
+                mv = None;
             }
         }
         let order = &self.focusables;
@@ -470,12 +515,43 @@ impl<'a> Ui<'a> {
             self.st.drag = None; // released over no target
         }
         self.draw_drag_label();
+        self.draw_focus_ring();
         let overlay = std::mem::take(&mut self.overlay_list);
         self.list.prims.extend(overlay.prims);
         self.st.prev_hits = std::mem::take(&mut self.hits);
         self.st.capture = self.next_capture;
         let tree = self.a11y.take().map(|b| b.finish(self.st.focus));
         (self.repaint_in, self.cursor, tree)
+    }
+
+    /// A focus region (sidebar, tab strip, content): F6 / Shift+F6 move
+    /// focus to the next / previous one, back to where it last was.
+    pub fn region<R>(&mut self, id: Id, name: &str, f: impl FnOnce(&mut Ui) -> R) -> R {
+        self.regions.push((id, vec![]));
+        self.region_stack.push(self.regions.len() - 1);
+        let r = self.a11y_group(id, Role::Region, name, f);
+        self.region_stack.pop();
+        r
+    }
+
+    /// Moves focus to the next (or previous) region at the end of the frame,
+    /// for a widget that owns the keyboard (a terminal) and saw F6.
+    pub fn cycle_region(&mut self, forward: bool) {
+        self.region_move = Some(forward);
+    }
+
+    /// A 2px accent ring just outside the focused widget, while focus is
+    /// being moved by keyboard.
+    fn draw_focus_ring(&mut self) {
+        let Some(f) = self.st.focus.filter(|_| self.st.focus_visible) else { return };
+        let Some(h) = self.hits.iter().rev().find(|h| h.id == f) else { return };
+        let w = self.px(2).max(2);
+        let gap = self.px(1).max(1);
+        let r = h.rect;
+        let ring = Rect::new(r.x - gap - w, r.y - gap - w, r.w + 2 * (gap + w), r.h + 2 * (gap + w));
+        let radius = self.style.radius * self.scale + (gap + w) as f32;
+        let color = self.style.palette.accent;
+        self.overlay_list.push(Prim::Border { rect: ring, color, width: w, radius });
     }
 
     /// The accessibility tree is being built this frame.
@@ -541,6 +617,9 @@ impl<'a> Ui<'a> {
         self.hits.push(Hit { id, rect: area, layer: self.layer, sense });
         if sense.focus {
             self.focusables.push(id);
+            if let Some(&ri) = self.region_stack.last() {
+                self.regions[ri].1.push(id);
+            }
         }
         Response {
             rect,

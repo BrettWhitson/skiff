@@ -213,6 +213,7 @@ impl Chord {
             Key::Insert => "insert".into(),
             Key::Delete => "delete".into(),
             Key::Backspace => "backspace".into(),
+            Key::ContextMenu => "menu".into(),
             Key::Other(_) => return None,
         };
         let mut s = String::new();

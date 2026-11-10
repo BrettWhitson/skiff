@@ -56,11 +56,19 @@ pub fn list_named(
         *selected = rows.checked_sub(1);
     }
 
+    let mut menu_key = false;
     if r.focused && rows > 0 && ui.keys_for(id) {
         let page = (rect.h / rh).max(1) as usize;
         let events = ui.input().events.clone();
         let mut moved = false;
         for e in &events {
+            if let Event::KeyDown { key: Key::F(10), mods, .. } | Event::KeyDown { key: Key::ContextMenu, mods, .. } = e {
+                let f10 = matches!(e, Event::KeyDown { key: Key::F(10), .. });
+                if !mods.ctrl && !mods.alt && !mods.logo && (mods.shift || !f10) {
+                    menu_key = true;
+                }
+                continue;
+            }
             let Event::KeyDown { key, mods, .. } = e else { continue };
             if mods.ctrl || mods.alt || mods.logo {
                 continue;
@@ -122,6 +130,9 @@ pub fn list_named(
                 if is_sel {
                     ui.a11y_focus_child(id, rid);
                 }
+            }
+            if is_sel && menu_key {
+                out.context = Some((i, Point::new(row.x + ui.px(8), row.bottom())));
             }
             if is_sel {
                 let c = if ui.has_focus(id) { p.selection } else { p.selection.mix(p.surface, 0.5) };
