@@ -15,3 +15,7 @@ accesskit_winit = "0.34.2"
 fontdue = "0.9.5"
 # Already used by fontdue; read directly for font names and advances.
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# zlib for the PNGs `gen_icons` writes; already in the tree via flate2.
+miniz_oxide = "0.9"

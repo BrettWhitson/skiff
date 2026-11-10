@@ -1,0 +1,3 @@
+# Generated icon files: never convert line endings.
+assets/icon/** -text
+assets/linux/icons/** -text

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Skiff
+GenericName=SSH and SFTP Client
+Comment=Terminals, file transfer and port forwards over SSH
+Exec=skiff-gui
+Icon=skiff
+Terminal=false
+Categories=Network;RemoteAccess;System;TerminalEmulator;
+Keywords=ssh;sftp;terminal;remote;
+StartupWMClass=skiff

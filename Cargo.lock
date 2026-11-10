@@ -4208,6 +4208,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "fontdue",
+ "miniz_oxide",
  "softbuffer",
  "ttf-parser",
  "winit",

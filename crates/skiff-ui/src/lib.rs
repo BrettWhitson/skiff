@@ -58,6 +58,7 @@
 //! - `widgets`: buttons, inputs, lists, menus, tabs, tooltips, scroll areas...
 //! - `display`, `canvas`: drawing commands and the tiled CPU renderer.
 //! - `icons`: the in-house vector icon set.
+//! - `logo`: the Skiff mark (window and app icons).
 //! - `style`: design tokens (spacing, radii, heights, type scale, motion)
 //!   and palettes.
 //! - `text`: fonts, fallbacks, glyph cache, single-line layout.
@@ -79,6 +80,7 @@ pub mod geom;
 pub mod icons;
 pub mod input;
 pub mod layout;
+pub mod logo;
 pub mod shell;
 pub mod style;
 
