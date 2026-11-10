@@ -243,7 +243,7 @@ fn host_row(ui: &mut Ui, r: Rect, h: &HostEntry, status: Option<&Status>, select
     let dx = x + drawn + ui.px(tokens::SPACE_SM);
     let room = right - ui.px(tokens::SPACE_XS) - dx;
     let (_, cpx) = ui.text_style(TextRole::Caption);
-    let mpx = ui.mono_px().min(cpx + 1.0);
+    let mpx = cpx + ui.scale();
     let fits = ui.measure(&h.hostname, FontKind::Mono, mpx).ceil() as i32 <= room;
     if (fits || room >= ui.px(72)) && h.hostname != h.name {
         let shown = elide_mode(ui, &h.hostname, FontKind::Mono, mpx, room, Elide::Middle);

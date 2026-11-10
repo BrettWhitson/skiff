@@ -1505,10 +1505,19 @@ impl GuiApp {
     fn no_tabs(&mut self, ui: &mut Ui, content: Rect) {
         let chord = |a: Action| self.keymap.chords(a).first().map(|c| c.to_string());
         let hint = chord(Action::QuickSwitcher).map(|c| format!("Command palette: {c}"));
+        // With no hosts at all, point at the sidebar's Add host first.
+        let (title, body) = if self.hosts.is_empty() {
+            ("Welcome to Skiff", "Add your first host in the sidebar. The command palette finds hosts, tabs and commands.")
+        } else {
+            (
+                "No open tabs",
+                "Double-click a host in the sidebar to open a terminal, or search hosts, tabs and commands from the command palette.",
+            )
+        };
         let e = EmptyState {
             icon: Some(Icon::Terminal),
-            title: "No open tabs",
-            body: "Double-click a host in the sidebar to open a terminal, or search hosts, tabs and commands from the command palette.",
+            title,
+            body,
             action: Some("Open command palette"),
             secondary: None,
             hint: hint.as_deref(),

@@ -372,7 +372,7 @@ pub fn view(
         if let Some(n) = ui.a11y_node(id, Role::Terminal, &name) {
             n.value = Some(e);
         }
-        terminal_menu(ui, id, r.right_clicked, tab);
+        terminal_menu(ui, id, r.right_clicked, tab, keymap);
         return;
     }
     let Some(session) = tab.session.as_mut() else {
@@ -516,7 +516,7 @@ pub fn view(
         tab.select.resolve(p.screen(), offset);
     }
 
-    terminal_menu(ui, id, r.right_clicked && !report_mouse, tab);
+    terminal_menu(ui, id, r.right_clicked && !report_mouse, tab, keymap);
 
     // Cursor: hollow when unfocused, solid without blink, else on/off by half-period
     // (with a repaint scheduled for the next flip).
@@ -557,28 +557,40 @@ pub fn view(
     paste_bar(ui, id, tab);
 }
 
-/// The right-click menu: Copy, Paste, and splitting or closing the pane.
-fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab) {
+/// The right-click menu: Copy, Paste, and splitting or closing the pane,
+/// with icons and each action's shortcut.
+fn terminal_menu(ui: &mut Ui, id: Id, open: bool, tab: &mut TermTab, keymap: &Keymap) {
     let menu = id.with("menu");
     if open {
-        open_context_menu(ui, menu, ui.input().mouse);
+        // Beside the pointer, not under it.
+        let m = ui.input().mouse;
+        open_context_menu(ui, menu, Point::new(m.x + ui.px(2), m.y + ui.px(2)));
     }
     let live = tab.session.is_some();
-    let item = |label, enabled| MenuItem { label, shortcut: None, enabled, ..MenuItem::DEFAULT };
     let split = tab.pane_label.is_some();
+    // Each item shows its shortcut (the first chord bound to it).
+    let keys: Vec<String> = [Action::Copy, Action::Paste, Action::SplitRight, Action::SplitDown, Action::ClosePane]
+        .iter()
+        .map(|a| keymap.chords(*a).first().map(|c| c.to_string()).unwrap_or_default())
+        .collect();
+    /// `m` with shortcut `k`, when there is one.
+    fn with_key<'a>(m: MenuItem<'a>, k: &'a str) -> MenuItem<'a> {
+        MenuItem { shortcut: (!k.is_empty()).then_some(k), ..m }
+    }
     let items = [
-        item("Copy", live && tab.select.sel.is_some()),
-        item("Paste", live),
-        item("Split right", true),
-        item("Split down", true),
-        item("Close pane", split),
+        with_key(MenuItem::new("Copy").icon(Icon::Copy).enabled(live && tab.select.sel.is_some()), &keys[0]),
+        with_key(MenuItem::new("Paste").enabled(live), &keys[1]),
+        MenuItem::SEPARATOR,
+        with_key(MenuItem::new("Split right").icon(Icon::SplitH), &keys[2]),
+        with_key(MenuItem::new("Split down").icon(Icon::SplitV), &keys[3]),
+        with_key(MenuItem::new("Close pane").icon(Icon::Close).enabled(split), &keys[4]),
     ];
     match context_menu(ui, menu, &items) {
         Some(0) => tab.queued.push(Action::Copy),
         Some(1) => tab.queued.push(Action::Paste),
-        Some(2) => tab.pane_request = Some(Action::SplitRight),
-        Some(3) => tab.pane_request = Some(Action::SplitDown),
-        Some(4) => tab.pane_request = Some(Action::ClosePane),
+        Some(3) => tab.pane_request = Some(Action::SplitRight),
+        Some(4) => tab.pane_request = Some(Action::SplitDown),
+        Some(5) => tab.pane_request = Some(Action::ClosePane),
         _ => {}
     }
     if !tab.queued.is_empty() {

@@ -650,7 +650,7 @@ fn draw_row(ui: &mut Ui, row: Rect, e: &Entry, bg: Color, sel: bool) {
     // The detail, muted, in what is left.
     if !e.detail.is_empty() {
         let dx = x + ui.px(tokens::SPACE_SM);
-        let mpx = ui.mono_px().min(px);
+        let mpx = ui.text_style(TextRole::Caption).1 + ui.scale();
         let room = right - dx;
         if room > ui.px(40) {
             let d = elide_mode(ui, &e.detail, FontKind::Mono, mpx, room, Elide::Middle);

@@ -657,3 +657,22 @@ fn settings_gear_opens_settings_even_with_sidebar_collapsed() {
     assert_eq!(f.app.tabs.iter().filter(|t| matches!(t.kind, TabKind::Settings)).count(), 1);
     assert!(matches!(f.app.tabs[f.app.active].kind, TabKind::Settings));
 }
+
+/// With no hosts at all the sidebar shows an empty state whose "Import
+/// ~/.ssh/config" turns on reading the ssh config (saved) and lists its hosts.
+#[test]
+fn empty_sidebar_imports_ssh_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = dir.path().join("ssh_config");
+    std::fs::write(&ssh, "Host gamma\n  HostName 127.0.0.3\n  Port 1\n").unwrap();
+    let cfg = format!(
+        "[settings]\nload_ssh_config = false\nssh_config_path = \"{}\"\nssh_binary = \"skiff-test-no-such-ssh\"\n",
+        ssh.display().to_string().replace('\\', "/")
+    );
+    let mut f = Fixture::with_config_in(dir, &cfg);
+    assert!(f.try_find("No hosts yet").is_some(), "{:?}", f.texts());
+    f.click_text("Import ~/.ssh/config");
+    assert_eq!(f.app.hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["gamma"]);
+    assert!(std::fs::read_to_string(&f.path).unwrap().contains("load_ssh_config = true"));
+    assert!(f.try_find("gamma").is_some());
+}
