@@ -82,7 +82,7 @@ First release under the name Skiff (formerly termax).
   wraps. A crowded tab strip keeps the active tab's title and shows the
   others as icons.
 
-- **App icon.** A Skiff mark (a small boat whose sail is a `>` prompt) as
+- **App icon.** A Skiff mark (a small boat on a swell, its sail a `>` prompt) as
   the GUI's window and taskbar icon, in the Windows `.exe` files of
   `skiff-gui` and `skiff`, and as files under `assets/`: SVG, PNGs from 16
   to 1024 px, `.ico`, `.icns`, and a Linux `.desktop` entry with hicolor

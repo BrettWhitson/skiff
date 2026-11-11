@@ -27,6 +27,8 @@ pub const TILE_BOTTOM: u32 = 0x2f43bd;
 pub const SAIL: u32 = 0xf7f8ff;
 /// The hull (`_`): a pale tint of the accent so the two read apart.
 pub const HULL: u32 = 0xb9c4ff;
+/// The swell under the boat: a mid tint that stays behind the hull.
+pub const WATER: u32 = 0x7d90f5;
 
 /// One shape of the mark, in unit coordinates (0–1, y down).
 enum Shape {
@@ -77,9 +79,24 @@ fn large() -> Vec<(Shape, Paint)> {
             Shape::RRect { x: 2.0 / G, y: 2.0 / G, w: 60.0 / G, h: 60.0 / G, r: 14.0 / G },
             Paint::Vertical(TILE_TOP, TILE_BOTTOM, 2.0 / G, 62.0 / G),
         ),
-        (Shape::Stroke { pts: on_grid(G, &[(23.0, 12.0), (41.0, 25.0), (23.0, 38.0)]), half: 4.25 / G }, Paint::Solid(SAIL)),
-        (hull(G, (12.5, 43.0), (54.0, 40.5), (45.0, 54.0), (17.0, 51.5), 1.25), Paint::Solid(HULL)),
+        // Water: one soft swell under the boat, drawn first so the hull sits in it.
+        (Shape::Stroke { pts: on_grid(G, &wave(13.0, 51.0, 54.5, 1.6)), half: 1.6 / G }, Paint::Solid(WATER)),
+        // The `>` sail, its lower arm resting on the deck.
+        (Shape::Stroke { pts: on_grid(G, &[(23.0, 13.0), (41.0, 26.0), (23.0, 39.0)]), half: 4.25 / G }, Paint::Solid(SAIL)),
+        (hull(G, (11.5, 41.5), (53.5, 40.0), (45.0, 52.5), (17.0, 50.0), 1.25), Paint::Solid(HULL)),
     ]
+}
+
+/// A gentle wave from `x0` to `x1` at height `y`, `amp` grid units tall:
+/// one and a half sine periods, sampled finely enough to stay smooth.
+fn wave(x0: f32, x1: f32, y: f32, amp: f32) -> Vec<(f32, f32)> {
+    const STEPS: usize = 36;
+    (0..=STEPS)
+        .map(|i| {
+            let t = i as f32 / STEPS as f32;
+            (x0 + (x1 - x0) * t, y + amp * (t * 3.0 * std::f32::consts::PI).sin())
+        })
+        .collect()
 }
 
 /// The small mark (up to `SMALL_MAX` px), on a 16-unit grid: a bolder

@@ -1,7 +1,22 @@
-# Skiff
+<p align="center">
+  <img src="assets/icon/skiff.svg" width="112" alt="Skiff logo: a boat whose sail is a terminal prompt">
+</p>
 
-An SSH and SFTP client written in Rust, with a terminal UI (`skiff`) and a
-native desktop GUI (`skiff-gui`) that share one config.
+<h1 align="center">Skiff</h1>
+
+<p align="center">
+  An SSH and SFTP client written in Rust, with a terminal UI (<code>skiff</code>)
+  and a native desktop GUI (<code>skiff-gui</code>) that share one config.
+</p>
+
+<p align="center">
+  <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-4a5fe0?style=flat-square"></a>
+  <img alt="Rust 2024 edition" src="https://img.shields.io/badge/rust-2024%20edition-dea584?style=flat-square&logo=rust&logoColor=white">
+  <img alt="Platforms: Windows, macOS, Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-5b74f2?style=flat-square">
+  <img alt="Interfaces: TUI and GUI" src="https://img.shields.io/badge/interface-TUI%20%2B%20GUI-2f43bd?style=flat-square">
+  <img alt="Accessible: AccessKit screen reader support" src="https://img.shields.io/badge/a11y-AccessKit-2e8b57?style=flat-square">
+  <img alt="Built on OpenSSH" src="https://img.shields.io/badge/built%20on-OpenSSH-555?style=flat-square">
+</p>
 
 Skiff drives the system OpenSSH client (`ssh`), so `ProxyJump`, agents, keys,
 `known_hosts`, `Include` and everything else in your OpenSSH setup work
