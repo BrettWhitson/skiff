@@ -377,3 +377,10 @@ Please report anything a screen reader gets wrong.
   of 8+ keys with a line break as a paste.
 - Some ssh config hosts can't be edited in place (shared `Host` lines,
   hosts defined twice, wildcard and `Match` blocks); Skiff shows why.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. Unless you state otherwise, any
+contribution you submit for inclusion is dual licensed as above, without any
+additional terms or conditions.
