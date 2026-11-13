@@ -244,7 +244,7 @@ fn draw_cells(canvas: &mut Canvas, fonts: &Fonts, cache: &mut GlyphCache, origin
         }
         let x0 = origin.x + i as i32 * cell.w;
         // Spaces and NUL have no glyph to draw.
-        if c.ch != ' ' && c.ch != ' ' {
+        if c.ch != ' ' && c.ch != '\0' {
             let g = cache.get(fonts, FontKind::Mono, c.ch, px);
             if g.width > 0 && g.height > 0 {
                 let (gw, gh) = (g.width as i32, g.height as i32);

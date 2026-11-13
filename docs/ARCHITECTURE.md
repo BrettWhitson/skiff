@@ -43,11 +43,18 @@ and `extra_args`. `history` adds last-used times for "Recent" sorting.
 
 `terminal::TerminalSession` opens a pseudo-terminal with `portable-pty`
 (ConPTY on Windows) and runs `ssh <args>` in it. A reader thread per session
-feeds output into a `vt100::Parser` behind a mutex, answers cursor-position
-queries (ConPTY withholds output until it gets one), bumps a generation
+feeds output into a `vt100::Parser` behind a mutex, answers the program's
+queries (ConPTY withholds output until its cursor-position query is
+answered), bumps a generation
 counter and calls a notify callback so the front-end redraws. Keys and
 pastes are encoded to bytes (`terminal::encode_key`, `sanitize_paste`) and
 written to the pty; resizing resizes both pty and parser.
+
+Output passes through `vtfix::VtFix` on its way in. vt100 ignores a
+number of common sequences (the line-drawing set, REP, HVP, `CSI s`/`u`,
+IND/NEL, insert mode, autowrap off); `VtFix` rewrites them into ones it
+handles, and queues answers to queries (cursor position, status, device
+attributes) so each reflects the screen where it was asked.
 
 `termx` holds the logic both front-ends share on top of the parser: find
 in scrollback (matches stay anchored to text as lines scroll off), deciding
@@ -301,7 +308,7 @@ notices also go out through `SettingsState::take_notices`.
 | Host list and form | `skiff-core/src/{hosts,hostform}.rs` |
 | ssh config read/edit/resolve | `skiff-core/src/sshconfig/{mod,doc,edit,resolve}.rs` |
 | CLI | `skiff-core/src/cli.rs`, `skiff-tui/src/main.rs` |
-| Terminal sessions | `skiff-core/src/{terminal,termx}.rs` |
+| Terminal sessions | `skiff-core/src/{terminal,termx,vtfix}.rs` |
 | Split rules, dock | `skiff-core/src/panes.rs`, `skiff-gui/src/dock/{mod,layout,view}.rs`, `skiff-tui/src/ui.rs` (`split_areas`) |
 | SFTP and transfers | `skiff-core/src/fs/{connect,endpoint,path,transfer}.rs` |
 | Askpass | `skiff-core/src/{askpass,sshver}.rs`, `skiff-core/src/bin/askpass-shim.rs` (tests) |

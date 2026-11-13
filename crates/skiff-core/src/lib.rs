@@ -39,3 +39,4 @@ pub mod status;
 pub mod terminal;
 pub mod termx;
 pub mod theme;
+pub mod vtfix;

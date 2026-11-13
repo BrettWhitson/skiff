@@ -122,7 +122,7 @@ pub fn draw_screen(
         && !screen.hide_cursor()
         && screen.scrollback() == 0
     {
-        let (row, col) = screen.cursor_position();
+        let (row, col) = skiff_core::vtfix::cursor_cell(screen);
         let wide = rows.get(row as usize).and_then(|r| r.get(col as usize)).is_some_and(|c| c.attrs.wide);
         let w = if wide { 2 * cell.w } else { cell.w };
         let r = Rect::new(rect.x + col as i32 * cell.w, rect.y + row as i32 * cell.h, w, cell.h);

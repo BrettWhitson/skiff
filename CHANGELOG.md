@@ -148,6 +148,19 @@ First release under the name Skiff (formerly termax).
 
 ### Fixed
 
+- **Terminal output drawn wrong, cursor misplaced (TUI and GUI).** The
+  terminal parser ignored many sequences that programs send, so ncurses
+  boxes showed as `lqqk`, repeated characters (REP) and saved cursor
+  positions (`CSI s` / `CSI u`) went missing, and lines drawn with HVP,
+  HPA, VPR, IND, NEL, tab movement, insert mode or autowrap off landed in
+  the wrong place. These are now handled. The 1047 and 1048 modes now work
+  too.
+- **Terminal queries answered as of where they were asked.** Cursor
+  position reports used the cursor after the whole read, not at the query.
+  Status and device-attribute queries now get an answer, so programs that
+  wait for one (fish 4, neovim) start without a delay.
+- **The cursor vanished at the end of a full line.** It now stays on the
+  last column, as in other terminals.
 - **Dragging a tab never showed the split targets (GUI).** Drop zones only
   appeared for a non-active terminal tab dragged over another terminal
   tab's panes: dragging the tab you were looking at, the only tab, any

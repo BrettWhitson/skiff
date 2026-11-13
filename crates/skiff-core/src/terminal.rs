@@ -105,12 +105,10 @@ impl TerminalSession {
                         let mut reply = Vec::new();
                         if let Ok(mut parser) = p.lock() {
                             sc.fetch_add(tracker.process(&mut parser, chunk), Ordering::SeqCst);
-                            // Answer cursor-position queries (DSR). Windows ConPTY sends one
-                            // at startup and withholds all output until it gets a reply.
-                            for _ in 0..count(chunk, b"\x1b[6n") {
-                                let (row, col) = parser.screen().cursor_position();
-                                reply.extend(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes());
-                            }
+                            // Answers to the program's queries (cursor position, status,
+                            // device attributes), each as of where it was asked. Windows
+                            // ConPTY sends a DSR at startup and withholds output until answered.
+                            reply = tracker.take_replies();
                         }
                         if !reply.is_empty()
                             && let Ok(mut w) = w.lock()
@@ -353,11 +351,6 @@ pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         out = with_alt(true, out);
     }
     out
-}
-
-/// How many times `needle` occurs in `hay` (overlaps counted).
-fn count(hay: &[u8], needle: &[u8]) -> usize {
-    hay.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
 /// Prefixes `bytes` with ESC when `alt` is held (the meta-sends-escape convention).

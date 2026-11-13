@@ -249,7 +249,7 @@ impl Dock {
         self.layout.as_ref()?.neighbor(group, zone)
     }
 
-    /// Where the keyboard's "move tab to group <side>" puts tab `tab`: into
+    /// Where the keyboard's "move tab to group `<side>`" puts tab `tab`: into
     /// the neighbor group on that side, else (when its group has other tabs)
     /// a new group on that side; `None` when it is alone at that edge.
     pub fn move_target(&self, tab: u64, zone: Zone) -> Option<Drop> {

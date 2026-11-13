@@ -21,5 +21,6 @@ shell-words = "1.1.1"
 tokio = { version = "1.54.1", features = ["full"] }
 toml = "1.2.1"
 tui-term = "0.3.4"
+unicode-width = "0.2.3"
 vt100 = "0.16"
 skiff-core = { path = "crates/skiff-core", version = "0.1.0" }

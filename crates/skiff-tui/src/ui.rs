@@ -715,7 +715,7 @@ fn draw_session(f: &mut Frame, t: &Theme, s: &mut TerminalSession, area: Rect, r
         if !focused || !alive || scroll > 0 || parser.screen().hide_cursor() {
             cursor.hide();
         }
-        f.render_widget(PseudoTerminal::new(parser.screen()).cursor(cursor), content);
+        f.render_widget(PseudoTerminal::new(&LiveScreen(parser.screen())).cursor(cursor), content);
     }
     if let (None, Some((text, style))) = (rule, state) {
         let text = format!(" {text} ");
@@ -724,6 +724,32 @@ fn draw_session(f: &mut Frame, t: &Theme, s: &mut TerminalSession, area: Rect, r
         f.render_widget(Paragraph::new(Span::styled(text, style.add_modifier(Modifier::REVERSED))), r);
     }
     content
+}
+
+/// A vt100 screen for `PseudoTerminal`, with the cursor kept on the grid:
+/// after a character fills the last column vt100 puts it one past the
+/// edge, where tui-term would not draw it.
+struct LiveScreen<'a>(&'a vt100::Screen);
+
+impl tui_term::widget::Screen for LiveScreen<'_> {
+    type C = vt100::Cell;
+
+    /// The cell at `row`, `col` of the visible screen.
+    fn cell(&self, row: u16, col: u16) -> Option<&vt100::Cell> {
+        self.0.cell(row, col)
+    }
+
+    /// Whether the program hid the cursor.
+    fn hide_cursor(&self) -> bool {
+        self.0.hide_cursor()
+    }
+
+    /// The cursor's cell, below any visible scrollback (as tui-term expects).
+    fn cursor_position(&self) -> (u16, u16) {
+        let (row, col) = skiff_core::vtfix::cursor_cell(self.0);
+        let back = u16::try_from(self.0.scrollback()).unwrap_or(u16::MAX);
+        (row.saturating_add(back), col)
+    }
 }
 
 /// Draws a terminal tab (both panes when split, with a divider between
@@ -1486,5 +1512,18 @@ mod tests {
         assert_eq!(format_time(UNIX_EPOCH), "1970-01-01 00:00");
         // 2024-02-29 12:34 UTC
         assert_eq!(format_time(UNIX_EPOCH + Duration::from_secs(1_709_210_040)), "2024-02-29 12:34");
+    }
+
+    /// A full row's cursor is drawn on its last column, not lost past the edge.
+    #[test]
+    fn terminal_cursor_stays_on_a_full_row() {
+        let mut p = vt100::Parser::new(2, 10, 0);
+        p.process(b"0123456789");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 2)).unwrap();
+        let style = Style::new().add_modifier(Modifier::REVERSED);
+        let cursor = Cursor::default().overlay_style(style);
+        term.draw(|f| f.render_widget(PseudoTerminal::new(&LiveScreen(p.screen())).cursor(cursor), f.area())).unwrap();
+        let cell = &term.backend().buffer()[(9, 0)];
+        assert_eq!((cell.symbol(), cell.modifier.contains(Modifier::REVERSED)), ("9", true));
     }
 }

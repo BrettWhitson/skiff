@@ -46,43 +46,41 @@ pub fn history_len(screen: &mut vt100::Screen) -> usize {
 /// scrollback. A line's number is how many lines were pushed before it, so
 /// it keeps its number as the scrollback fills and drops old lines (vt100
 /// has no such counter). The view's scroll position behaves as without it.
+/// Output first goes through [`crate::vtfix::VtFix`], which rewrites what
+/// vt100 would ignore and collects the answers to the program's queries.
 #[derive(Debug, Default)]
 pub struct ScrollTracker {
-    /// An unfinished `ESC [ ...` held back until its final byte arrives, so
+    /// The rewriter; it holds unfinished escape sequences until whole, so
     /// a switch to or from the alternate screen always ends a piece.
-    held: Vec<u8>,
+    fix: crate::vtfix::VtFix,
+    /// Answers owed to the program, oldest first.
+    replies: Vec<u8>,
 }
 
 impl ScrollTracker {
     /// Processes `bytes`; returns how many lines entered the scrollback.
     pub fn process(&mut self, parser: &mut vt100::Parser, bytes: &[u8]) -> u64 {
-        let mut data = std::mem::take(&mut self.held);
-        data.extend_from_slice(bytes);
-        // Hold back a short unfinished CSI so it is parsed whole with the next read.
-        if let Some(at) = unfinished_csi(&data)
-            && data.len() - at <= 64
-        {
-            self.held = data.split_off(at);
-        }
+        let mut segs = Vec::new();
+        self.fix.feed(bytes, &mut segs);
         let mut pushed = 0;
-        let mut i = 0;
-        while i < data.len() {
-            let end = piece_end(&data, i);
-            pushed += piece(parser, &data[i..end]);
-            i = end;
+        for seg in segs {
+            let data = match seg {
+                crate::vtfix::Seg::Bytes(b) => b,
+                crate::vtfix::Seg::Op(op) => crate::vtfix::resolve(&op, parser.screen(), &mut self.replies),
+            };
+            let mut i = 0;
+            while i < data.len() {
+                let end = piece_end(&data, i);
+                pushed += piece(parser, &data[i..end]);
+                i = end;
+            }
         }
         pushed
     }
-}
 
-/// Where the trailing escape sequence starts if it is unfinished (a lone
-/// ESC, or `ESC [` without its final byte yet).
-fn unfinished_csi(d: &[u8]) -> Option<usize> {
-    let at = d.iter().rposition(|&b| b == 0x1b)?;
-    match &d[at + 1..] {
-        [] => Some(at),
-        [b'[', rest @ ..] => rest.iter().all(|b| (0x20..=0x3f).contains(b)).then_some(at),
-        _ => None,
+    /// Replies owed to the program (answers to its queries), oldest first.
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.replies)
     }
 }
 
