@@ -395,7 +395,9 @@ Please report anything a screen reader gets wrong.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option. Unless you state otherwise, any
-contribution you submit for inclusion is dual licensed as above, without any
-additional terms or conditions.
+Skiff is available under your choice of two licenses:
+
+- [MIT](LICENSE-MIT)
+- [Apache 2.0](LICENSE-APACHE)
+
+Contributions are accepted under the same two licenses, with no extra terms.
